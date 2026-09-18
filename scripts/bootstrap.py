@@ -27,6 +27,7 @@ from typing import Callable
 
 PROJECT = "platform-edge"
 NETWORK = "platform"
+RESTORE_MARKER = ".pe-restore-incomplete"
 ENV_LINE = re.compile(r"^(?:export\s+)?(?P<key>[A-Z][A-Z0-9_]*)=(?P<value>.*)$")
 ROUTE_LINE = re.compile(r"^\{\$PE_SCHEME\}://(?P<host>(?:[a-z0-9-]+\.)*\{\$PE_PUBLIC_DOMAIN\})\s*\{$")
 PORT = re.compile(r"(?P<host>\[[^]]+\]|[^, ]+):(?P<first>\d+)(?:-(?P<last>\d+))?->[^, ]+/tcp")
@@ -54,8 +55,8 @@ class Refused(Exception):
         self.detail = detail
 
 
-def run(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, text=True, capture_output=True, check=False)
+def run(argv: list[str], *, start_new_session: bool = False) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, text=True, capture_output=True, check=False, start_new_session=start_new_session)
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -292,6 +293,12 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             check_ports(runner, settings, project)
             ensure_network(runner, settings["PE_PLATFORM_NETWORK"])
             ensure_volumes(runner, settings)
+            result = runner(compose_command(root, env_file) + [
+                "run", "--rm", "--no-deps", "--entrypoint", "sh", "caddy", "-ec",
+                f"test ! -e /data/{RESTORE_MARKER} && test ! -e /config/{RESTORE_MARKER}",
+            ])
+            if result.returncode:
+                raise Refused("restore_incomplete", "restore markers present or state unreadable; preserve volumes and restore into a fresh prefix")
             compose_up(root, env_file, runner)
         certificate = wait_ready(settings, root, env_file, runner)
         print(json.dumps({

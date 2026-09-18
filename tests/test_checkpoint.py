@@ -4,6 +4,8 @@ import hashlib
 import io
 import json
 import os
+import signal
+import shlex
 import shutil
 import ssl
 import subprocess
@@ -43,6 +45,7 @@ class CheckpointTests(unittest.TestCase):
         self.stack.images = {"caddy": "caddy:2.11.4@sha256:" + "a" * 64}
         self.stack.volumes = ["test_edge-data", "test_edge-config"]
         self.stack.dc = ["docker", "compose"]
+        self.stack.env_file = self.repository / ".env"
         self.stack.settings = {"PE_BACKUP_KEEP": "7"}
         self.stack.diagnostics = self.repository / ".diagnostics"
         self.stack.helper.side_effect = lambda volume, command, **kwargs: [volume, command]
@@ -52,13 +55,15 @@ class CheckpointTests(unittest.TestCase):
     def test_capture_manifest_has_ca_fingerprint_and_no_secrets(self):
         calls = []
 
-        def runner(argv):
+        def runner(argv, **kwargs):
             calls.append(argv)
             output = "running" if "ps" in argv else ""
             if argv[-1] == "du -sk /state":
                 output = "4\t/state"
             if "rev-parse" in argv:
                 output = "commit"
+            if "--porcelain" in argv:
+                output = " M routes.d/gateway.caddy"
             return subprocess.CompletedProcess(argv, 0, output, "")
 
         def capture(argv, path):
@@ -68,7 +73,8 @@ class CheckpointTests(unittest.TestCase):
 
         self.stack.stream.side_effect = capture
         directory = self.repository / "20260917T010000000000Z"
-        with patch.object(bootstrap, "run", side_effect=runner), contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(bootstrap, "run", side_effect=runner), \
+                patch.object(bootstrap, "wait_ready", return_value={}), contextlib.redirect_stdout(io.StringIO()):
             checkpoint.backup(self.stack, directory)
         document = json.loads((directory / "manifest.json").read_text())
         self.assertEqual(document["ca_sha256"], hashlib.sha256(self.der).hexdigest())
@@ -76,7 +82,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(document["images"], self.stack.images)
         self.assertNotIn(self.secret.decode(), json.dumps(document))
         self.assertNotIn("BEGIN CERTIFICATE", json.dumps(document))
-        self.assertEqual(calls[-1], self.stack.dc + ["start", "caddy"])
+        self.assertTrue(document["git_dirty"])
         # Both command paths must keep secret-bearing stderr out of reported errors.
         for stream in (False, True):
             with self.subTest(stream=stream):
@@ -94,7 +100,7 @@ class CheckpointTests(unittest.TestCase):
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
                 self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
 
-    def test_capture_refuses_checkout_drift_before_stopping_or_creating_archive(self):
+    def test_capture_refuses_image_or_volume_drift_before_stopping_or_creating_archive(self):
         stack = object.__new__(checkpoint.Stack)
         stack.dc = self.stack.dc
         stack.diagnostics = self.stack.diagnostics
@@ -124,7 +130,7 @@ class CheckpointTests(unittest.TestCase):
         for occupied in self.stack.volumes:
             calls = []
 
-            def runner(argv):
+            def runner(argv, **kwargs):
                 calls.append(argv)
                 return subprocess.CompletedProcess(argv, int(argv[0] == occupied), "", "")
 
@@ -135,12 +141,26 @@ class CheckpointTests(unittest.TestCase):
                 self.assertIn([occupied, 'entries=$(ls -A /state); test -z "$entries"'], calls)
 
     def test_restore_pairs_each_archive_with_its_volume(self):
-        with patch.object(bootstrap, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), contextlib.redirect_stdout(io.StringIO()):
+        volumes = {name: self.repository / name for name in self.stack.volumes}
+        for path in volumes.values():
+            path.mkdir()
+        original = checkpoint.inventory(self.source)
+        def runner(argv, **kwargs):
+            if argv[0] in volumes:
+                return subprocess.run(["sh", "-ec", argv[1].replace("/state", shlex.quote(str(volumes[argv[0]])))],
+                                      capture_output=True, text=True)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        def extract(argv, path, restore):
+            self.assertTrue(all((volume / ".pe-restore-incomplete").exists() for volume in volumes.values()))
+            with tarfile.open(path, "r:") as archive:
+                archive.extractall(volumes[argv[0]], filter="data")
+        self.stack.stream.side_effect = extract
+        with patch.object(bootstrap, "run", side_effect=runner), contextlib.redirect_stdout(io.StringIO()):
             checkpoint.restore(self.stack, self.source)
-        self.assertEqual(len(self.stack.stream.call_args_list), 2)
-        for call, volume, name in zip(self.stack.stream.call_args_list, self.stack.volumes, checkpoint.ARTIFACTS):
-            self.assertEqual(call.args[0][0], volume)
-            self.assertEqual(call.args[1:], (self.source / name, True))
+        self.assertTrue(all(not (path / ".pe-restore-incomplete").exists() for path in volumes.values()))
+        self.assertEqual((volumes[self.stack.volumes[0]] / checkpoint.CA_PATH).read_text(), ssl.DER_cert_to_PEM_cert(self.der))
+        self.assertEqual((volumes[self.stack.volumes[1]] / "config.json").read_bytes(), self.secret)
+        self.assertEqual(checkpoint.inventory(self.source), original)
 
     def test_restore_rejects_unsafe_archives_before_any_docker_operation(self):
         for name, kind in [("/absolute", tarfile.REGTYPE), ("../escape", tarfile.REGTYPE), ("link", tarfile.SYMTYPE)]:
@@ -227,6 +247,155 @@ class CheckpointTests(unittest.TestCase):
             self.assertTrue(preserved.exists())
         with self.assertRaises(ValueError):
             checkpoint.prune(self.repository, 0)
+
+    def test_repeated_signals_resume_and_require_readiness(self):
+        running = True
+        healthy = False
+        starts = 0
+
+        def runner(argv, **kwargs):
+            nonlocal running, starts
+            output = ""
+            if "stop" in argv:
+                signal.raise_signal(signal.SIGTERM)
+                running = False
+            elif "start" in argv:
+                signal.raise_signal(signal.SIGHUP)
+                signal.raise_signal(signal.SIGINT)
+                starts += 1
+                running = starts > 1
+            elif "ps" in argv:
+                output = "container" if running else ""
+            elif argv[-1] == "du -sk /state":
+                output = "4 /state"
+            return subprocess.CompletedProcess(argv, 0, output, "")
+
+        def ready(*args, **kwargs):
+            nonlocal healthy
+            self.assertTrue(running)
+            healthy = True
+            return {}
+
+        handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)}
+        def interrupted(signum, frame):
+            raise RuntimeError("interrupted")
+        for sig in handlers:
+            signal.signal(sig, interrupted)
+        self.addCleanup(lambda: [signal.signal(sig, handler) for sig, handler in handlers.items()])
+        directory = self.repository / "interrupted"
+        with patch.object(bootstrap, "run", side_effect=runner), \
+                patch.object(bootstrap, "wait_ready", side_effect=ready), \
+                patch.object(bootstrap.time, "sleep"), self.assertRaisesRegex(RuntimeError, "interrupted"):
+            checkpoint.backup(self.stack, directory)
+        self.assertTrue(running)
+        self.assertTrue(healthy)
+        self.assertFalse((directory / "manifest.json").exists())
+
+        def quiet_runner(argv, **kwargs):
+            output = "container" if "ps" in argv else "4 /state" if argv[-1] == "du -sk /state" else ""
+            return subprocess.CompletedProcess(argv, 0, output, "")
+        self.stack.stream.side_effect = lambda argv, path: shutil.copyfile(self.source / path.name, path)
+        directory = self.repository / "unhealthy"
+        with patch.object(bootstrap, "run", side_effect=quiet_runner), \
+                patch.object(bootstrap, "wait_ready", side_effect=bootstrap.Refused("not_ready")), \
+                self.assertRaises(bootstrap.Refused):
+            checkpoint.backup(self.stack, directory)
+        self.assertFalse((directory / "manifest.json").exists())
+
+    def test_git_preflight_and_failed_capture_preserve_evidence(self):
+        running = True
+        git_failed = True
+
+        def runner(argv, **kwargs):
+            nonlocal running
+            if "rev-parse" in argv and git_failed:
+                return subprocess.CompletedProcess(argv, 1, "", "git ownership refusal")
+            if "stop" in argv:
+                running = False
+            if "start" in argv:
+                running = True
+            output = "container" if "ps" in argv and running else ""
+            if argv[-1] == "du -sk /state":
+                output = "4 /state"
+            return subprocess.CompletedProcess(argv, 0, output, "")
+
+        directory = self.repository / "preflight"
+        with patch.object(bootstrap, "run", side_effect=runner), self.assertRaises(RuntimeError):
+            checkpoint.backup(self.stack, directory)
+        self.assertTrue(running)
+        self.assertFalse(directory.exists())
+        git_failed = False
+        def capture(argv, path):
+            path.write_bytes(b"partial archive evidence")
+            raise RuntimeError("capture failed")
+        self.stack.stream.side_effect = capture
+        with patch.object(bootstrap, "run", side_effect=runner), \
+                patch.object(bootstrap, "wait_ready", return_value={}), self.assertRaisesRegex(RuntimeError, "capture failed"):
+            checkpoint.backup(self.stack, directory)
+        self.assertTrue(running)
+        self.assertEqual((directory / "edge-data.tar").read_bytes(), b"partial archive evidence")
+        self.assertFalse((directory / "manifest.json").exists())
+
+    def test_partial_restore_blocks_bootstrap_and_preserves_ca(self):
+        volumes = {name: self.repository / name for name in self.stack.volumes}
+        for path in volumes.values():
+            path.mkdir()
+        original = checkpoint.inventory(self.source)
+        env = self.stack.env_file
+        env.write_text("PE_VOLUME_PREFIX=test\n")
+
+        def runner(argv, **kwargs):
+            if argv[0] in volumes:
+                return subprocess.run(["sh", "-ec", argv[1].replace("/state", shlex.quote(str(volumes[argv[0]])))],
+                                      capture_output=True, text=True)
+            if "run" in argv:
+                command = argv[-1]
+                for suffix, volume in zip(("data", "config"), volumes.values()):
+                    command = command.replace("/" + suffix, shlex.quote(str(volume)))
+                return subprocess.run(["sh", "-ec", command], capture_output=True, text=True)
+            if "up" in argv:
+                self.fail("bootstrap started Caddy with an incomplete restore")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        def extract(argv, path, restore):
+            if path.name == "edge-config.tar":
+                raise RuntimeError("extraction interrupted")
+            with tarfile.open(path, "r:") as archive:
+                archive.extractall(volumes[argv[0]], filter="data")
+        self.stack.stream.side_effect = extract
+        with patch.object(bootstrap, "run", side_effect=runner), self.assertRaisesRegex(RuntimeError, "extraction interrupted"):
+            checkpoint.restore(self.stack, self.source)
+        self.assertTrue(all((path / ".pe-restore-incomplete").exists() for path in volumes.values()))
+        ca = volumes[self.stack.volumes[0]] / checkpoint.CA_PATH
+        self.assertEqual(bootstrap.ca_fingerprint(ca.read_text()), self.document["ca_sha256"])
+        with patch.dict(os.environ, {}, clear=True), patch.object(bootstrap.shutil, "which", return_value="docker"), \
+                self.assertRaises(bootstrap.Refused) as caught:
+            bootstrap.bootstrap(["--env-file", str(env)], runner)
+        self.assertEqual(caught.exception.code, "restore_incomplete")
+        self.assertEqual(checkpoint.inventory(self.source), original)
+        self.assertEqual(bootstrap.ca_fingerprint(ca.read_text()), self.document["ca_sha256"])
+
+    def test_malformed_archives_and_empty_du_refuse_cleanly(self):
+        for mode, size in (("w:gz", 1), ("w", 65537)):
+            directory = self.repository / mode.replace(":", "-")
+            shutil.copytree(self.source, directory)
+            with tarfile.open(directory / "edge-data.tar", mode) as archive:
+                info = tarfile.TarInfo(checkpoint.CA_PATH)
+                der = self.der if mode == "w:gz" else b"x" * size
+                pem = ssl.DER_cert_to_PEM_cert(der).encode()
+                info.size = len(pem)
+                archive.addfile(info, io.BytesIO(pem))
+            document = dict(self.document, artifacts=checkpoint.inventory(directory), ca_sha256=hashlib.sha256(der).hexdigest())
+            (directory / "manifest.json").write_text(json.dumps(document))
+            with self.subTest(mode=mode), \
+                    patch.object(bootstrap, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), \
+                    contextlib.redirect_stdout(io.StringIO()), self.assertRaises((ValueError, tarfile.TarError)):
+                checkpoint.restore(self.stack, directory)
+        directory = self.repository / "empty-du"
+        with patch.object(bootstrap, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), \
+                self.assertRaisesRegex(ValueError, "volume size"):
+            checkpoint.backup(self.stack, directory)
+        self.assertFalse(directory.exists())
 
 
 if __name__ == "__main__":

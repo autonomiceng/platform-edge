@@ -68,6 +68,7 @@ services:
 YAML
   export COMPOSE_FILE="$root/compose.yaml:$work/integration.yaml"
 fi
+# Disposable loopback-only smoke uses the host relay; never use this allowance in an installation.
 PE_METRICS_ALLOW="$PE_METRICS_ALLOW $(docker network inspect "$PE_PLATFORM_NETWORK" --format '{{range .IPAM.Config}}{{.Gateway}} {{end}}')"
 export PE_METRICS_ALLOW
 python3 scripts/bootstrap.py --env-file "$env_file" --render-only >/dev/null
@@ -78,6 +79,9 @@ cat > "$work/stub.caddy" <<'CADDY'
 	admin off
 }
 :80, :3000 {
+	header X-Smoke-Forwarded-For {http.request.header.X-Forwarded-For}
+	header X-Smoke-Forwarded-Host {http.request.header.X-Forwarded-Host}
+	header X-Smoke-Authorization {http.request.header.Authorization}
 	respond "{$STUB_ALIAS}|{host}|{http.request.header.X-Forwarded-Proto}"
 }
 CADDY
@@ -112,20 +116,46 @@ for scheme in http https; do
     esac
     if [ "$scheme" = http ]; then
       body=$(curl -D "$work/headers" --noproxy '*' --max-time 10 --retry 10 --retry-delay 1 -fsS \
-        -H "Host: $host" -H 'X-Forwarded-Proto: forged' "http://127.0.0.1:$PE_HTTP_PORT/")
+        -H "Host: $host" -H 'X-Forwarded-Proto: forged' -H 'X-Forwarded-For: 198.51.100.9' \
+        -H 'X-Forwarded-Host: forged.invalid' -H 'Authorization: Bearer smoke-operator-token' "http://127.0.0.1:$PE_HTTP_PORT/")
     else
       # SNI needs the hostname; --resolve avoids relying on *.localhost DNS.
       body=$(curl -D "$work/headers" --noproxy '*' --max-time 10 --retry 10 --retry-delay 1 --cacert "$work/root.crt" -fsS \
         --resolve "$host:$PE_HTTPS_PORT:127.0.0.1" -H "Host: $host" -H 'X-Forwarded-Proto: forged' \
+        -H 'X-Forwarded-For: 198.51.100.9' -H 'X-Forwarded-Host: forged.invalid' \
+        -H 'Authorization: Bearer smoke-operator-token' \
         "https://$host:$PE_HTTPS_PORT/")
     fi
     [ "$body" = "$upstream|$host|$scheme" ] || fail "$host forwarded '$body'"
-    ok "$scheme $host: upstream, Host and X-Forwarded-Proto"
+    python3 - "$work/headers" "$host" <<'PY'
+import ipaddress, sys
+from pathlib import Path
+headers = dict(line.lower().split(':', 1) for line in Path(sys.argv[1]).read_text().splitlines() if ':' in line)
+peer = headers['x-smoke-forwarded-for'].strip()
+assert str(ipaddress.ip_address(peer)) != '198.51.100.9', peer
+assert headers['x-smoke-forwarded-host'].strip() == sys.argv[2], headers
+assert headers['x-smoke-authorization'].strip() == 'bearer smoke-operator-token', headers
+PY
+    ok "$scheme $host: upstream, Host and unspoofed X-Forwarded-Proto/For/Host"
     if [ "$scheme" = https ]; then
       grep -iq '^Strict-Transport-Security: max-age=31536000' "$work/headers" || fail "$host missing HSTS"
       ok "$host: HSTS"
     fi
   done
+  for path in /health/ready /health/ready/ /health/ready. //HEALTH//ready; do
+    if [ "$scheme" = http ]; then
+      body=$(curl --path-as-is --noproxy '*' --max-time 10 -fsS -D "$work/headers" \
+        -H 'Host: backplane.localhost' -H 'Authorization: Bearer smoke-operator-token' \
+        "http://127.0.0.1:$PE_HTTP_PORT$path")
+    else
+      body=$(curl --path-as-is --noproxy '*' --max-time 10 -fsS -D "$work/headers" --cacert "$work/root.crt" \
+        --resolve "backplane.localhost:$PE_HTTPS_PORT:127.0.0.1" -H 'Host: backplane.localhost' \
+        -H 'Authorization: Bearer smoke-operator-token' "https://backplane.localhost:$PE_HTTPS_PORT$path")
+    fi
+    [ "$body" = "bp-server|backplane.localhost|$scheme" ] || fail "readiness variant $path did not reach backplane"
+    if grep -iq 'smoke-operator-token' "$work/headers"; then fail "readiness variant $path retained Authorization"; fi
+  done
+  ok "$scheme readiness variants strip Authorization"
   code=$(curl --noproxy '*' --max-time 10 -sS -o /dev/null -w '%{http_code}' -H 'Host: localhost' \
     "http://127.0.0.1:$PE_HTTP_PORT/health")
   [ "$code" = 200 ] || fail "HTTP health in $scheme mode returned $code"

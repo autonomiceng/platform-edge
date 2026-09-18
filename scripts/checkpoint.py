@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tarfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -33,7 +34,8 @@ def command_failed(stderr: str | bytes, diagnostics: Path) -> None:
 
 
 def checked(argv: list[str], diagnostics: Path) -> str:
-    result = bootstrap.run(argv)
+    # Terminal interrupts must reach our handler, not kill a stop/start CLI mid-operation.
+    result = bootstrap.run(argv, start_new_session=True)
     if result.returncode:
         command_failed(result.stderr, diagnostics)
     return result.stdout.strip()
@@ -54,21 +56,25 @@ def inventory(directory: Path) -> dict:
 def archive_fingerprint(directory: Path) -> str | None:
     fingerprint = None
     for name in ARTIFACTS:
-        with tarfile.open(directory / name) as archive:
+        with tarfile.open(directory / name, "r:") as archive:
             for member in archive:
                 path = PurePosixPath(member.name)
                 if path.is_absolute() or ".." in path.parts or not (member.isfile() or member.isdir()):
                     raise ValueError(f"unsafe archive entry in {name}")
+                if path.parts and path.parts[0] == bootstrap.RESTORE_MARKER:
+                    raise ValueError(f"incomplete restore marker in {name}")
                 if name == "edge-data.tar" and str(path) == CA_PATH:
+                    if not member.isfile() or member.size > 65536:
+                        raise ValueError("invalid or oversized CA certificate")
                     with archive.extractfile(member) as handle:
-                        fingerprint = bootstrap.ca_fingerprint(handle.read().decode("ascii"))
+                        fingerprint = bootstrap.ca_fingerprint(handle.read(65536).decode("ascii"))
     return fingerprint
 
 
-def manifest(directory: Path, images: dict, commit: str) -> dict:
+def manifest(directory: Path, images: dict, commit: str, dirty: bool = False) -> dict:
     # Deliberately accept no env values: only public identifiers and artifact hashes.
     return {"version": 1, "created_at": datetime.now(timezone.utc).isoformat(),
-            "git_commit": commit, "images": images, "caddy_stopped": True,
+            "git_commit": commit, "git_dirty": dirty, "images": images, "caddy_stopped": True,
             "ca_sha256": archive_fingerprint(directory), "artifacts": inventory(directory)}
 
 
@@ -117,7 +123,7 @@ class Stack:
         with path.open("rb" if restore else "xb") as handle:
             result = subprocess.run(argv, stdin=handle if restore else subprocess.DEVNULL,
                                     stdout=subprocess.DEVNULL if restore else handle,
-                                    stderr=subprocess.PIPE, check=False)
+                                    stderr=subprocess.PIPE, check=False, start_new_session=True)
             if result.returncode:
                 command_failed(result.stderr, self.diagnostics)
             if not restore:
@@ -127,32 +133,63 @@ class Stack:
 
 def backup(stack: Stack, directory: Path) -> None:
     stack.require_capture_provenance()
-    directory.mkdir(mode=0o700)
+    commit = checked(["git", "-C", str(ROOT), "rev-parse", "HEAD"], stack.diagnostics)
+    dirty = bool(checked(["git", "-C", str(ROOT), "status", "--porcelain"], stack.diagnostics))
     for volume in stack.volumes:
         checked(["docker", "volume", "inspect", volume], stack.diagnostics)
-    expected = sum(int(checked(stack.helper(volume, "du -sk /state"), stack.diagnostics).split()[0])
-                   * 1024 + 10240 for volume in stack.volumes)
-    if shutil.disk_usage(directory).free < expected:
+    expected = 0
+    for volume in stack.volumes:
+        size = checked(stack.helper(volume, "du -sk /state"), stack.diagnostics).split()
+        if not size or not size[0].isdigit():
+            raise ValueError(f"cannot estimate volume size: {volume}")
+        expected += int(size[0]) * 1024 + 10240
+    if shutil.disk_usage(directory.parent).free < expected:
         raise ValueError("insufficient free space for Checkpoint")
     running = bool(checked(stack.dc + ["ps", "--status", "running", "-q", "caddy"], stack.diagnostics))
+    directory.mkdir(mode=0o700)
+    interrupted = False
+    def defer_signal(signum, frame):
+        nonlocal interrupted
+        interrupted = True
+    handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)}
     try:
+        # Let stop finish before start, and never interrupt the resumption subprocess.
+        for sig in handlers:
+            signal.signal(sig, defer_signal)
         if running:
             checked(stack.dc + ["stop", "--timeout", "30", "caddy"], stack.diagnostics)
+        if interrupted:
+            raise RuntimeError("interrupted; resuming Caddy if it was running")
         stack.require_stopped()
         for volume, name in zip(stack.volumes, ARTIFACTS):
             stack.stream(stack.helper(volume, "tar -C /state -cf - ."), directory / name)
-        commit = checked(["git", "-C", str(ROOT), "rev-parse", "HEAD"], stack.diagnostics)
-        document = manifest(directory, stack.images, commit)
+            if interrupted:
+                raise RuntimeError("interrupted; resuming Caddy if it was running")
     finally:
         pending = sys.exc_info()[0]
-        if running:
-            try:
-                checked(stack.dc + ["start", "caddy"], stack.diagnostics)
-            except (OSError, RuntimeError) as error:
-                if pending is None:
-                    raise
-                print(f"Caddy resumption also failed: {error}", file=sys.stderr)
+        try:
+            if running:
+                try:
+                    deadline = time.monotonic() + 120
+                    while True:
+                        checked(stack.dc + ["start", "caddy"], stack.diagnostics)
+                        if checked(stack.dc + ["ps", "--status", "running", "-q", "caddy"], stack.diagnostics):
+                            break
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("Caddy did not resume within 120 seconds")
+                        time.sleep(3)
+                    bootstrap.wait_ready(stack.settings, ROOT, stack.env_file)
+                except (OSError, RuntimeError, bootstrap.Refused) as error:
+                    if pending is None:
+                        raise
+                    print(f"Caddy resumption also failed: {error}", file=sys.stderr)
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+        if interrupted and pending is None:
+            raise RuntimeError("interrupted; Caddy resumption completed")
     # Publish completion only after capture and service resumption succeed.
+    document = manifest(directory, stack.images, commit, dirty)
     with (directory / "manifest.json").open("x") as handle:
         json.dump(document, handle, indent=2)
         handle.write("\n")
@@ -204,8 +241,12 @@ def restore(stack: Stack, directory: Path) -> None:
         result = bootstrap.run(stack.helper(volume, 'entries=$(ls -A /state); test -z "$entries"'))
         if result.returncode:
             raise ValueError(f"restore refused: non-empty or unreadable volume {volume}")
+    for volume in stack.volumes:
+        checked(stack.helper(volume, f"touch /state/{bootstrap.RESTORE_MARKER}", readonly=False), stack.diagnostics)
     for volume, name in zip(stack.volumes, ARTIFACTS):
         stack.stream(stack.helper(volume, "tar -C /state -xf -", readonly=False), directory / name, True)
+    for volume in stack.volumes:
+        checked(stack.helper(volume, f"rm /state/{bootstrap.RESTORE_MARKER}", readonly=False), stack.diagnostics)
     print(json.dumps({"restored": str(directory), "ca_sha256": document["ca_sha256"],
                       "next": "Run bootstrap to start Caddy and verify TLS."}))
 

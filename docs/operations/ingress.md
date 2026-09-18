@@ -159,10 +159,16 @@ an external client as the final public rollout check.
 ## Metrics and certificate expiry
 
 The root `/metrics` is restricted by the socket peer's IP using `PE_METRICS_ALLOW`
-(default `127.0.0.0/8 ::1`). Shared-host operators must add their Platform Network
-subnet to this space-separated list, for example `PE_METRICS_ALLOW="127.0.0.0/8 ::1 172.20.0.0/16"`
-with the actual subnet from `docker network inspect platform`. Host probes through a
-published Docker port may also appear as the network gateway and need that allowance.
+(default `127.0.0.0/8 ::1`). Add only the scraper container's Platform Network IPv4
+address as a `/32` (IPv6 `/128`), for example
+`PE_METRICS_ALLOW="127.0.0.0/8 ::1 172.20.0.10/32"` for a scraper at `172.20.0.10`.
+Reserve that address in the scraper's Compose configuration and verify its actual
+address before allowing it. Scrape `pe-edge:80` on the Platform Network with the root
+Host header in HTTP mode, or the root hostname and verified TLS in HTTPS mode.
+Never allow the whole subnet or its Docker bridge gateway. Published-port connections
+relayed by Docker can all appear as that gateway, including remote clients under
+rootless Docker or IPv6-to-IPv4 proxying. Allowing it can make metrics public. A host
+probe seen as the gateway must stay denied; use the scraper's network path instead.
 The outermost Edge does not trust forwarded client IP headers; they cannot grant access.
 In a cloud VPC, "private" means every tenant, so private address ranges are not an access policy.
 It combines native Caddy metrics (`/metrics/caddy`, under the same restriction) with

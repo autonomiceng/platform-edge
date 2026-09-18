@@ -60,19 +60,38 @@ operations concurrently. Keep the env file and matching checkout separately in s
 configuration storage. Never restore archives from an untrusted source: hashes detect
 corruption, not a malicious replacement of both artifacts and manifest.
 
+Backup resolves the Git commit and dirty status before creating a capture directory or
+stopping Caddy. Run it as the checkout owner with Git installed; a source-only tarball
+without Git metadata is refused before any outage. For another backup account, arrange
+Git ownership/trust explicitly for this checkout before scheduling it.
+
 Backup stops Caddy, verifies neither volume has a running consumer, and streams a tar
 of each volume. There is a brief ingress outage. It resumes Caddy if it was running,
-including on errors or catchable interruptions. A forced kill or host loss cannot run
+including on errors or catchable interruptions. SIGTERM, SIGHUP and SIGINT are deferred
+until an active transfer and service resumption finish. Resumption retries start until
+the container is running, then verifies HTTP or TLS readiness using bootstrap's probe.
+A failed readiness check fails capture and leaves its evidence incomplete. Hashing and
+archive inspection run after resumption. A forced kill or host loss cannot run
 cleanup; inspect incomplete directories and start Caddy manually. `manifest.json` is
 written last, after successful resumption, and contains:
 
-- UTC capture completion, Git commit and full image pins;
+- UTC capture completion, Git commit, `git_dirty` boolean and full image pins;
 - SHA-256 and size of both tar artifacts;
 - `caddy_stopped: true` and the DER SHA-256 internal CA root fingerprint, or null.
 
+Git fields describe the checkout at preflight. They do not attest which file contents
+the running Caddy loaded. Image pins and volume mounts are checked against the container;
+keep the matching configuration separately. Compose's service config hash does not
+hash the contents of bind-mounted Route Files or Caddyfile.
+
 The manifest excludes environment values, certificates and keys. A directory without
-it is incomplete. Preserve diagnostics and remove incomplete sets only after confirming
-no backup is running. Capture refuses when the backup filesystem has less free space
+it is incomplete. Failed captures and diagnostics are never automatically deleted.
+To clean up, disable the schedule, confirm no capture or restore is running, preserve
+the failed set and diagnostics in protected storage, and verify Caddy readiness. Then
+remove only the identified incomplete directory after deciding its evidence is no
+longer needed. Re-enable the schedule and verify the next capture completes. Never
+include Docker volumes or the source Checkpoint in this cleanup. Capture refuses when
+the backup filesystem has less free space
 than the estimated volume size. Disk-full or archive errors fail the command and resume
 Caddy; alert on free space and the age of the last complete, replicated Checkpoint.
 
@@ -85,11 +104,19 @@ never command output. Treat diagnostics as secret-bearing data.
 
 Restore verifies pins, hashes, archive entry safety and the recorded CA fingerprint
 before writing. The target project and all consumers of its volumes must be stopped.
-It creates missing volumes, requires **both volumes empty**, and refuses populated
-volumes; it never clears a target to make restoration succeed. It restores both archives
-and leaves Caddy stopped. On a new host, restore first, then run bootstrap to create the
+It accepts only uncompressed tar archives and bounds the public CA certificate at
+64 KiB before parsing. It creates missing volumes, requires **both volumes empty**,
+and refuses populated volumes; it never clears a target to make restoration succeed.
+Before extraction it places `.pe-restore-incomplete` in both volumes, removing the
+markers only after both extractions succeed. Bootstrap refuses to start if either
+marker remains. Do not remove markers to bypass this refusal or start Compose directly.
+It restores both archives and leaves Caddy stopped. On a new host, restore first, then run bootstrap to create the
 network, start Caddy and verify TLS. A failed restore leaves partial data for diagnosis;
 retry into another empty prefix. Keep the original Checkpoint until recovery is verified.
+Compare bootstrap's `certificate.ca_sha256` with the manifest's `ca_sha256` for an
+internal CA before returning clients to service. Markers detect an interrupted restore;
+they cannot detect a deleted volume or a wrong prefix. Ordinary bootstrap still creates
+missing volumes for new installations, so preserve and check the original CA identity.
 
 ## RPO and RTO
 

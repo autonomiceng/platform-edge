@@ -6,7 +6,8 @@
 	@operator path_regexp (?i)^/+(health/+operations|metrics)\.*(/|$)
 	respond @operator 404
 	# The operator token unlocks readiness details only on the backplane's loopback port.
-	request_header /health/ready -Authorization
+	@ready path_regexp (?i)^/+health/+ready\.*(/|$)
+	request_header @ready -Authorization
 	reverse_proxy bp-server:3000 {
 		header_up Host {host}
 		header_up X-Forwarded-Proto {scheme}
