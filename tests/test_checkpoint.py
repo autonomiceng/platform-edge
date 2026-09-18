@@ -26,6 +26,9 @@ import backup_drill
 
 class CheckpointTests(unittest.TestCase):
     def setUp(self):
+        settle = patch.object(checkpoint, "STOP_SETTLE_SECONDS", 0)
+        settle.start()
+        self.addCleanup(settle.stop)
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
         self.repository = Path(self.work.name)
@@ -430,6 +433,38 @@ class CheckpointTests(unittest.TestCase):
             self.assertEqual(starts, 2)
             self.assertEqual(errors.getvalue(), "")
             self.assertFalse((directory / "manifest.json").exists())
+
+    def test_resume_waits_for_a_stop_that_finishes_after_initial_readiness(self):
+        now = 0
+        running = True
+        starts = 0
+        late_stop = False
+        def sleep(seconds):
+            nonlocal now, running, late_stop
+            now += seconds
+            if now >= 3 and not late_stop:
+                running = False
+                late_stop = True
+        def runner(argv, **kwargs):
+            nonlocal starts, running
+            if "stop" in argv:
+                return subprocess.CompletedProcess(argv, 1, "", "stop submitted before CLI failure")
+            if "start" in argv:
+                starts += 1
+                running = True
+            output = "container" if "ps" in argv and running else "4 /state" if argv[-1] == "du -sk /state" else ""
+            return subprocess.CompletedProcess(argv, 0, output, "")
+        with patch.object(checkpoint, "STOP_SETTLE_SECONDS", 5), \
+                patch.object(checkpoint.time, "monotonic", side_effect=lambda: now), \
+                patch.object(checkpoint.time, "sleep", side_effect=sleep), \
+                patch.object(bootstrap, "run", side_effect=runner), \
+                patch.object(bootstrap, "wait_ready", return_value={}), \
+                self.assertRaisesRegex(RuntimeError, "command failed"):
+            checkpoint.backup(self.stack, self.repository / "late-healthy-stop")
+        self.assertTrue(late_stop)
+        self.assertTrue(running)
+        self.assertGreaterEqual(starts, 2)
+        self.assertGreaterEqual(now, 5)
 
     def test_transient_start_failure_retries_and_completes_capture(self):
         starts = 0

@@ -197,3 +197,7 @@ Before upgrades, capture a Checkpoint, validate and
 smoke the candidate, then change pins. Roll back with preserved volumes only when the
 older Caddy supports that state; otherwise restore the matching Checkpoint and pins
 into a fresh prefix. Check disk space in both Docker storage and the backup repository.
+
+After a capture failure or interruption, resumption observes a 40-second settle
+window before accepting readiness, followed by its 300-second recovery budget.
+This covers a daemon stop request that completes after its CLI has already exited.

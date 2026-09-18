@@ -21,6 +21,7 @@ import bootstrap
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACTS = ("edge-data.tar", "edge-config.tar")
 CA_PATH = "caddy/pki/authorities/local/root.crt"
+STOP_SETTLE_SECONDS = 40  # The daemon stop grace is 30s, even if its CLI exits early.
 COMMAND_TIMEOUT = 120
 TRANSFER_TIMEOUT = 1800
 
@@ -187,7 +188,8 @@ def backup(stack: Stack, directory: Path) -> None:
         try:
             if running:
                 try:
-                    deadline = time.monotonic() + 300
+                    settle_until = time.monotonic() + (STOP_SETTLE_SECONDS if pending or interrupted else 0)
+                    deadline = settle_until + 300
                     def remaining():
                         return max(0, min(20, deadline - time.monotonic()))
                     def detached(argv):
@@ -201,7 +203,7 @@ def backup(stack: Stack, directory: Path) -> None:
                                 # An in-flight stop can finish after start was a no-op.
                                 bootstrap.wait_ready(stack.settings, ROOT, stack.env_file, detached, remaining())
                                 if (checked(is_running, stack.diagnostics, timeout=remaining())
-                                        and time.monotonic() < deadline):
+                                        and settle_until <= time.monotonic() < deadline):
                                     break
                             last = "Caddy is not running"
                         except subprocess.TimeoutExpired:
