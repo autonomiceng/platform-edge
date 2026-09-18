@@ -96,6 +96,18 @@ class Stack:
                 f"type=volume,src={volume},dst=/state" + (",readonly" if readonly else ""),
                 "--entrypoint", "sh", self.image, "-ec", *command]
 
+    def require_capture_provenance(self) -> None:
+        ids = checked(self.dc + ["ps", "-aq", "caddy"], self.diagnostics).split()
+        if len(ids) != 1:
+            raise ValueError("Checkpoint requires exactly one existing Caddy container")
+        containers = json.loads(checked(["docker", "inspect", *ids], self.diagnostics))
+        if len(containers) != 1 or containers[0].get("Config", {}).get("Image") != self.image:
+            raise ValueError("Caddy image differs from the Checkpoint image pin")
+        mounts = {m["Destination"]: m.get("Name") for m in containers[0].get("Mounts", [])
+                  if m.get("Type") == "volume"}
+        if mounts != dict(zip(("/data", "/config"), self.volumes)):
+            raise ValueError("Caddy persistent mounts differ from the Checkpoint volumes")
+
     def require_stopped(self) -> None:
         for volume in self.volumes:
             if checked(["docker", "ps", "-q", "--filter", f"volume={volume}"], self.diagnostics):
@@ -114,6 +126,7 @@ class Stack:
 
 
 def backup(stack: Stack, directory: Path) -> None:
+    stack.require_capture_provenance()
     directory.mkdir(mode=0o700)
     for volume in stack.volumes:
         checked(["docker", "volume", "inspect", volume], stack.diagnostics)

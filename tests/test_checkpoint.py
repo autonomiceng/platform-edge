@@ -93,6 +93,32 @@ class CheckpointTests(unittest.TestCase):
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
                 self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
 
+    def test_capture_refuses_checkout_drift_before_stopping_or_creating_archive(self):
+        stack = object.__new__(checkpoint.Stack)
+        stack.dc = self.stack.dc
+        stack.diagnostics = self.stack.diagnostics
+        stack.image = self.stack.images["caddy"]
+        stack.volumes = self.stack.volumes
+        expected = {"Config": {"Image": stack.image}, "Mounts": [
+            {"Type": "volume", "Destination": "/data", "Name": stack.volumes[0]},
+            {"Type": "volume", "Destination": "/config", "Name": stack.volumes[1]}]}
+        for defect in ("image", "volume", "bind", "missing"):
+            container = json.loads(json.dumps(expected))
+            if defect == "image": container["Config"]["Image"] = "caddy:old"
+            if defect == "volume": container["Mounts"][0]["Name"] = "old_edge-data"
+            if defect == "bind": container["Mounts"][0]["Type"] = "bind"
+            calls = []
+            def checked(argv, diagnostics):
+                calls.append(argv)
+                return ("" if defect == "missing" else "container-id") if "ps" in argv else json.dumps([container])
+            directory = self.repository / ("rejected-" + defect)
+            with self.subTest(defect=defect), patch.object(checkpoint, "checked", side_effect=checked):
+                with self.assertRaises(ValueError): checkpoint.backup(stack, directory)
+            self.assertFalse(directory.exists())
+            self.assertFalse(any("stop" in argv or "run" in argv for argv in calls))
+        with patch.object(checkpoint, "checked", side_effect=["container-id", json.dumps([expected])]):
+            stack.require_capture_provenance()
+
     def test_restore_refuses_either_nonempty_volume_before_any_write(self):
         for occupied in self.stack.volumes:
             calls = []
