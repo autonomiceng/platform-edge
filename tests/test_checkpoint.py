@@ -233,6 +233,7 @@ class CheckpointTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, "", "")
         def extract(argv, path, restore):
             self.assertTrue(all((volume / ".pe-restore-incomplete").exists() for volume in volumes.values()))
+            self.assertIn("&& sync", argv[1])
             with tarfile.open(path, "r:") as archive:
                 archive.extractall(volumes[argv[0]], filter="data")
         self.stack.stream.side_effect = extract
@@ -335,6 +336,11 @@ class CheckpointTests(unittest.TestCase):
         checkpoint.prune(self.repository, 1)
         self.assertTrue(complete[-1].exists())
         self.assertTrue(all(not p.exists() for p in complete[:-1]))
+        regressed = self.repository / "20260802T010000000000Z"
+        shutil.copytree(self.source, regressed)
+        checkpoint.prune(self.repository, 1, protect=regressed)
+        self.assertTrue(regressed.exists())
+        self.assertFalse(complete[-1].exists())
         for preserved in (self.source, incomplete, corrupt, link):
             self.assertTrue(preserved.exists())
         with self.assertRaises(ValueError):
@@ -613,6 +619,7 @@ class CheckpointTests(unittest.TestCase):
         def extract(argv, path, restore):
             if path.name == "edge-config.tar":
                 raise RuntimeError("extraction interrupted")
+            self.assertIn("&& sync", argv[1])
             with tarfile.open(path, "r:") as archive:
                 archive.extractall(volumes[argv[0]], filter="data")
         self.stack.stream.side_effect = extract

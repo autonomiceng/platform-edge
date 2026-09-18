@@ -66,7 +66,8 @@ def run_detached(argv: list[str], *, timeout: float, stdin=subprocess.DEVNULL,
             # This session and its process group belong to the child we spawned.
             # Killing only the CLI can leave its plugin holding our pipes open.
             try:
-                os.killpg(child.pid, signal.SIGKILL)
+                if child.returncode is None:
+                    os.killpg(child.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             child.wait()
@@ -77,7 +78,7 @@ def run_detached(argv: list[str], *, timeout: float, stdin=subprocess.DEVNULL,
 def run(argv: list[str], *, start_new_session: bool = False,
         timeout: float | None = None) -> subprocess.CompletedProcess[str]:
     # Compose startup has its own 300s health budget; allow image/startup overhead.
-    budget = timeout if timeout is not None else (360 if "up" in argv else 120)
+    budget = timeout if timeout is not None else (360 if {"up", "run"} & set(argv) else 120)
     try:
         return run_detached(argv, timeout=budget, text=True)
     except subprocess.TimeoutExpired:

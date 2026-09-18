@@ -201,3 +201,6 @@ into a fresh prefix. Check disk space in both Docker storage and the backup repo
 After a capture failure or interruption, resumption observes a 40-second settle
 window before accepting readiness, followed by its 300-second recovery budget.
 This covers a daemon stop request that completes after its CLI has already exited.
+
+On a new host, pre-pull pinned images with `docker compose pull` before bootstrap or restore;
+slow image downloads can exhaust a helper's command deadline safely before extraction.

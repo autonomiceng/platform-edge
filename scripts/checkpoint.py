@@ -230,7 +230,10 @@ def backup(stack: Stack, directory: Path) -> None:
                 except (OSError, RuntimeError, bootstrap.Refused) as error:
                     if pending is None:
                         raise
-                    print(f"Caddy resumption also failed: {error}", file=sys.stderr)
+                    try:
+                        print(f"Caddy resumption also failed: {error}", file=sys.stderr)
+                    except OSError:
+                        pass  # A broken terminal must not replace the capture failure.
         finally:
             for sig, handler in handlers.items():
                 signal.signal(sig, handler)
@@ -243,11 +246,11 @@ def backup(stack: Stack, directory: Path) -> None:
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
-    prune(directory.parent, int(stack.settings["PE_BACKUP_KEEP"]))
+    prune(directory.parent, int(stack.settings["PE_BACKUP_KEEP"]), protect=directory)
     print(json.dumps({"checkpoint": str(directory), "ca_sha256": document["ca_sha256"]}))
 
 
-def prune(repository: Path, keep: int) -> None:
+def prune(repository: Path, keep: int, protect: Path | None = None) -> None:
     if keep < 1:
         raise ValueError("PE_BACKUP_KEEP must be at least 1")
     complete = []
@@ -266,6 +269,10 @@ def prune(repository: Path, keep: int) -> None:
                 complete.append(directory)
         except (OSError, ValueError):
             continue
+    # Keep the just-published Checkpoint even after a wall-clock regression.
+    if protect in complete:
+        complete.remove(protect)
+        complete.append(protect)
     for directory in complete[:-keep]:
         shutil.rmtree(directory)
 
@@ -296,9 +303,9 @@ def restore(stack: Stack, directory: Path) -> None:
     for volume in stack.volumes:
         checked(stack.helper(volume, f"touch /state/{bootstrap.RESTORE_MARKER}", readonly=False), stack.diagnostics)
     for volume, name in zip(stack.volumes, ARTIFACTS):
-        stack.stream(stack.helper(volume, "tar -C /state -xf -", readonly=False), directory / name, True)
+        stack.stream(stack.helper(volume, "tar -C /state -xf - && sync", readonly=False), directory / name, True)
     for volume in stack.volumes:
-        checked(stack.helper(volume, f"rm /state/{bootstrap.RESTORE_MARKER}", readonly=False), stack.diagnostics)
+        checked(stack.helper(volume, f"rm /state/{bootstrap.RESTORE_MARKER} && sync", readonly=False), stack.diagnostics)
     print(json.dumps({"restored": str(directory), "ca_sha256": document["ca_sha256"],
                       "next": "Run bootstrap to start Caddy and verify TLS."}))
 
