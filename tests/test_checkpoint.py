@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import bootstrap
 import checkpoint
+import backup_drill
 
 
 class CheckpointTests(unittest.TestCase):
@@ -132,6 +133,70 @@ class CheckpointTests(unittest.TestCase):
                     checkpoint.restore(self.stack, self.source)
                 self.stack.stream.assert_not_called()
                 self.assertIn([occupied, 'entries=$(ls -A /state); test -z "$entries"'], calls)
+
+    def test_restore_pairs_each_archive_with_its_volume(self):
+        with patch.object(bootstrap, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), contextlib.redirect_stdout(io.StringIO()):
+            checkpoint.restore(self.stack, self.source)
+        self.assertEqual(len(self.stack.stream.call_args_list), 2)
+        for call, volume, name in zip(self.stack.stream.call_args_list, self.stack.volumes, checkpoint.ARTIFACTS):
+            self.assertEqual(call.args[0][0], volume)
+            self.assertEqual(call.args[1:], (self.source / name, True))
+
+    def test_restore_rejects_unsafe_archives_before_any_docker_operation(self):
+        for name, kind in [("/absolute", tarfile.REGTYPE), ("../escape", tarfile.REGTYPE), ("link", tarfile.SYMTYPE)]:
+            with tarfile.open(self.source / "edge-config.tar", "w") as archive:
+                member = tarfile.TarInfo(name)
+                member.type = kind
+                member.linkname = "../outside" if kind == tarfile.SYMTYPE else ""
+                archive.addfile(member)
+            self.document["artifacts"] = checkpoint.inventory(self.source)
+            (self.source / "manifest.json").write_text(json.dumps(self.document))
+            with self.subTest(name=name), patch.object(checkpoint, "checked") as checked:
+                with self.assertRaisesRegex(ValueError, "unsafe archive"):
+                    checkpoint.restore(self.stack, self.source)
+                checked.assert_not_called()
+                self.stack.stream.assert_not_called()
+
+    def test_resume_failure_preserves_capture_failure_and_diagnostics(self):
+        def checked(argv, diagnostics):
+            if "start" in argv: raise RuntimeError("restart diagnostics")
+            if "ps" in argv: return "running"
+            if argv[-1] == "du -sk /state": return "4 /state"
+            return ""
+        self.stack.stream.side_effect = RuntimeError("capture diagnostics")
+        errors = io.StringIO()
+        with patch.object(checkpoint, "checked", side_effect=checked), contextlib.redirect_stderr(errors):
+            with self.assertRaisesRegex(RuntimeError, "capture diagnostics"):
+                checkpoint.backup(self.stack, self.repository / "failed-capture")
+        self.assertIn("restart diagnostics", errors.getvalue())
+        self.assertFalse((self.repository / "failed-capture/manifest.json").exists())
+
+    def test_drill_cleanup_continues_and_preserves_primary_failure(self):
+        for primary in (False, True):
+            calls = []
+            def run(argv, **kwargs):
+                calls.append(argv)
+                output, error, code = "", "", 0
+                if argv[0] == "python3":
+                    output = json.dumps({"certificate": {"ca_sha256": "same", "not_after_seconds": 9999999999}})
+                elif argv[0] == "scripts/backup.sh":
+                    output = json.dumps({"ca_sha256": "same", "checkpoint": "owned-checkpoint"})
+                elif argv[0] == "scripts/destroy.sh" and primary:
+                    error, code = "primary drill failure", 1
+                elif "down" in argv:
+                    error, code = "cleanup down failure", 1
+                elif argv[:3] == ("docker", "volume", "ls") and any("down" in a for a in calls):
+                    output = "owned-data\nowned-config"
+                return subprocess.CompletedProcess(argv, code, output, error)
+            errors = io.StringIO()
+            with self.subTest(primary=primary), patch.object(backup_drill.subprocess, "run", side_effect=run), \
+                    patch.object(bootstrap, "volume_names", return_value=["owned-data", "owned-config"]), \
+                    contextlib.redirect_stderr(errors), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, "primary drill failure" if primary else "drill cleanup failed"):
+                    backup_drill.main()
+            self.assertIn(("docker", "volume", "rm", "owned-data"), calls)
+            self.assertTrue(any(a[:3] == ("docker", "network", "rm") for a in calls))
+            self.assertIn("cleanup down failure", errors.getvalue())
 
     def test_retention_prunes_only_old_complete_sets(self):
         with patch.dict(os.environ, {}, clear=True):

@@ -181,3 +181,12 @@ body, with `Cache-Control: no-store`, including failed upstream connections.
 
 See [backup and restore](backup.md) before adopting the external volume names or changing
 image pins. `down -v` is not a safe retirement workflow for old revisions.
+
+## Checkpoint settings
+
+`PE_BACKUP_DIR` selects the protected backup repository. Relative paths resolve against
+this checkout; the default is `./backups`. The directory is created if absent. Verify
+an expected mount before capture. `PE_BACKUP_KEEP` defaults to `7`, has a minimum of `1`,
+and retains that many complete Checkpoints after a successful capture and resumption.
+Incomplete sets and diagnostics are retained for operator inspection. See the
+[backup procedure](backup.md) for encryption, replication and recovery.

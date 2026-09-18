@@ -177,7 +177,7 @@ All four deploy the same way. Shared conventions are in [docs/conventions.md](do
 - [Backup, restore, CA preservation and RPO/RTO](docs/operations/backup.md)
 - [Design](docs/DESIGN.md), [vocabulary](CONTEXT.md), [decisions](docs/adr/)
 
-Run `scripts/backup.sh` for both certificate volumes and replicate the encrypted Checkpoint off-host. Read the migration instructions before upgrading from managed volumes.
+Run `scripts/backup.sh` for both Edge state volumes (`edge-data` and `edge-config`) and replicate the encrypted Checkpoint off-host. Read the migration instructions before upgrading from managed volumes.
 
 ## Development
 

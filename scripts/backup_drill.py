@@ -4,6 +4,7 @@ import json
 import os
 import re
 import signal
+import sys
 import subprocess
 import tempfile
 import time
@@ -48,23 +49,39 @@ def main():
             initial = json.loads(run("python3", "scripts/bootstrap.py", "--env-file", env_file))
             fingerprint = initial["certificate"]["ca_sha256"]
             captured = json.loads(run("scripts/backup.sh", "--env-file", env_file))
-            assert captured["ca_sha256"] == fingerprint, "Checkpoint CA differs"
+            if not (captured["ca_sha256"] == fingerprint):
+                raise AssertionError("Checkpoint CA differs")
             started = time.monotonic()
             run("scripts/destroy.sh", "--env-file", env_file, input=project + "\n")
             run("scripts/restore.sh", captured["checkpoint"], "--env-file", env_file)
             restored = json.loads(run("python3", "scripts/bootstrap.py", "--env-file", env_file))
-            assert restored["certificate"]["ca_sha256"] == fingerprint, "restored CA differs"
-            assert restored["certificate"]["not_after_seconds"] > time.time(), "TLS certificate expired"
-            print(f"BACKUP DRILL PASSED (3 checks: Checkpoint CA, restored CA, verified TLS); "
-                  f"RTO={time.monotonic() - started:.2f}s; CA SHA256={fingerprint}")
+            if not (restored["certificate"]["ca_sha256"] == fingerprint):
+                raise AssertionError("restored CA differs")
+            if not (restored["certificate"]["not_after_seconds"] > time.time()):
+                raise AssertionError("TLS certificate expired")
+            result = (f"BACKUP DRILL PASSED (3 checks: Checkpoint CA, restored CA, verified TLS); "
+                      f"RTO={time.monotonic() - started:.2f}s; CA SHA256={fingerprint}")
         finally:
             # Only resources whose names were absent at preflight belong to this run.
-            run(*dc, "down", "--remove-orphans")
-            for volume in volumes:
-                existing = run("docker", "volume", "ls", "--format", "{{.Name}}").splitlines()
-                if volume in existing:
-                    run("docker", "volume", "rm", volume)
-            run("docker", "network", "rm", env["PE_PLATFORM_NETWORK"])
+            pending = sys.exc_info()[0]
+            failures = []
+            def cleanup(*argv):
+                try:
+                    return run(*argv)
+                except (OSError, RuntimeError) as error:
+                    failures.append(str(error))
+                    print(f"cleanup failed: {error}", file=sys.stderr)
+                    return None
+            cleanup(*dc, "down", "--remove-orphans")
+            existing = cleanup("docker", "volume", "ls", "--format", "{{.Name}}")
+            if existing is not None:
+                for volume in volumes:
+                    if volume in existing.splitlines():
+                        cleanup("docker", "volume", "rm", volume)
+            cleanup("docker", "network", "rm", env["PE_PLATFORM_NETWORK"])
+            if failures and pending is None:
+                raise RuntimeError("drill cleanup failed; inspect the reported resources")
+        print(result)
 
 
 if __name__ == "__main__":

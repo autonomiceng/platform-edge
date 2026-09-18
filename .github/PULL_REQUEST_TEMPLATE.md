@@ -6,7 +6,9 @@ Describe the problem and resulting behavior.
 
 - [ ] `scripts/validate.sh`
 - [ ] `python3 -m unittest discover -s tests`
-- [ ] `scripts/smoke.sh` (required for any image or compose change)
+- [ ] `scripts/smoke.sh` (required for any image, config or bootstrap change)
+
+- [ ] `scripts/backup-drill.sh` (required for any backup or recovery change)
 
 ## Experience Change
 

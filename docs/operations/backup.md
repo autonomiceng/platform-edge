@@ -42,8 +42,7 @@ Retain the old volumes until a restore drill has passed; never run the old revis
 
 ## Capture and restore
 
-Set `PE_BACKUP_DIR` in `.env` to a protected backup repository. Relative paths resolve
-against the checkout; the default is `./backups`. The directory is created if absent.
+Configure the [Checkpoint settings](ingress.md#checkpoint-settings) in `.env`.
 If it is a mounted repository, verify the mount before each run: the script cannot
 distinguish a missing mount from an ordinary directory. Encrypt at rest, replicate
 off-host over encrypted transport, and verify the replica. The tools do not implement
@@ -77,9 +76,8 @@ no backup is running. Capture refuses when the backup filesystem has less free s
 than the estimated volume size. Disk-full or archive errors fail the command and resume
 Caddy; alert on free space and the age of the last complete, replicated Checkpoint.
 
-After a successful capture and service resumption, `PE_BACKUP_KEEP` (default `7`,
-minimum `1`) retains the newest complete Checkpoint sets and prunes older complete
-sets under `PE_BACKUP_DIR`. Incomplete sets, diagnostics and unrelated directories
+After a successful capture and service resumption, the configured retention keeps
+the newest complete Checkpoint sets and prunes older complete sets in the backup repository. Incomplete sets, diagnostics and unrelated directories
 are left untouched. Copy pre-upgrade Checkpoints outside this repository to retain
 them independently. Command stderr is saved only in a 0600 file under
 `PE_BACKUP_DIR/.diagnostics` (directory mode 0700); errors report the file path,

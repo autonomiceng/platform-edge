@@ -144,8 +144,14 @@ def backup(stack: Stack, directory: Path) -> None:
         commit = checked(["git", "-C", str(ROOT), "rev-parse", "HEAD"], stack.diagnostics)
         document = manifest(directory, stack.images, commit)
     finally:
+        pending = sys.exc_info()[0]
         if running:
-            checked(stack.dc + ["start", "caddy"], stack.diagnostics)
+            try:
+                checked(stack.dc + ["start", "caddy"], stack.diagnostics)
+            except (OSError, RuntimeError) as error:
+                if pending is None:
+                    raise
+                print(f"Caddy resumption also failed: {error}", file=sys.stderr)
     # Publish completion only after capture and service resumption succeed.
     with (directory / "manifest.json").open("x") as handle:
         json.dump(document, handle, indent=2)

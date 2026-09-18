@@ -52,17 +52,22 @@ def main():
         # Retain status explicitly: curl --fail alone also accepts redirects.
         raw = checked(argv + ["-w", "\n%{http_code}", f"{scheme}://{host}:{port}{path}"])
         body, status = raw.rsplit("\n", 1)
-        assert status == "200", f"{host}{path}: expected 200, got {status}"
-        assert "|" not in body and "<html" not in body.lower(), f"{host}: stub or HTML, not health"
+        if not (status == "200"):
+            raise AssertionError(f"{host}{path}: expected 200, got {status}")
+        if not ("|" not in body and "<html" not in body.lower()):
+            raise AssertionError(f"{host}: stub or HTML, not health")
         # Gateway public health preserves status but suppresses LiteLLM and Langfuse bodies.
         if app in {"litellm", "langfuse"}:
-            assert body == "", f"{host}: public health must have an empty body"
+            if not (body == ""):
+                raise AssertionError(f"{host}: public health must have an empty body")
         if app in {"backplane", "grafana"}:
             health = json.loads(body)
             if app == "grafana":
-                assert health.get("database") == "ok", f"{host}: database not healthy"
+                if not (health.get("database") == "ok"):
+                    raise AssertionError(f"{host}: database not healthy")
             else:
-                assert str(health.get("status", "")).lower() == "ready", f"{host}: unexpected health"
+                if not (str(health.get("status", "")).lower() == "ready"):
+                    raise AssertionError(f"{host}: unexpected health")
         print(f"ok: {scheme} {host}{path}: real {app} health")
     return 0
 
