@@ -192,17 +192,31 @@ def backup(stack: Stack, directory: Path) -> None:
                     deadline = settle_until + 300
                     def remaining():
                         return max(0, min(20, deadline - time.monotonic()))
+                    last_stderr = b""
                     def detached(argv):
-                        return bootstrap.run(argv, start_new_session=True, timeout=remaining())
+                        nonlocal last_stderr
+                        try:
+                            result = bootstrap.run(argv, start_new_session=True, timeout=remaining())
+                        except subprocess.TimeoutExpired as error:
+                            last_stderr = error.stderr or b""
+                            raise
+                        if result.returncode:
+                            last_stderr = result.stderr
+                        return result
+                    def resume_command(argv):
+                        result = detached(argv)
+                        if result.returncode:
+                            raise RuntimeError("Caddy resumption command failed")
+                        return result.stdout.strip()
                     is_running = stack.dc + ["ps", "--status", "running", "-q", "caddy"]
                     last = "Caddy is not running"
                     while time.monotonic() < deadline:
                         try:
-                            checked(stack.dc + ["start", "caddy"], stack.diagnostics, timeout=remaining())
-                            if checked(is_running, stack.diagnostics, timeout=remaining()):
+                            resume_command(stack.dc + ["start", "caddy"])
+                            if resume_command(is_running):
                                 # An in-flight stop can finish after start was a no-op.
                                 bootstrap.wait_ready(stack.settings, ROOT, stack.env_file, detached, remaining())
-                                if (checked(is_running, stack.diagnostics, timeout=remaining())
+                                if (resume_command(is_running)
                                         and settle_until <= time.monotonic() < deadline):
                                     break
                             last = "Caddy is not running"
@@ -212,7 +226,7 @@ def backup(stack: Stack, directory: Path) -> None:
                             last = getattr(error, "detail", "") or str(error)
                         time.sleep(min(3, remaining()))
                     else:
-                        raise RuntimeError(f"Caddy did not resume within 300 seconds: {last}")
+                        command_failed(last_stderr, stack.diagnostics, reason=f"Caddy did not resume within 300 seconds: {last}")
                 except (OSError, RuntimeError, bootstrap.Refused) as error:
                     if pending is None:
                         raise

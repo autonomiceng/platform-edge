@@ -76,10 +76,14 @@ def run_detached(argv: list[str], *, timeout: float, stdin=subprocess.DEVNULL,
 
 def run(argv: list[str], *, start_new_session: bool = False,
         timeout: float | None = None) -> subprocess.CompletedProcess[str]:
-    if start_new_session:
-        return run_detached(argv, timeout=120 if timeout is None else timeout, text=True)
-    return subprocess.run(argv, text=True, capture_output=True, check=False,
-                          start_new_session=start_new_session, timeout=timeout)
+    # Compose startup has its own 300s health budget; allow image/startup overhead.
+    budget = timeout if timeout is not None else (360 if "up" in argv else 120)
+    try:
+        return run_detached(argv, timeout=budget, text=True)
+    except subprocess.TimeoutExpired:
+        if start_new_session:
+            raise
+        raise Refused("docker_timeout", "Docker command exceeded its deadline") from None
 
 
 def read_env(path: Path) -> dict[str, str]:

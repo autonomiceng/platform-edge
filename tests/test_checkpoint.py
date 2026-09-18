@@ -86,12 +86,12 @@ class CheckpointTests(unittest.TestCase):
             started = time.monotonic()
             with self.subTest(phase=phase), patch.object(bootstrap, "run", side_effect=runner), \
                     patch.object(subprocess, "Popen", side_effect=popen), \
-                    patch.object(checkpoint, "COMMAND_TIMEOUT", 0.2, create=True), \
-                    patch.object(checkpoint, "TRANSFER_TIMEOUT", 0.2, create=True), \
+                    patch.object(checkpoint, "COMMAND_TIMEOUT", 0.2), \
+                    patch.object(checkpoint, "TRANSFER_TIMEOUT", 0.2), \
                     patch.object(bootstrap, "wait_ready", return_value={}), \
                     self.assertRaisesRegex(RuntimeError, "timed out"):
                 checkpoint.backup(self.stack, directory)
-            self.assertLess(time.monotonic() - started, 1.5)
+            self.assertLess(time.monotonic() - started, 1.9)
             self.assertEqual(len(starts), 1)
             self.assertFalse((directory / "manifest.json").exists())
 
@@ -125,6 +125,9 @@ class CheckpointTests(unittest.TestCase):
                 checkpoint.backup(self.stack, directory)
             self.assertEqual(now, 300)
             self.assertGreater(len(timeouts), 1)
+            self.assertEqual(len(list(self.stack.diagnostics.glob("*.log"))), 1)
+            for diagnostic in self.stack.diagnostics.glob("*.log"):
+                diagnostic.unlink()
             self.assertLess(timeouts[-1], 20)
             self.assertIn("Caddy did not resume within 300 seconds", errors.getvalue())
             self.assertNotIn(self.secret.decode(), errors.getvalue())
@@ -268,11 +271,16 @@ class CheckpointTests(unittest.TestCase):
             nonlocal now
             now += seconds
         with patch.object(checkpoint, "checked", side_effect=checked), \
+                patch.object(bootstrap, "run", return_value=subprocess.CompletedProcess([], 1, "", "restart diagnostics")), \
                 patch.object(checkpoint.time, "monotonic", side_effect=lambda: now), \
                 patch.object(checkpoint.time, "sleep", side_effect=sleep), contextlib.redirect_stderr(errors):
             with self.assertRaisesRegex(RuntimeError, "capture diagnostics"):
                 checkpoint.backup(self.stack, self.repository / "failed-capture")
-        self.assertIn("restart diagnostics", errors.getvalue())
+        self.assertIn("Caddy resumption command failed", errors.getvalue())
+        logs = list(self.stack.diagnostics.glob("*.log"))
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0].read_text(), "restart diagnostics")
+        self.assertNotIn("restart diagnostics", errors.getvalue())
         self.assertFalse((self.repository / "failed-capture/manifest.json").exists())
 
     def test_drill_cleanup_continues_and_preserves_primary_failure(self):

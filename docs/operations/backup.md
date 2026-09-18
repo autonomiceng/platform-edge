@@ -105,8 +105,8 @@ CLI children run in new sessions so terminal signals reach the backup's deferred
 handler. This does not protect them from a cgroup-wide kill. A systemd service running
 the backup must use `KillMode=mixed`: the initial SIGTERM reaches the main process,
 while the final forced kill still cleans up the entire cgroup. Set `TimeoutStopSec`
-to at least `2160s` (36 minutes): the full 1800-second transfer deadline, 300-second
-resumption budget and 60 seconds of cleanup margin. Increase it for measured slow
+to at least `2200s` (about 37 minutes): the full 1800-second transfer deadline, the
+40-second settle window, 300-second resumption budget and 60 seconds of cleanup margin. Increase it for measured slow
 storage/cleanup; if execution deadlines change, increase this allowance accordingly.
 A forced kill after that timeout
 cannot guarantee resumption; alert and verify Caddy manually.

@@ -17,6 +17,17 @@ bootstrap = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bootstrap)
 
 
+class CommandDeadlineTests(unittest.TestCase):
+    def test_bootstrap_timeout_is_sanitized_and_startup_has_a_larger_budget(self):
+        for argv, budget in [(["docker", "info"], 120), (["docker", "compose", "up", "--wait"], 360)]:
+            with self.subTest(argv=argv), patch.object(bootstrap, "run_detached", side_effect=subprocess.TimeoutExpired(argv, budget, stderr="private-token")) as child:
+                with self.assertRaises(bootstrap.Refused) as caught:
+                    bootstrap.run(argv)
+                self.assertEqual(caught.exception.code, "docker_timeout")
+                self.assertNotIn("private-token", str(caught.exception))
+                self.assertEqual(child.call_args.kwargs["timeout"], budget)
+
+
 class FakeRunner:
     def __init__(self, *, containers=(), network_exists=True):
         self.containers = containers
