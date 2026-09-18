@@ -1,4 +1,4 @@
-"""Bootstrap contract, four tests; the runner never calls Docker."""
+"""Bootstrap contract; the runner never calls Docker."""
 
 import contextlib
 import importlib.util
@@ -29,10 +29,34 @@ class FakeRunner:
             return subprocess.CompletedProcess(argv, 0, "\n".join(map(json.dumps, self.containers)), "")
         if argv[:3] == ["docker", "network", "inspect"]:
             return subprocess.CompletedProcess(argv, 0 if self.network_exists else 1, "", "")
+        if "run" in argv:
+            return subprocess.CompletedProcess(argv, 0, "clean\n", "")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_state_check_distinguishes_restore_marker_from_execution_failure(self):
+        for code, output, expected in ((1, "", "state_check_failed"),
+                                       (0, "", "state_check_failed"),
+                                       (1, "clean\n", "state_check_failed"),
+                                       (0, "compose message\nmarker\n", "restore_incomplete")):
+            with self.subTest(code=code, output=output), tempfile.TemporaryDirectory() as directory:
+                calls = []
+                def runner(argv):
+                    calls.append(argv)
+                    if "run" in argv:
+                        return subprocess.CompletedProcess(argv, code, output, "daemon failure" if code else "")
+                    return subprocess.CompletedProcess(argv, 0, "", "")
+                with patch.dict(os.environ, {}, clear=True), \
+                        patch.object(bootstrap.shutil, "which", return_value="docker"), \
+                        patch.object(bootstrap, "wait_ready", return_value={}), \
+                        self.assertRaises(bootstrap.Refused) as caught:
+                    bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env")], runner)
+                self.assertEqual(caught.exception.code, expected)
+                self.assertFalse(any("up" in argv for argv in calls))
+                if expected == "state_check_failed":
+                    self.assertNotIn("fresh prefix", caught.exception.detail)
+
     def test_render_writes_only_env(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
             env = Path(directory) / ".env"

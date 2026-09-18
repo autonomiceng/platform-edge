@@ -82,6 +82,12 @@ cat > "$work/stub.caddy" <<'CADDY'
 	header X-Smoke-Forwarded-For {http.request.header.X-Forwarded-For}
 	header X-Smoke-Forwarded-Host {http.request.header.X-Forwarded-Host}
 	header X-Smoke-Authorization {http.request.header.Authorization}
+	# Probe responses suppress upstream headers, so leaked credentials must also fail status.
+	@probe_credentials {
+		header X-Smoke-Probe true
+		header Authorization *
+	}
+	respond @probe_credentials 401
 	respond "{$STUB_ALIAS}|{host}|{http.request.header.X-Forwarded-Proto}"
 }
 CADDY
@@ -175,10 +181,14 @@ fi
 for path in gateway backplane observability; do
   code=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -sS \
     --resolve "localhost:$PE_HTTPS_PORT:127.0.0.1" -H 'Host: localhost' \
+    -H 'X-Smoke-Probe: true' -H 'Authorization: Bearer smoke-operator-token' \
     -D "$work/headers" -o "$work/body" -w '%{http_code}' "https://localhost:$PE_HTTPS_PORT/health/$path")
   [ "$code" = 200 ] && [ ! -s "$work/body" ] || fail "$path health leaked a body or wrong status"
   grep -iq '^Cache-Control: no-store' "$work/headers" || fail "$path health can be cached"
-  ok "$path: empty uncached probe"
+  if grep -iq '^X-Smoke-Authorization:.*smoke-operator-token' "$work/headers"; then
+    fail "$path health retained Authorization"
+  fi
+  ok "$path: empty uncached probe strips Authorization"
 done
 curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -fsS \
   --resolve "localhost:$PE_HTTPS_PORT:127.0.0.1" "https://localhost:$PE_HTTPS_PORT/metrics" > "$work/metrics"

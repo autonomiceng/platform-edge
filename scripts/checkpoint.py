@@ -21,21 +21,27 @@ import bootstrap
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACTS = ("edge-data.tar", "edge-config.tar")
 CA_PATH = "caddy/pki/authorities/local/root.crt"
+COMMAND_TIMEOUT = 120
+TRANSFER_TIMEOUT = 1800
 
 
-def command_failed(stderr: str | bytes, diagnostics: Path) -> None:
+def command_failed(stderr: str | bytes, diagnostics: Path, *, reason: str = "command failed") -> None:
     diagnostics.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(diagnostics, 0o700)
     path = diagnostics / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + ".log")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as handle:
         handle.write(stderr.encode() if isinstance(stderr, str) else stderr)
-    raise RuntimeError(f"command failed; diagnostics: {path}")
+    raise RuntimeError(f"{reason}; diagnostics: {path}")
 
 
-def checked(argv: list[str], diagnostics: Path) -> str:
+def checked(argv: list[str], diagnostics: Path, *, timeout: float | None = None) -> str:
     # Terminal interrupts must reach our handler, not kill a stop/start CLI mid-operation.
-    result = bootstrap.run(argv, start_new_session=True)
+    timeout = COMMAND_TIMEOUT if timeout is None else timeout
+    try:
+        result = bootstrap.run(argv, start_new_session=True, timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        command_failed(error.stderr or b"", diagnostics, reason=f"command timed out after {timeout:g} seconds")
     if result.returncode:
         command_failed(result.stderr, diagnostics)
     return result.stdout.strip()
@@ -121,9 +127,13 @@ class Stack:
 
     def stream(self, argv: list[str], path: Path, restore: bool = False) -> None:
         with path.open("rb" if restore else "xb") as handle:
-            result = subprocess.run(argv, stdin=handle if restore else subprocess.DEVNULL,
-                                    stdout=subprocess.DEVNULL if restore else handle,
-                                    stderr=subprocess.PIPE, check=False, start_new_session=True)
+            try:
+                result = bootstrap.run_detached(argv, stdin=handle if restore else subprocess.DEVNULL,
+                                                stdout=subprocess.DEVNULL if restore else handle,
+                                                timeout=TRANSFER_TIMEOUT)
+            except subprocess.TimeoutExpired as error:
+                command_failed(error.stderr or b"", self.diagnostics,
+                               reason=f"transfer timed out after {TRANSFER_TIMEOUT:g} seconds")
             if result.returncode:
                 command_failed(result.stderr, self.diagnostics)
             if not restore:
@@ -137,6 +147,11 @@ def backup(stack: Stack, directory: Path) -> None:
     dirty = bool(checked(["git", "-C", str(ROOT), "status", "--porcelain"], stack.diagnostics))
     for volume in stack.volumes:
         checked(["docker", "volume", "inspect", volume], stack.diagnostics)
+        marker = checked(stack.helper(volume,
+                         f"if test -e /state/{bootstrap.RESTORE_MARKER}; then echo marker; "
+                         "else ls /state >/dev/null; fi"), stack.diagnostics)
+        if marker:
+            raise ValueError(f"restore marker present in {volume}")
     expected = 0
     for volume in stack.volumes:
         size = checked(stack.helper(volume, "du -sk /state"), stack.diagnostics).split()
@@ -161,6 +176,8 @@ def backup(stack: Stack, directory: Path) -> None:
         if interrupted:
             raise RuntimeError("interrupted; resuming Caddy if it was running")
         stack.require_stopped()
+        if interrupted:
+            raise RuntimeError("interrupted; resuming Caddy if it was running")
         for volume, name in zip(stack.volumes, ARTIFACTS):
             stack.stream(stack.helper(volume, "tar -C /state -cf - ."), directory / name)
             if interrupted:
@@ -170,15 +187,30 @@ def backup(stack: Stack, directory: Path) -> None:
         try:
             if running:
                 try:
-                    deadline = time.monotonic() + 120
-                    while True:
-                        checked(stack.dc + ["start", "caddy"], stack.diagnostics)
-                        if checked(stack.dc + ["ps", "--status", "running", "-q", "caddy"], stack.diagnostics):
-                            break
-                        if time.monotonic() >= deadline:
-                            raise RuntimeError("Caddy did not resume within 120 seconds")
-                        time.sleep(3)
-                    bootstrap.wait_ready(stack.settings, ROOT, stack.env_file)
+                    deadline = time.monotonic() + 300
+                    def remaining():
+                        return max(0, min(20, deadline - time.monotonic()))
+                    def detached(argv):
+                        return bootstrap.run(argv, start_new_session=True, timeout=remaining())
+                    is_running = stack.dc + ["ps", "--status", "running", "-q", "caddy"]
+                    last = "Caddy is not running"
+                    while time.monotonic() < deadline:
+                        try:
+                            checked(stack.dc + ["start", "caddy"], stack.diagnostics, timeout=remaining())
+                            if checked(is_running, stack.diagnostics, timeout=remaining()):
+                                # An in-flight stop can finish after start was a no-op.
+                                bootstrap.wait_ready(stack.settings, ROOT, stack.env_file, detached, remaining())
+                                if (checked(is_running, stack.diagnostics, timeout=remaining())
+                                        and time.monotonic() < deadline):
+                                    break
+                            last = "Caddy is not running"
+                        except subprocess.TimeoutExpired:
+                            last = "Caddy resumption command timed out"
+                        except (OSError, RuntimeError, bootstrap.Refused) as error:
+                            last = getattr(error, "detail", "") or str(error)
+                        time.sleep(min(3, remaining()))
+                    else:
+                        raise RuntimeError(f"Caddy did not resume within 300 seconds: {last}")
                 except (OSError, RuntimeError, bootstrap.Refused) as error:
                     if pending is None:
                         raise
@@ -238,7 +270,11 @@ def restore(stack: Stack, directory: Path) -> None:
     for volume in stack.volumes:
         checked(["docker", "volume", "create", volume], stack.diagnostics)
     for volume in stack.volumes:
-        result = bootstrap.run(stack.helper(volume, 'entries=$(ls -A /state); test -z "$entries"'))
+        try:
+            result = bootstrap.run(stack.helper(volume, 'entries=$(ls -A /state); test -z "$entries"'),
+                                   start_new_session=True, timeout=COMMAND_TIMEOUT)
+        except subprocess.TimeoutExpired as error:
+            command_failed(error.stderr or b"", stack.diagnostics, reason="restore state check timed out")
         if result.returncode:
             raise ValueError(f"restore refused: non-empty or unreadable volume {volume}")
     for volume in stack.volumes:
@@ -287,7 +323,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     def interrupted(signum, frame):
-        raise RuntimeError("interrupted; resuming Caddy if it was running")
+        raise RuntimeError("interrupted")
 
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGHUP, interrupted)

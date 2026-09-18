@@ -66,11 +66,33 @@ without Git metadata is refused before any outage. For another backup account, a
 Git ownership/trust explicitly for this checkout before scheduling it.
 
 Backup stops Caddy, verifies neither volume has a running consumer, and streams a tar
-of each volume. There is a brief ingress outage. It resumes Caddy if it was running,
+of each volume. Before the outage it checks both volumes for restore markers and
+refuses an incomplete restore or a failed state check. There is a brief ingress outage.
+It resumes Caddy if it was running,
 including on errors or catchable interruptions. SIGTERM, SIGHUP and SIGINT are deferred
-until an active transfer and service resumption finish. Resumption retries start until
-the container is running, then verifies HTTP or TLS readiness using bootstrap's probe.
-A failed readiness check fails capture and leaves its evidence incomplete. Hashing and
+until an active transfer and service resumption finish. For up to 300 seconds, resumption
+retries start, HTTP or TLS readiness, and a final running check together. Readiness retry
+windows and resumption CLI timeouts are capped at 20 seconds and the remaining budget.
+Other Checkpoint commands have a 120-second child execution deadline, allowing the
+normal 30-second Caddy stop grace period. Each archive capture or extraction has a
+separate 1800-second (30-minute) deadline. On timeout the tool sends SIGKILL only to
+the process group created for that child, then waits to reap the child before proceeding
+to resumption. This includes Compose plugin children that may hold pipes open.
+Timeouts fail the operation, preserve incomplete evidence, and store captured stderr
+in the protected diagnostics directory.
+
+To abort a backup, send SIGTERM, SIGHUP or SIGINT to its main process. The signal is
+recorded while the current stop, pre-transfer checks or transfer completes or times
+out; it prevents further archive transfers and does not interrupt resumption. Repeated
+signals do not shorten those deadlines. An active transfer can therefore take up to
+30 minutes to release the child, followed by the five-minute resumption retry budget.
+These are child execution limits, not guarantees against kernel-level I/O stalls or
+blocked filesystem sync. Killing a Docker CLI also does not cancel an already dispatched
+daemon request or guarantee removal of its helper container. After a timeout, verify
+Caddy and inspect any remaining helper containers before retrying; preserve partial
+restore volumes and their markers.
+
+Failure to resume fails capture and leaves its evidence incomplete. Hashing and
 archive inspection run after resumption. A forced kill or host loss cannot run
 cleanup; inspect incomplete directories and start Caddy manually. `manifest.json` is
 written last, after successful resumption, and contains:
@@ -78,6 +100,16 @@ written last, after successful resumption, and contains:
 - UTC capture completion, Git commit, `git_dirty` boolean and full image pins;
 - SHA-256 and size of both tar artifacts;
 - `caddy_stopped: true` and the DER SHA-256 internal CA root fingerprint, or null.
+
+CLI children run in new sessions so terminal signals reach the backup's deferred
+handler. This does not protect them from a cgroup-wide kill. A systemd service running
+the backup must use `KillMode=mixed`: the initial SIGTERM reaches the main process,
+while the final forced kill still cleans up the entire cgroup. Set `TimeoutStopSec`
+to at least `2160s` (36 minutes): the full 1800-second transfer deadline, 300-second
+resumption budget and 60 seconds of cleanup margin. Increase it for measured slow
+storage/cleanup; if execution deadlines change, increase this allowance accordingly.
+A forced kill after that timeout
+cannot guarantee resumption; alert and verify Caddy manually.
 
 Git fields describe the checkout at preflight. They do not attest which file contents
 the running Caddy loaded. Image pins and volume mounts are checked against the container;
@@ -110,6 +142,9 @@ and refuses populated volumes; it never clears a target to make restoration succ
 Before extraction it places `.pe-restore-incomplete` in both volumes, removing the
 markers only after both extractions succeed. Bootstrap refuses to start if either
 marker remains. Do not remove markers to bypass this refusal or start Compose directly.
+`restore_incomplete` means the helper found a marker. `state_check_failed` means the
+helper could not confirm the state, for example because Docker or the image was
+unavailable. Diagnose that failure and retry without replacing healthy volumes.
 It restores both archives and leaves Caddy stopped. On a new host, restore first, then run bootstrap to create the
 network, start Caddy and verify TLS. A failed restore leaves partial data for diagnosis;
 retry into another empty prefix. Keep the original Checkpoint until recovery is verified.
@@ -146,12 +181,19 @@ volumes, and verifies the CA fingerprint and HTTPS readiness. It removes its dis
 resources. Run monthly and after backup, Compose or image-pin changes.
 
 ```cron
-0 2 * * * cd /opt/platform-edge && scripts/backup.sh >> /var/log/platform-edge-backup.log 2>&1
+7 2 * * * cd /opt/platform-edge && scripts/backup.sh >> /var/log/platform-edge-backup.log 2>&1
 */5 * * * * cd /opt/platform-edge && python3 scripts/bootstrap.py --probe-only >> /var/log/platform-edge-readiness.log 2>&1
 ```
 
 `--probe-only` refreshes the leaf expiry metric without restarting Caddy. Alert on probe
-failure or stale observations. Before upgrades, capture a Checkpoint, validate and
+failure or stale observations. The schedules avoid simultaneous starts, but a long
+capture or probe can still overlap. Locks fail immediately so overlapping maintenance
+is visible; backup does not silently queue behind another operation. A
+`bootstrap_already_running` probe result can be explained by a confirmed active capture.
+Correlate it with backup completion and require the next probe to succeed; do not
+blanket-ignore probe failures or stale observations. A backup lock failure requires a
+retry after the competing operation finishes, and remains a failed capture for alerting.
+Before upgrades, capture a Checkpoint, validate and
 smoke the candidate, then change pins. Roll back with preserved volumes only when the
 older Caddy supports that state; otherwise restore the matching Checkpoint and pins
 into a fresh prefix. Check disk space in both Docker storage and the backup repository.

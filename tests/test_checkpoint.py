@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -52,6 +53,80 @@ class CheckpointTests(unittest.TestCase):
         self.document = checkpoint.manifest(self.source, self.stack.images, "commit")
         (self.source / "manifest.json").write_text(json.dumps(self.document))
 
+    def test_hung_stop_or_transfer_is_reaped_before_resumption(self):
+        real_run = bootstrap.run
+        real_popen = subprocess.Popen
+        for phase in ("stop", "transfer"):
+            children = []
+            starts = []
+            # The descendant holds stderr open after its parent dies. Killing only
+            # the direct child still blocks communicate until the descendant exits.
+            command = [sys.executable, "-c",
+                       "import os, signal, subprocess, sys, time; "
+                       "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(2)']); "
+                       "os.kill(os.getppid(), signal.SIGTERM); time.sleep(2); sys.exit(1)"]
+            def popen(*args, **kwargs):
+                child = real_popen(*args, **kwargs)
+                children.append(child)
+                return child
+            def runner(argv, **kwargs):
+                if "stop" in argv and phase == "stop":
+                    return real_run(command, **kwargs)
+                if "start" in argv:
+                    self.assertTrue(children)
+                    self.assertTrue(all(child.returncode == -signal.SIGKILL for child in children))
+                    starts.append(argv)
+                output = "container" if "ps" in argv else "4 /state" if argv[-1] == "du -sk /state" else ""
+                return subprocess.CompletedProcess(argv, 0, output, "")
+            self.stack.stream.side_effect = lambda argv, path: checkpoint.Stack.stream(self.stack, command, path)
+            directory = self.repository / ("hung-" + phase)
+            started = time.monotonic()
+            with self.subTest(phase=phase), patch.object(bootstrap, "run", side_effect=runner), \
+                    patch.object(subprocess, "Popen", side_effect=popen), \
+                    patch.object(checkpoint, "COMMAND_TIMEOUT", 0.2, create=True), \
+                    patch.object(checkpoint, "TRANSFER_TIMEOUT", 0.2, create=True), \
+                    patch.object(bootstrap, "wait_ready", return_value={}), \
+                    self.assertRaisesRegex(RuntimeError, "timed out"):
+                checkpoint.backup(self.stack, directory)
+            self.assertLess(time.monotonic() - started, 1.5)
+            self.assertEqual(len(starts), 1)
+            self.assertFalse((directory / "manifest.json").exists())
+
+    def test_resumption_timeouts_exhaust_budget_without_masking_capture_failure(self):
+        for phase in ("start", "readiness"):
+            now = 0
+            timeouts = []
+            def sleep(seconds):
+                nonlocal now
+                now += seconds
+            def runner(argv, **kwargs):
+                if ("start" in argv and phase == "start") or "exec" in argv:
+                    timeout = kwargs["timeout"]
+                    self.assertGreater(timeout, 0)
+                    self.assertLessEqual(timeout, 20)
+                    timeouts.append(timeout)
+                    sleep(timeout)
+                    raise subprocess.TimeoutExpired(argv, timeout, stderr=self.secret)
+                output = "container" if "ps" in argv else "4 /state" if argv[-1] == "du -sk /state" else ""
+                return subprocess.CompletedProcess(argv, 0, output, "")
+            def ready(settings, root, env_file, runner, timeout):
+                runner(self.stack.dc + ["exec", "-T", "caddy", "cat", "root.crt"])
+            self.stack.stream.side_effect = RuntimeError("capture failed")
+            errors = io.StringIO()
+            directory = self.repository / ("exhausted-" + phase)
+            with self.subTest(phase=phase), patch.object(bootstrap, "run", side_effect=runner), \
+                    patch.object(bootstrap, "wait_ready", side_effect=ready), \
+                    patch.object(checkpoint.time, "monotonic", side_effect=lambda: now), \
+                    patch.object(checkpoint.time, "sleep", side_effect=sleep), \
+                    contextlib.redirect_stderr(errors), self.assertRaisesRegex(RuntimeError, "capture failed"):
+                checkpoint.backup(self.stack, directory)
+            self.assertEqual(now, 300)
+            self.assertGreater(len(timeouts), 1)
+            self.assertLess(timeouts[-1], 20)
+            self.assertIn("Caddy did not resume within 300 seconds", errors.getvalue())
+            self.assertNotIn(self.secret.decode(), errors.getvalue())
+            self.assertFalse((directory / "manifest.json").exists())
+
     def test_capture_manifest_has_ca_fingerprint_and_no_secrets(self):
         calls = []
 
@@ -88,7 +163,7 @@ class CheckpointTests(unittest.TestCase):
             with self.subTest(stream=stream):
                 result = subprocess.CompletedProcess([], 1, "", self.secret if stream else self.secret.decode())
                 with patch.object(bootstrap, "run", return_value=result), \
-                        patch.object(checkpoint.subprocess, "run", return_value=result), \
+                        patch.object(bootstrap, "run_detached", return_value=result), \
                         self.assertRaises(RuntimeError) as caught:
                     if stream:
                         checkpoint.Stack.stream(self.stack, ["transfer"], self.repository / "failed.tar")
@@ -178,14 +253,20 @@ class CheckpointTests(unittest.TestCase):
                 self.stack.stream.assert_not_called()
 
     def test_resume_failure_preserves_capture_failure_and_diagnostics(self):
-        def checked(argv, diagnostics):
+        def checked(argv, diagnostics, **kwargs):
             if "start" in argv: raise RuntimeError("restart diagnostics")
             if "ps" in argv: return "running"
             if argv[-1] == "du -sk /state": return "4 /state"
             return ""
         self.stack.stream.side_effect = RuntimeError("capture diagnostics")
         errors = io.StringIO()
-        with patch.object(checkpoint, "checked", side_effect=checked), contextlib.redirect_stderr(errors):
+        now = 0
+        def sleep(seconds):
+            nonlocal now
+            now += seconds
+        with patch.object(checkpoint, "checked", side_effect=checked), \
+                patch.object(checkpoint.time, "monotonic", side_effect=lambda: now), \
+                patch.object(checkpoint.time, "sleep", side_effect=sleep), contextlib.redirect_stderr(errors):
             with self.assertRaisesRegex(RuntimeError, "capture diagnostics"):
                 checkpoint.backup(self.stack, self.repository / "failed-capture")
         self.assertIn("restart diagnostics", errors.getvalue())
@@ -296,11 +377,140 @@ class CheckpointTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, output, "")
         self.stack.stream.side_effect = lambda argv, path: shutil.copyfile(self.source / path.name, path)
         directory = self.repository / "unhealthy"
+        now = 0
+        def sleep(seconds):
+            nonlocal now
+            now += seconds
+        def unhealthy(settings, root, env_file, runner, timeout):
+            self.assertGreater(timeout, 0)
+            self.assertLessEqual(timeout, 20)
+            sleep(timeout)
+            raise bootstrap.Refused("not_ready")
         with patch.object(bootstrap, "run", side_effect=quiet_runner), \
-                patch.object(bootstrap, "wait_ready", side_effect=bootstrap.Refused("not_ready")), \
-                self.assertRaises(bootstrap.Refused):
+                patch.object(bootstrap, "wait_ready", side_effect=unhealthy), \
+                patch.object(checkpoint.time, "monotonic", side_effect=lambda: now), \
+                patch.object(checkpoint.time, "sleep", side_effect=sleep), \
+                self.assertRaisesRegex(RuntimeError, "Caddy did not resume within 300 seconds: not_ready"):
             checkpoint.backup(self.stack, directory)
+        self.assertEqual(now, 300)
         self.assertFalse((directory / "manifest.json").exists())
+
+    def test_late_stop_retries_readiness_and_post_readiness_running(self):
+        for stopped_at in ("readiness", "post-readiness"):
+            running, starts, polls = True, 0, 0
+            def runner(argv, **kwargs):
+                nonlocal running, starts, polls
+                if "stop" in argv:
+                    return subprocess.CompletedProcess(argv, 1, "", "stop CLI failed after dispatch")
+                if "start" in argv:
+                    starts += 1
+                    running = True
+                if "ps" in argv:
+                    polls += 1
+                    if polls == 3 and stopped_at == "post-readiness":
+                        running = False
+                    output = "container" if running else ""
+                else:
+                    output = "4 /state" if argv[-1] == "du -sk /state" else ""
+                return subprocess.CompletedProcess(argv, 0, output, "")
+            def ready(*args, **kwargs):
+                nonlocal running
+                if starts == 1 and stopped_at == "readiness":
+                    running = False
+                    raise bootstrap.Refused("not_ready", "late stop completed")
+                return {}
+            directory = self.repository / stopped_at
+            errors = io.StringIO()
+            with self.subTest(stopped_at=stopped_at), patch.object(bootstrap, "run", side_effect=runner), \
+                    patch.object(bootstrap, "wait_ready", side_effect=ready), \
+                    patch.object(checkpoint.time, "sleep"), contextlib.redirect_stderr(errors), \
+                    self.assertRaisesRegex(RuntimeError, "command failed"):
+                checkpoint.backup(self.stack, directory)
+            self.assertTrue(running)
+            self.assertEqual(starts, 2)
+            self.assertEqual(errors.getvalue(), "")
+            self.assertFalse((directory / "manifest.json").exists())
+
+    def test_transient_start_failure_retries_and_completes_capture(self):
+        starts = 0
+        running = True
+        def runner(argv, **kwargs):
+            nonlocal starts, running
+            if "stop" in argv:
+                running = False
+            if "start" in argv:
+                starts += 1
+                if starts == 1:
+                    return subprocess.CompletedProcess(argv, 1, "", "port still held")
+                running = True
+            output = "container" if "ps" in argv and running else ""
+            if argv[-1] == "du -sk /state": output = "4 /state"
+            return subprocess.CompletedProcess(argv, 0, output, "")
+        self.stack.stream.side_effect = lambda argv, path: shutil.copyfile(self.source / path.name, path)
+        directory = self.repository / "retry-start"
+        with patch.object(bootstrap, "run", side_effect=runner), \
+                patch.object(bootstrap, "wait_ready", return_value={}) as ready, \
+                patch.object(checkpoint.time, "sleep"), contextlib.redirect_stdout(io.StringIO()):
+            checkpoint.backup(self.stack, directory)
+        self.assertEqual(starts, 2)
+        self.assertTrue(running)
+        ready.assert_called_once()
+        self.assertTrue((directory / "manifest.json").exists())
+
+    def test_resume_readiness_children_detached_in_http_and_internal_tls(self):
+        for issuer in ("none", "internal"):
+            self.stack.settings = dict(bootstrap.DEFAULTS, PE_TLS_ISSUER=issuer,
+                                       PE_SCHEME="https" if issuer == "internal" else "http")
+            children = []
+            def runner(argv, **kwargs):
+                output = "container" if "ps" in argv else ""
+                if argv[-1] == "du -sk /state": output = "4 /state"
+                if "exec" in argv:
+                    children.append(argv)
+                    self.assertTrue(kwargs.get("start_new_session"), argv)
+                    self.assertGreater(kwargs["timeout"], 0)
+                    self.assertLessEqual(kwargs["timeout"], 20)
+                    signal.raise_signal(signal.SIGINT)
+                    if "cat" in argv: output = ssl.DER_cert_to_PEM_cert(self.der)
+                return subprocess.CompletedProcess(argv, 0, output, "")
+            self.stack.stream.side_effect = lambda argv, path: shutil.copyfile(self.source / path.name, path)
+            directory = self.repository / issuer
+            certificate = {"not_after_seconds": 9999999999} if issuer == "internal" else {}
+            with self.subTest(issuer=issuer), patch.object(bootstrap, "run", side_effect=runner), \
+                    patch.object(bootstrap.subprocess, "run", side_effect=runner), \
+                    patch.object(bootstrap, "probe", return_value=certificate), \
+                    self.assertRaisesRegex(RuntimeError, "interrupted; Caddy resumption completed"):
+                checkpoint.backup(self.stack, directory)
+            self.assertEqual(len(children), 2 if issuer == "internal" else 1)
+            self.assertFalse((directory / "manifest.json").exists())
+
+    def test_capture_refuses_restore_markers_or_helper_failure_before_outage(self):
+        volumes = {name: self.repository / name for name in self.stack.volumes}
+        for path in volumes.values(): path.mkdir()
+        for defect in (*self.stack.volumes, "execution"):
+            calls = []
+            self.stack.stream.reset_mock()
+            self.stack.stream.side_effect = RuntimeError("capture should not run")
+            if defect in volumes:
+                (volumes[defect] / bootstrap.RESTORE_MARKER).touch()
+            def runner(argv, **kwargs):
+                calls.append(argv)
+                if argv[0] in volumes:
+                    if defect == "execution":
+                        return subprocess.CompletedProcess(argv, 1, "", "daemon unavailable")
+                    command = argv[1].replace("/state", shlex.quote(str(volumes[argv[0]])))
+                    return subprocess.run(["sh", "-ec", command], capture_output=True, text=True)
+                return subprocess.CompletedProcess(argv, 0, "container" if "ps" in argv else "", "")
+            directory = self.repository / ("rejected-" + defect)
+            with self.subTest(defect=defect), patch.object(bootstrap, "run", side_effect=runner), \
+                    patch.object(bootstrap, "wait_ready", return_value={}), \
+                    self.assertRaises((ValueError, RuntimeError)):
+                checkpoint.backup(self.stack, directory)
+            self.assertFalse(directory.exists())
+            self.assertFalse(any("stop" in argv for argv in calls))
+            self.stack.stream.assert_not_called()
+            if defect in volumes:
+                (volumes[defect] / bootstrap.RESTORE_MARKER).unlink()
 
     def test_git_preflight_and_failed_capture_preserve_evidence(self):
         running = True

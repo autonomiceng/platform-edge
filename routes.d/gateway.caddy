@@ -24,6 +24,7 @@
 		rewrite * /
 		reverse_proxy lg-gateway:80 {
 			import probe-response
+			header_up -Authorization
 			header_up Host {host}
 			header_up X-Forwarded-Proto {scheme}
 		}
@@ -33,6 +34,7 @@
 		rewrite * /health/ready
 		reverse_proxy bp-server:3000 {
 			import probe-response
+			header_up -Authorization
 			header_up Host backplane.{$PE_PUBLIC_DOMAIN}
 			header_up X-Forwarded-Proto {scheme}
 		}
@@ -42,6 +44,7 @@
 		rewrite * /health/grafana
 		reverse_proxy ob-gateway:80 {
 			import probe-response
+			header_up -Authorization
 			header_up Host {host}
 			header_up X-Forwarded-Proto {scheme}
 		}

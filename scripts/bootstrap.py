@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import ssl
 import subprocess
@@ -55,8 +56,30 @@ class Refused(Exception):
         self.detail = detail
 
 
-def run(argv: list[str], *, start_new_session: bool = False) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, text=True, capture_output=True, check=False, start_new_session=start_new_session)
+def run_detached(argv: list[str], *, timeout: float, stdin=subprocess.DEVNULL,
+                 stdout=subprocess.PIPE, text: bool = False) -> subprocess.CompletedProcess:
+    with subprocess.Popen(argv, stdin=stdin, stdout=stdout, stderr=subprocess.PIPE,
+                          text=text, start_new_session=True) as child:
+        try:
+            output, error = child.communicate(timeout=timeout)
+        except BaseException:
+            # This session and its process group belong to the child we spawned.
+            # Killing only the CLI can leave its plugin holding our pipes open.
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.wait()
+            raise
+        return subprocess.CompletedProcess(argv, child.returncode, output, error)
+
+
+def run(argv: list[str], *, start_new_session: bool = False,
+        timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    if start_new_session:
+        return run_detached(argv, timeout=120 if timeout is None else timeout, text=True)
+    return subprocess.run(argv, text=True, capture_output=True, check=False,
+                          start_new_session=start_new_session, timeout=timeout)
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -295,10 +318,14 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             ensure_volumes(runner, settings)
             result = runner(compose_command(root, env_file) + [
                 "run", "--rm", "--no-deps", "--entrypoint", "sh", "caddy", "-ec",
-                f"test ! -e /data/{RESTORE_MARKER} && test ! -e /config/{RESTORE_MARKER}",
+                f"if test -e /data/{RESTORE_MARKER} || test -e /config/{RESTORE_MARKER}; "
+                "then echo marker; else ls /data /config >/dev/null && echo clean; fi",
             ])
-            if result.returncode:
-                raise Refused("restore_incomplete", "restore markers present or state unreadable; preserve volumes and restore into a fresh prefix")
+            state = result.stdout.strip().splitlines()[-1:]
+            if result.returncode or state not in (["clean"], ["marker"]):
+                raise Refused("state_check_failed", (result.stderr or result.stdout).strip()[-2000:])
+            if state == ["marker"]:
+                raise Refused("restore_incomplete", "restore markers present; preserve volumes and restore into a fresh prefix")
             compose_up(root, env_file, runner)
         certificate = wait_ready(settings, root, env_file, runner)
         print(json.dumps({
