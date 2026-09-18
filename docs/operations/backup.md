@@ -1,0 +1,132 @@
+# Certificate state and Checkpoints
+
+`edge-data` holds ACME account/certificate keys and the internal CA. `edge-config`
+holds Caddy configuration state and the certificate metric. Both are external Docker
+volumes named `${PE_VOLUME_PREFIX}_edge-data` and `${PE_VOLUME_PREFIX}_edge-config`.
+The prefix defaults to `platform-edge`, independently of the Compose project name.
+Bootstrap creates them. Changing the prefix selects another installation's state.
+
+**Do not use `docker compose down -v` as a retirement procedure.** External volumes
+survive it, but old Compose revisions still delete their managed volumes. Preserve the
+matching checkout and configuration. Deliberate retirement uses `scripts/destroy.sh`:
+it displays the project and exact volumes and requires typing the project name. It
+stops that project and removes only those volumes, never the shared network. Run it
+only after explicitly deciding to lose that installation's certificate state.
+
+## Existing installations
+
+Earlier revisions let Compose manage `<project>_edge-data` and `<project>_edge-config`.
+With the default project and prefix those are the same names, so bootstrap adopts the
+existing volumes in place and the CA does not change. Verify: after `scripts/bootstrap.py`
+the reported certificate fingerprint must match the one recorded before the upgrade.
+If the project name differs from the prefix, copy the old volumes into the new names
+before bootstrap, using the same fingerprint check:
+
+```sh
+docker compose stop caddy
+image=$(docker compose config --images)
+for suffix in edge-data edge-config; do
+  docker volume inspect "<old-project>_$suffix" >/dev/null || exit 1
+  docker volume create "<prefix>_$suffix" >/dev/null || exit 1
+  docker run --rm --network none --entrypoint sh \
+    --mount "type=volume,src=<old-project>_$suffix,dst=/old,readonly" \
+    --mount "type=volume,src=<prefix>_$suffix,dst=/new" \
+    "$image" -ec 'test -z "$(ls -A /new)"; cp -a /old/. /new/' || exit 1
+done
+python3 scripts/bootstrap.py
+scripts/backup.sh
+```
+
+Retain the old volumes until a restore drill has passed; never run the old revision's
+`down -v`.
+
+## Capture and restore
+
+Set `PE_BACKUP_DIR` in `.env` to a protected backup repository. Relative paths resolve
+against the checkout; the default is `./backups`. The directory is created if absent.
+If it is a mounted repository, verify the mount before each run: the script cannot
+distinguish a missing mount from an ordinary directory. Encrypt at rest, replicate
+off-host over encrypted transport, and verify the replica. The tools do not implement
+encryption or replication. Checkpoints contain **private keys**, even though their
+manifests contain no secrets. New directories/files use 0700/0600 permissions.
+
+```sh
+scripts/backup.sh
+scripts/restore.sh /mnt/edge-backups/20260917T020000000000Z
+```
+
+Both accept `--env-file /path/to/.env`. They lock the env inode against bootstrap and
+the backup repository against simultaneous captures/restores. Do not run other Compose
+operations concurrently. Keep the env file and matching checkout separately in secure
+configuration storage. Never restore archives from an untrusted source: hashes detect
+corruption, not a malicious replacement of both artifacts and manifest.
+
+Backup stops Caddy, verifies neither volume has a running consumer, and streams a tar
+of each volume. There is a brief ingress outage. It resumes Caddy if it was running,
+including on errors or catchable interruptions. A forced kill or host loss cannot run
+cleanup; inspect incomplete directories and start Caddy manually. `manifest.json` is
+written last, after successful resumption, and contains:
+
+- UTC capture completion, Git commit and full image pins;
+- SHA-256 and size of both tar artifacts;
+- `caddy_stopped: true` and the DER SHA-256 internal CA root fingerprint, or null.
+
+The manifest excludes environment values, certificates and keys. A directory without
+it is incomplete. Preserve diagnostics and remove incomplete sets only after confirming
+no backup is running. Capture refuses when the backup filesystem has less free space
+than the estimated volume size. Disk-full or archive errors fail the command and resume
+Caddy; alert on free space and the age of the last complete, replicated Checkpoint.
+
+After a successful capture and service resumption, `PE_BACKUP_KEEP` (default `7`,
+minimum `1`) retains the newest complete Checkpoint sets and prunes older complete
+sets under `PE_BACKUP_DIR`. Incomplete sets, diagnostics and unrelated directories
+are left untouched. Copy pre-upgrade Checkpoints outside this repository to retain
+them independently. Command stderr is saved only in a 0600 file under
+`PE_BACKUP_DIR/.diagnostics` (directory mode 0700); errors report the file path,
+never command output. Treat diagnostics as secret-bearing data.
+
+Restore verifies pins, hashes, archive entry safety and the recorded CA fingerprint
+before writing. The target project and all consumers of its volumes must be stopped.
+It creates missing volumes, requires **both volumes empty**, and refuses populated
+volumes; it never clears a target to make restoration succeed. It restores both archives
+and leaves Caddy stopped. On a new host, restore first, then run bootstrap to create the
+network, start Caddy and verify TLS. A failed restore leaves partial data for diagnosis;
+retry into another empty prefix. Keep the original Checkpoint until recovery is verified.
+
+## RPO and RTO
+
+**RPO is the successful, replicated Checkpoint interval.** With daily captures, at most
+24 hours of certificate state is lost while backups and replication are healthy. ACME
+certificates are re-issuable, subject to DNS, issuer availability and rate limits. The
+internal CA is not replaceable without changing client trust: losing its keys requires
+redistributing a new root to every client. Take a first Checkpoint before distributing
+trust and another after any intentional CA change.
+
+**RTO is measured by the drill, not guaranteed.** The operational target for this small
+state is five minutes after Docker, pinned images, configuration and a Checkpoint are
+available. The drill prints seconds from destruction through restoration, startup and
+a verified TLS handshake using the same CA fingerprint. It excludes off-host retrieval,
+DNS changes, host provisioning and image pulls. No measured production RTO is claimed
+until the drill passes on the target host.
+
+```sh
+scripts/backup-drill.sh
+# Optional isolated name and spare ports:
+SMOKE_PROJECT=platform-edge-drill-monthly SMOKE_HTTP_PORT=18380 SMOKE_HTTPS_PORT=18743 scripts/backup-drill.sh
+```
+
+The drill refuses existing resources, owns its project, network and prefix, boots
+internal TLS, captures, destroys with the typed project name, restores into empty
+volumes, and verifies the CA fingerprint and HTTPS readiness. It removes its disposable
+resources. Run monthly and after backup, Compose or image-pin changes.
+
+```cron
+0 2 * * * cd /opt/platform-edge && scripts/backup.sh >> /var/log/platform-edge-backup.log 2>&1
+*/5 * * * * cd /opt/platform-edge && python3 scripts/bootstrap.py --probe-only >> /var/log/platform-edge-readiness.log 2>&1
+```
+
+`--probe-only` refreshes the leaf expiry metric without restarting Caddy. Alert on probe
+failure or stale observations. Before upgrades, capture a Checkpoint, validate and
+smoke the candidate, then change pins. Roll back with preserved volumes only when the
+older Caddy supports that state; otherwise restore the matching Checkpoint and pins
+into a fresh prefix. Check disk space in both Docker storage and the backup repository.

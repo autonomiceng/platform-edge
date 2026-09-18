@@ -1,0 +1,14 @@
+# The server ignores forwarded headers; BP_PUBLIC_URL sets its public origin.
+# Operator surfaces stay on the Docker network, matching the backplane's own edge.
+{$PE_SCHEME}://backplane.{$PE_PUBLIC_DOMAIN} {
+	import ca-{$PE_TLS_ISSUER}
+	import headers-{$PE_SCHEME}
+	@operator path_regexp (?i)^/+(health/+operations|metrics)\.*(/|$)
+	respond @operator 404
+	# The operator token unlocks readiness details only on the backplane's loopback port.
+	request_header /health/ready -Authorization
+	reverse_proxy bp-server:3000 {
+		header_up Host {host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}

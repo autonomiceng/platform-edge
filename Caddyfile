@@ -1,0 +1,59 @@
+# Static config only: no Docker socket, no caddy-docker-proxy.
+{
+	admin localhost:2019
+	metrics
+	skip_install_trust
+}
+
+(ca-none) {
+}
+
+(ca-acme) {
+	tls {
+		issuer acme {
+			email "{$PE_ACME_EMAIL}"
+		}
+	}
+}
+
+(ca-internal) {
+	tls internal
+}
+
+# The container liveness probe stays on HTTP; bootstrap verifies TLS separately.
+(health-http) {
+	:80 {
+		respond /health 200
+		respond 404
+	}
+}
+
+(health-https) {
+	import health-http
+	http://{$PE_PUBLIC_DOMAIN}, http://127.0.0.1 {
+		route {
+			respond /health 200
+			redir https://{host}{uri} 308
+		}
+	}
+}
+
+(headers-http) {
+}
+
+(headers-https) {
+	header >Strict-Transport-Security "max-age=31536000"
+}
+
+# Import inside a reverse_proxy: expose status only, including upstream failures.
+(probe-response) {
+	handle_response {
+		header -Content-Type
+		header -Content-Length
+		header Cache-Control "no-store"
+		respond "" {rp.status_code}
+	}
+}
+
+import health-{$PE_SCHEME}
+import /etc/caddy/routes.d/*.caddy

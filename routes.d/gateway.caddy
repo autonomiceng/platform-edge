@@ -1,0 +1,101 @@
+{$PE_SCHEME}://{$PE_PUBLIC_DOMAIN} {
+	import ca-{$PE_TLS_ISSUER}
+	import headers-{$PE_SCHEME}
+	handle /health {
+		respond /health 200
+	}
+	handle /metrics* {
+		@public not remote_ip {$PE_METRICS_ALLOW:127.0.0.0/8 ::1}
+		route {
+			respond @public 403
+			metrics /metrics/caddy {
+				disable_openmetrics
+			}
+			root * /config
+			header Content-Type "text/plain; version=0.0.4"
+			templates
+			respond /metrics `{{httpInclude "/metrics/caddy"}}{{if fileExists "pe-certificate.prom"}}{{include "pe-certificate.prom"}}{{end}}`
+			respond 404
+		}
+	}
+	# Same-origin probes for the fallback page. A missing alias becomes a 502.
+	handle /health/gateway {
+		header Cache-Control "no-store"
+		rewrite * /
+		reverse_proxy lg-gateway:80 {
+			import probe-response
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+	handle /health/backplane {
+		header Cache-Control "no-store"
+		rewrite * /health/ready
+		reverse_proxy bp-server:3000 {
+			import probe-response
+			header_up Host backplane.{$PE_PUBLIC_DOMAIN}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+	handle /health/observability {
+		header Cache-Control "no-store"
+		rewrite * /health/grafana
+		reverse_proxy ob-gateway:80 {
+			import probe-response
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+	handle {
+		reverse_proxy lg-gateway:80 {
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+	handle_errors {
+		import headers-{$PE_SCHEME}
+		@probe expression `{http.request.orig_uri.path} in ["/health/gateway", "/health/backplane", "/health/observability"]`
+		handle @probe {
+			header Cache-Control "no-store"
+			respond "" {err.status_code}
+		}
+		@console {
+			expression `{http.request.orig_uri.path} == "/" && {err.status_code} == 502`
+		}
+		handle @console {
+			root * /srv/console
+			rewrite * /index.html
+			file_server
+		}
+		handle {
+			respond "Upstream unavailable" {err.status_code}
+		}
+	}
+}
+
+{$PE_SCHEME}://litellm.{$PE_PUBLIC_DOMAIN} {
+	import ca-{$PE_TLS_ISSUER}
+	import headers-{$PE_SCHEME}
+	reverse_proxy lg-gateway:80 {
+		header_up Host {host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
+
+{$PE_SCHEME}://langfuse.{$PE_PUBLIC_DOMAIN} {
+	import ca-{$PE_TLS_ISSUER}
+	import headers-{$PE_SCHEME}
+	reverse_proxy lg-gateway:80 {
+		header_up Host {host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
+
+{$PE_SCHEME}://s3.{$PE_PUBLIC_DOMAIN} {
+	import ca-{$PE_TLS_ISSUER}
+	import headers-{$PE_SCHEME}
+	reverse_proxy lg-gateway:80 {
+		header_up Host {host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}

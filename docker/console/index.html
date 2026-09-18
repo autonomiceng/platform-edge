@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Platform Edge</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root { font-family: system-ui, sans-serif; color: #1e293b; background: #f8fafc; line-height: 1.5; }
+    body { max-width: 48rem; margin: 3rem auto; padding: 0 1.5rem; }
+    h1 { font-size: 1.5rem; } p { color: #64748b; }
+    ul { list-style: none; padding: 0; }
+    li { padding: .75rem 0; border-bottom: 1px solid #cbd5e1; display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+    a { color: #1d4ed8; overflow-wrap: anywhere; }
+    span { color: #64748b; } [data-state="ok"] { color: #15803d; } [data-state="down"] { color: #b91c1c; }
+    button { font: inherit; padding: .4rem .8rem; cursor: pointer; }
+    @media (prefers-color-scheme: dark) {
+      :root { color: #e2e8f0; background: #0f172a; }
+      p, span { color: #94a3b8; } li { border-color: #334155; } a { color: #93c5fd; }
+      [data-state="ok"] { color: #bbf7d0; } [data-state="down"] { color: #fecaca; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Platform Edge</h1>
+  <p>The gateway console is unavailable. The edge is running; each stack can join independently.</p>
+  <ul id="routes" aria-label="Configured hostnames"></ul>
+  <p>Checks show whether each stack ingress answers. Application login and readiness remain with each stack.</p>
+  <button id="refresh" type="button">Check again</button>
+  <p id="checked" role="status">Checking upstreams…</p>
+  <noscript>Enable JavaScript to list hostnames and check the gateway, backplane and observability stack.</noscript>
+  <script>
+    const routes = [
+      ['', 'gateway'], ['litellm', 'gateway'], ['langfuse', 'gateway'],
+      ['s3', 'gateway'], ['backplane', 'backplane'], ['grafana', 'observability']
+    ];
+    const badges = new Map();
+    for (const [prefix, stack] of routes) {
+      const host = (prefix ? prefix + '.' : '') + location.hostname;
+      const row = document.createElement('li');
+      const link = document.createElement('a');
+      link.href = location.protocol + '//' + host + (location.port ? ':' + location.port : '') + '/';
+      link.textContent = host;
+      const badge = document.createElement('span');
+      badge.textContent = 'checking';
+      if (!badges.has(stack)) badges.set(stack, []);
+      badges.get(stack).push(badge);
+      row.append(link, badge);
+      document.querySelector('#routes').append(row);
+    }
+    async function check() {
+      document.querySelector('#refresh').disabled = true;
+      await Promise.all([...badges].map(async ([stack, entries]) => {
+        let answers = false;
+        try {
+          const response = await fetch('/health/' + stack, {cache: 'no-store', signal: AbortSignal.timeout(8000)});
+          answers = response.status < 500;
+        } catch (_) {}
+        for (const badge of entries) {
+          badge.textContent = answers ? 'answers' : 'unavailable';
+          badge.dataset.state = answers ? 'ok' : 'down';
+        }
+      }));
+      document.querySelector('#checked').textContent = 'Checked ' + new Date().toLocaleTimeString();
+      document.querySelector('#refresh').disabled = false;
+    }
+    document.querySelector('#refresh').addEventListener('click', check);
+    check();
+  </script>
+</body>
+</html>

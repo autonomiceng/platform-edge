@@ -1,0 +1,62 @@
+# One shared ingress per host (ADR-0001). Only Caddy publishes ports.
+# Images are pinned as tag plus digest; Renovate raises bumps, humans merge them.
+name: platform-edge
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  caddy:
+    image: caddy:2.11.4@sha256:13ba145cba2f3e28fa801994876e4c086d1b95d5aa2a520a734765ffb6b12017
+    restart: unless-stopped
+    mem_limit: 256m
+    mem_reservation: 64m
+    pids_limit: 256
+    cpus: 1
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    read_only: true
+    tmpfs:
+      - /tmp
+    logging: *logging
+    ports:
+      - "${PE_BIND_HOST:-127.0.0.1}:${PE_HTTP_PORT:-80}:80"
+      - "${PE_BIND_HOST:-127.0.0.1}:${PE_HTTPS_PORT:-443}:443"
+    environment:
+      PE_PUBLIC_DOMAIN: ${PE_PUBLIC_DOMAIN:-localhost}
+      PE_SCHEME: ${PE_SCHEME:-http}
+      PE_TLS_ISSUER: ${PE_TLS_ISSUER:-none}
+      PE_ACME_EMAIL: ${PE_ACME_EMAIL:-}
+      PE_METRICS_ALLOW: ${PE_METRICS_ALLOW:-127.0.0.0/8 ::1}
+    volumes:
+      - edge-data:/data
+      - edge-config:/config
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./routes.d:/etc/caddy/routes.d:ro
+      - ./docker/console:/srv/console:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      platform:
+        aliases: [pe-edge]
+
+volumes:
+  edge-data:
+    external: true
+    name: ${PE_VOLUME_PREFIX:-platform-edge}_edge-data
+  edge-config:
+    external: true
+    name: ${PE_VOLUME_PREFIX:-platform-edge}_edge-config
+
+networks:
+  platform:
+    name: ${PE_PLATFORM_NETWORK:-platform}
+    external: true

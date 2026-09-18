@@ -1,0 +1,8 @@
+{$PE_SCHEME}://grafana.{$PE_PUBLIC_DOMAIN} {
+	import ca-{$PE_TLS_ISSUER}
+	import headers-{$PE_SCHEME}
+	reverse_proxy ob-gateway:80 {
+		header_up Host {host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
