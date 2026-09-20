@@ -7,7 +7,7 @@ const config={domain:'localhost',mode:'local',scheme:'http',tailscale:'test.ts.n
 const html=()=>fs.readFileSync('docker/console/index.html','utf8').replace(/(<script type="application\/json" id="edge-config">)[\s\S]*?(<\/script>)/,'$1'+JSON.stringify(config)+'$2');
 await page.route('https://test.ts.net/**',r=>{const p=new URL(r.request().url()).pathname;return r.fulfill({status:200,contentType:p==='/edge-config.json'?'application/json':p.startsWith('/health/')?'text/plain':'text/html',body:p==='/edge-config.json'?JSON.stringify(config):p.startsWith('/health/')?'':html()});});
 await page.goto('https://test.ts.net/');await page.waitForFunction(()=>!document.querySelector('#refresh').disabled);
-const link=page.locator('a.open').filter({hasText:'Open Agent Backplane'});assert.equal(await link.getAttribute('href'),null);
+const link=page.locator('h2 a').filter({hasText:'Agent Backplane'});assert.equal(await link.getAttribute('href'),null);
 config.connected+=',backplane';await page.getByRole('button',{name:'Check again',exact:true}).click();await page.waitForFunction(()=>!document.querySelector('#refresh').disabled);
 assert.equal(await link.getAttribute('href'),'https://test.ts.net:8448/dashboard','Check again must discover newly configured Backplane without page reload');
 config.connected='gateway';await page.clock.fastForward(30000);
