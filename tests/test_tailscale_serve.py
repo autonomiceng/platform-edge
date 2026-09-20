@@ -87,6 +87,10 @@ class ServeTests(unittest.TestCase):
             env.write_text("COMPOSE_FILE=compose.yaml:custom.yaml:compose.proxy.yaml:compose.tailscale.yaml\n")
             result = tailscale_serve.configuration(root, env, {"PE_TAILSCALE_HOST": "host.tail123.ts.net", "PE_ACCESS_MODE": "local"}, ["caddy"])
             self.assertEqual(result["files"], "compose.yaml:custom.yaml:compose.tailscale.yaml")
+            outside = root / "custom" / "compose.proxy.yaml"
+            env.write_text(f"COMPOSE_FILE={root / 'compose.yaml'}:{outside}:{root / 'compose.proxy.yaml'}:{root / 'compose.tailscale.yaml'}\n")
+            result = tailscale_serve.configuration(root, env, {"PE_TAILSCALE_HOST": "host.tail123.ts.net"}, ["caddy"])
+            self.assertEqual(result["files"], f"{root / 'compose.yaml'}:{outside}:{root / 'compose.tailscale.yaml'}")
 
 class ConsoleSetupTests(unittest.TestCase):
     def test_selected_consoles_preserve_profiles_credentials_and_allowlists(self):
@@ -142,6 +146,34 @@ class ConsoleSetupTests(unittest.TestCase):
                     else:
                         self.assertNotIn(prefix + '_RUSTFS_CONSOLE_ALLOW', settings[name])
                 self.assertEqual(originals, {p: p.read_bytes() for p in originals})
+            # Bootstrap records absolute file paths; they select the same owning overlays.
+            for directory in (bp, ob):
+                original = originals[directory / '.env'].decode()
+                file_names = tailscale_serve.values(directory / '.env')['COMPOSE_FILE'].split(':')
+                absolute = ':'.join(str(directory / name) for name in file_names)
+                (directory / '.env').write_text(original.replace(':'.join(file_names), absolute))
+            output = io.StringIO()
+            with patch.object(tailscale_serve, 'checked', checked), contextlib.redirect_stdout(output):
+                self.assertEqual(tailscale_serve.main(args), 0)
+            absolute_result = json.loads(output.getvalue())
+            self.assertEqual(set(absolute_result['links']), set(result['links']))
+            absolute_settings = {Path(change['env']).parent.name: change['settings'] for change in absolute_result['changes']}
+            self.assertEqual(absolute_settings['bp']['COMPOSE_FILE'], ':'.join(str(bp / name) for name in ['compose.yaml', 'custom.yaml', 'compose.blobs.yaml', 'compose.gateway.yaml']))
+            self.assertEqual(absolute_settings['ob']['COMPOSE_FILE'], ':'.join(str(ob / name) for name in ['compose.yaml', 'compose.s3.yaml', 'compose.proxy.yaml']))
+            source = (bp / '.env').read_text()
+            (bp / '.env').write_text(source.replace(str(bp / 'compose.gateway.yaml'), str(root / 'other' / 'compose.gateway.yaml')))
+            with patch.object(tailscale_serve, 'checked', checked), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(tailscale_serve.main(args), 1)
+            (bp / '.env').write_bytes(originals[bp / '.env'])
+            for directory, name in ((bp, 'compose.gateway.yaml'), (bp, 'compose.blobs.yaml'), (ob, 'compose.s3.yaml')):
+                (directory / name).symlink_to(directory / ('actual-' + name))
+            with patch.object(tailscale_serve, 'checked', checked), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(tailscale_serve.main(args), 0)
+            (bp / 'compose.edge.yaml').symlink_to(bp / 'actual-edge.yaml')
+            (bp / '.env').write_text(originals[bp / '.env'].decode().replace('COMPOSE_FILE=', 'COMPOSE_FILE=compose.edge.yaml:'))
+            with patch.object(tailscale_serve, 'checked', checked), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(tailscale_serve.main(args), 1)
+            (bp / '.env').write_bytes(originals[bp / '.env'])
             (ob / '.env').write_text(originals[ob / '.env'].decode().replace('OB_RUSTFS_CONSOLE=true', 'OB_RUSTFS_CONSOLE=false'))
             output = io.StringIO()
             with patch.object(tailscale_serve, 'checked', checked), contextlib.redirect_stdout(output):
