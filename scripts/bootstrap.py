@@ -287,9 +287,9 @@ def volume_names(settings: dict[str, str]) -> list[str]:
     return [f"{settings['PE_VOLUME_PREFIX']}_{suffix}" for suffix in ("edge-data", "edge-config")]
 
 
-def ensure_volumes(runner: Runner, settings: dict[str, str]) -> None:
+def ensure_volumes(runner: Runner, settings: dict[str, str], project: str) -> None:
     for name in volume_names(settings):
-        result = runner(["docker", "volume", "create", name])
+        result = runner(["docker", "volume", "create", "--label", f"com.docker.compose.project={project}", name])
         if result.returncode:
             raise Refused("volume_create_failed", result.stderr.strip())
 
@@ -457,7 +457,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             try:
                 ensure_network(runner, settings["PE_PLATFORM_NETWORK"])
                 check_proxy_peer(runner, settings)
-                ensure_volumes(runner, settings)
+                ensure_volumes(runner, settings, project)
                 # The read-only state check must not contend for the running Edge's pinned IP.
                 with tempfile.NamedTemporaryFile("w", suffix=".yaml") as isolated:
                     isolated.write("services:\n  caddy:\n    networks: !reset []\n    network_mode: none\n")

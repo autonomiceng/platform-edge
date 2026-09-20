@@ -180,11 +180,17 @@ def qualify(item: dict, inspect) -> None:
             raise ValueError("Rendered Backplane capabilities differ from its native selection; use its migration procedure.")
     referenced = {rendered["volumes"][mount["source"]]["name"] for service in services.values()
                   for mount in service.get("volumes", []) if mount["type"] == "volume"}
+    volumes = set(item["volumes"])
     for volume in referenced:
         found = inspect(["docker", "volume", "ls", "--filter", "name=^" + re.escape(volume) + "$", "--format", "{{.Name}}"])
-        item["resources"] = item["resources"] or bool(found)
+        volumes.update(found.split())
+    item["resources"] = item["resources"] or bool(volumes)
     if item["resources"] and (missing or not recorded):
         raise ValueError("Restore the original complete env before adopting durable resources.")
+    for volume in sorted(volumes):
+        project = json.loads(inspect(["docker", "volume", "inspect", "--format", '{{json (index .Labels "com.docker.compose.project")}}', volume]))
+        if project != item["action"]["project"]:
+            raise ValueError("Volume ownership is unlabelled or foreign; use the owning recovery runbook without adopting or replacing data.")
     item["ports"] = [(port.get("host_ip", "0.0.0.0"), int(port["published"])) for service in services.values()
                      for port in service.get("ports", []) if port.get("protocol", "tcp") == "tcp" and "published" in port]
     containers = []
@@ -209,12 +215,8 @@ def qualify(item: dict, inspect) -> None:
         if actual_mounts != desired_mounts:
             raise ValueError("Persistent mount or checkout differs; use the owning Checkpoint/upgrade procedure.")
         containers.append(container)
-    if item["resources"] and not containers:
-        raise ValueError("Resources without containers have unknown image/mount custody; use the owning recovery runbook.")
-    if containers and (len(containers) != len(services) or {c["Labels"]["com.docker.compose.service"] for c in containers} != set(services)):
-        raise ValueError("Service selection differs; use the owning Checkpoint/upgrade procedure.")
-    if containers and name == "backplane" and (not recorded.get("BP_SERVER_IMAGE") or "compute" in item["profiles"] and not recorded.get("BP_WORKERD_IMAGE")):
-        raise ValueError("Backplane's implicit builds cannot be qualified for reuse; pin verified images through its owning upgrade procedure.")
+    if len(containers) != len({c["Labels"]["com.docker.compose.service"] for c in containers}):
+        raise ValueError("Duplicate service containers require the owning recovery procedure.")
     if name == "observability":
         marker = root / item["values"].get("OB_STATE_DIR", "data") / "installation/storage-mode"
         expected = "s3" if "s3" in item["profiles"] else "filesystem"
@@ -230,25 +232,6 @@ def edge_peer(item: dict, inspect) -> str:
         raise ValueError("Exactly one running Edge peer is required.")
     networks = json.loads(inspect(["docker", "inspect", "--format", "{{json .NetworkSettings.Networks}}", ids[0]]))
     return str(ipaddress.IPv4Address(networks[item["action"]["network"]]["IPAddress"]))
-
-
-def pin_fresh_backplane(item: dict, inspect) -> None:
-    images = {}
-    for service, key in [("server", "BP_SERVER_IMAGE")] + ([("workerd", "BP_WORKERD_IMAGE")] if "compute" in item["profiles"] else []):
-        if item["recorded"].get(key):
-            continue
-        ids = inspect(["docker", "ps", "-q", "--filter", "label=com.docker.compose.project=" + item["action"]["project"],
-                       "--filter", "label=com.docker.compose.service=" + service]).split()
-        if len(ids) != 1:
-            raise ValueError("Cannot reserve the owning bootstrap's verified image identity.")
-        image = inspect(["docker", "inspect", "--format", "{{.Image}}", ids[0]])
-        if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
-            raise ValueError("Cannot reserve the owning bootstrap's verified image identity.")
-        images[key] = image
-    if images:
-        with owner_lock(item):
-            item["source"] = read_source(item["env"])
-            publish(item, images)
 
 
 def execute(prepared: list[dict], runner, inspect, refused=bootstrap.Refused) -> dict:
@@ -302,8 +285,6 @@ def execute(prepared: list[dict], runner, inspect, refused=bootstrap.Refused) ->
                             publish(item, pin_settings)
                         if runner(item["command"], timeout=1800, quiet=True, cwd=str(item["root"])).returncode or edge_peer(item, inspect) != peer:
                             raise ValueError("Pinned Edge peer could not be verified.")
-                if name == "backplane" and not item["resources"]:
-                    pin_fresh_backplane(item, inspect)
                 report["completed"].append(name)
     except (OSError, ValueError, KeyError, TypeError, IndexError, KeyboardInterrupt, refused):
         report.update(stopped_at=name, error="installation_stopped", recovery="infra/backup/README.md" if name == "backplane" else "docs/operations/backup.md", next="Correct the owning installation and rerun the same selection; completed stacks and all data are retained.")

@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -29,10 +30,10 @@ OWNER_SOURCE = {
 class FakeRunner:
     def __init__(self, listeners="", occupied=False, publications="", fail=None):
         self.listeners, self.occupied, self.publications = listeners, occupied, publications
-        self.containers, self.images, self.configs = {}, {}, {}
+        self.containers, self.images, self.configs, self.volumes = {}, {}, {}, {}
         self.started = []
         self.fail = fail
-        self.fail_after_persist = None
+        self.interrupted_backplane_services = None
         self.inventory_failed = False
 
     def render(self, root, values):
@@ -56,13 +57,18 @@ class FakeRunner:
             services["server"]["environment"] = {"BP_BLOB_BACKEND": "s3" if "blobs" in profiles else "filesystem", "BP_COMPUTE_URL": "http://workerd:8080" if "compute" in profiles else ""}
         for desired in services.values():
             self.images.setdefault(desired["image"], desired["image"] if desired["image"].startswith("sha256:") else "sha256:" + hashlib.sha256(desired["image"].encode()).hexdigest())
-        config = {"name": project, "services": services, "volumes": {"data": {"name": volume + "_data"}}}
+        config = {"name": project, "services": services, "volumes": {"data": {"name": volume + ("-" if name == "gateway" else "_") + "data"}}}
         self.configs[project] = config
         return config
 
-    def container(self, root, values):
+    def container(self, root, values, services=None):
         config = self.render(root, values)
+        for volume in config["volumes"].values():
+            labels = {} if root.name == "llm-gateway-stack" else {"com.docker.compose.project": config["name"]}
+            self.volumes.setdefault(volume["name"], labels)
         for service, desired in config["services"].items():
+            if services is not None and service not in services:
+                continue
             identity = config["name"] + "-" + service
             self.containers[identity] = {"Id": identity, "Image": self.images[desired["image"]],
                 "Labels": {"com.docker.compose.project": config["name"], "com.docker.compose.service": service},
@@ -101,8 +107,8 @@ class FakeRunner:
                 marker = root / "data/installation/storage-mode"
                 marker.parent.mkdir(parents=True, exist_ok=True)
                 marker.write_text("filesystem\n")
-            if self.fail_after_persist == name:
-                (root / "data/console").mkdir(parents=True, exist_ok=True)
+            if name == "backplane" and self.interrupted_backplane_services is not None:
+                self.container(root, installation.read_settings(env), self.interrupted_backplane_services)
                 return subprocess.CompletedProcess(argv, 1, "private capability", "private error")
             self.container(root, installation.read_settings(env))
             return subprocess.CompletedProcess(argv, 0, "private capability", "private warning")
@@ -137,7 +143,12 @@ class FakeRunner:
         elif argv[:3] == ["docker", "volume", "ls"]:
             if self.inventory_failed:
                 return subprocess.CompletedProcess(argv, 1, "", "private inventory error")
-            output = "existing" if self.occupied else ""
+            selector = argv[argv.index("--filter") + 1]
+            output = "existing" if self.occupied else "\n".join(name for name, labels in self.volumes.items()
+                if (re.search(selector[5:], name) if selector.startswith("name=")
+                    else labels.get("com.docker.compose.project") == selector.split("=", 2)[2]))
+        elif argv[:3] == ["docker", "volume", "inspect"]:
+            output = json.dumps(self.volumes[argv[-1]].get("com.docker.compose.project"))
         else:
             raise AssertionError("unexpected or mutating inspection: " + repr(argv))
         return subprocess.CompletedProcess(argv, 0, output, "private diagnostic must not escape")

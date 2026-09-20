@@ -41,6 +41,8 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(bp["COMPOSE_PROFILES"], "gateway")
         self.assertEqual(bp["BP_BLOB_BACKEND"], "filesystem")
         self.assertEqual(bp["BP_PUBLIC_URL"], "https://backplane.localhost")
+        self.assertNotIn("BP_SERVER_IMAGE", bp)
+        self.assertNotIn("BP_WORKERD_IMAGE", bp)
         self.assertEqual((ob["OB_ACCESS_MODE"], ob["OB_HTTP_PORT"], ob["OB_PLATFORM_NETWORK"]), ("proxy", "18180", "platform"))
         self.assertEqual(ob["OB_TRUSTED_PROXIES"], edge["PE_TAILSCALE_EDGE_IP"] + "/32")
         self.assertEqual(edge["COMPOSE_PROJECT_NAME"], "host-edge")
@@ -57,6 +59,8 @@ class ExecutionTests(unittest.TestCase):
         with env.open("a") as handle:
             handle.write("# operator custody comment\nUNRELATED_SETTING=preserved\n")
         original = env.read_bytes()
+        self.assertNotIn("BP_SERVER_IMAGE", installation.read_settings(env))
+        self.assertNotIn("BP_WORKERD_IMAGE", installation.read_settings(env))
         before_mounts = {key: value["Mounts"] for key, value in runner.containers.items()}
         runner.containers["agent-backplane-server"]["Running"] = False
         runner.containers["platform-edge-caddy"]["Running"] = False
@@ -67,7 +71,7 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual({key: value["Mounts"] for key, value in runner.containers.items()}, before_mounts)
         self.assertEqual(list(self.backup.iterdir()), [])  # No retained Checkpoint is required for unchanged reuse.
 
-    def test_foreign_image_mount_and_port_each_refuse_before_env_or_owner_changes(self):
+    def test_foreign_image_mount_volume_and_port_refuse_before_env_or_owner_changes(self):
         runner = FakeRunner()
         self.assertEqual(self.invoke("--stack", "observability", runner=runner)[0], 0)
         before, started = self.snapshot(), list(runner.started)
@@ -83,6 +87,16 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertTrue(any("mount or checkout differs" in error["detail"] for error in plan["conflicts"]))
         mount["Name"] = "observability-stack_data"
+        runner.volumes["observability-stack_data"] = {"com.docker.compose.project": "foreign"}
+        code, plan = self.invoke("--stack", "observability", runner=runner)
+        self.assertEqual(code, 1)
+        self.assertTrue(any("Volume ownership" in error["detail"] for error in plan["conflicts"]))
+        runner.volumes["observability-stack_data"] = {"com.docker.compose.project": "observability-stack"}
+        runner.volumes["observability-stack_unused"] = {"com.docker.compose.project": "foreign"}
+        code, plan = self.invoke("--stack", "observability", runner=runner)
+        self.assertEqual(code, 1)
+        self.assertTrue(any("Volume ownership" in error["detail"] for error in plan["conflicts"]))
+        del runner.volumes["observability-stack_unused"]
         runner.publications = "0.0.0.0:18180->80/tcp"
         code, plan = self.invoke("--stack", "observability", runner=runner)
         self.assertEqual(code, 1)
@@ -101,21 +115,45 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(runner.started, [])
         self.assertEqual(self.snapshot(), before)
 
-    def test_interrupted_first_launch_resumes_saved_selection_without_replacing_secrets(self):
+    def test_interrupted_volumes_and_partial_services_resume_after_explicit_stale_lock_recovery(self):
         runner = FakeRunner()
-        runner.fail_after_persist = "backplane"
+        runner.interrupted_backplane_services = ()
         code, report = self.invoke(*self.bp_arguments(), runner=runner)
         self.assertEqual((code, report["completed"], report["stopped_at"]), (3, ["edge"], "backplane"))
         env = self.host / "agent-backplane/.env"
         persisted = env.read_bytes()
         self.assertEqual(installation.read_settings(env)["COMPOSE_PROFILES"], "blobs,compute,gateway")
-        runner.fail_after_persist = None
+        self.assertEqual(runner.volumes["agent-backplane_data"], {"com.docker.compose.project": "agent-backplane"})
+        self.assertNotIn("agent-backplane-server", runner.containers)
+        lock = env.with_name(".env.lock")
+        lock.write_text("confirmed by operator only\n")
+        lock.chmod(0o600)
+        before, started = self.snapshot(), list(runner.started)
+        code, plan = self.invoke(*self.bp_arguments(), runner=runner)
+        self.assertEqual(code, 1)
+        self.assertIn("backplane_lock", {error["code"] for error in plan["conflicts"]})
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(runner.started, started)
+        lock.unlink()  # Explicit operator recovery, never installer cleanup of a pre-existing lock.
+        runner.volumes["agent-backplane_data"] = {}
+        before = self.snapshot()
+        code, plan = self.invoke(*self.bp_arguments(), runner=runner)
+        self.assertEqual(code, 1)
+        self.assertTrue(any("Volume ownership" in error["detail"] for error in plan["conflicts"]))
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(runner.started, started)
+        runner.volumes["agent-backplane_data"] = {"com.docker.compose.project": "agent-backplane"}
+        runner.interrupted_backplane_services = ("server",)
+        code, report = self.invoke(*self.bp_arguments(), runner=runner)
+        self.assertEqual((code, report["completed"], report["stopped_at"]), (3, ["edge"], "backplane"))
+        self.assertIn("agent-backplane-server", runner.containers)
+        self.assertNotIn("agent-backplane-workerd", runner.containers)
+        self.assertEqual(env.read_bytes(), persisted)
+        runner.interrupted_backplane_services = None
         code, report = self.invoke(*self.bp_arguments(), runner=runner)
         self.assertEqual((code, report["completed"]), (0, ["edge", "backplane"]))
-        self.assertTrue(env.read_bytes().startswith(persisted))
-        saved = installation.read_settings(env)
-        self.assertEqual(saved["BP_SERVER_IMAGE"], runner.containers["agent-backplane-server"]["Image"])
-        self.assertEqual(saved["BP_WORKERD_IMAGE"], runner.containers["agent-backplane-workerd"]["Image"])
+        self.assertEqual(env.read_bytes(), persisted)
+        self.assertIn("agent-backplane-workerd", runner.containers)
 
     def test_add_stack_preserves_routes_and_never_reads_omitted_sibling(self):
         runner = FakeRunner()
@@ -140,6 +178,12 @@ class ExecutionTests(unittest.TestCase):
         gateway = installation.read_settings(self.host / "llm-gateway-stack/.env")
         self.assertEqual(gateway["LG_LANGFUSE_URL"], "http://langfuse.localhost")
         self.assertIn("observability-stack-caddy", runner.containers)
+        before, started = self.snapshot(), list(runner.started)
+        code, plan = self.invoke("--stack", "gateway", runner=runner)
+        self.assertEqual(code, 1)  # Gateway's owner must label its new external volumes before reuse is supported.
+        self.assertTrue(any("Volume ownership" in error["detail"] for error in plan["conflicts"]))
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(runner.started, started)
 
     def test_child_failure_has_bounded_completion_report_and_does_not_start_later_owners(self):
         runner = FakeRunner(fail="backplane")

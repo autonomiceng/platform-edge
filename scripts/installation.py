@@ -178,7 +178,7 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
             if docker:
                 containers = inspect(["docker", "ps", "-aq", "--filter", "label=com.docker.compose.project=" + project])
                 volumes = inspect(["docker", "volume", "ls", "--filter", "label=com.docker.compose.project=" + project, "--format", "{{.Name}}"])
-                named = inspect(["docker", "volume", "ls", "--filter", "name=^" + re.escape(volume_prefix) + "_", "--format", "{{.Name}}"])
+                named = inspect(["docker", "volume", "ls", "--filter", "name=^" + re.escape(volume_prefix) + ("-" if name == "gateway" else "_"), "--format", "{{.Name}}"])
                 existing = existing or bool(containers or volumes or named)
             action["installation"] = "existing" if existing else ("fresh" if docker else "unknown")
             scheme = "https" if name == "backplane" or args.tailscale or edge["PE_TAILSCALE_HOST"] else edge["PE_SCHEME"]
@@ -278,8 +278,9 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                     info = capability.lstat()
                     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
                         raise ValueError("Existing capability file must be an owned single-link regular file with mode 0600.")
-                if env.with_name(env.name + ".lock").exists():
-                    conflict(name, "backplane_lock", "Preserve the preparation lock; follow Backplane's interrupted-preparation recovery procedure.")
+                lock = env.with_name(env.name + ".lock")
+                if lock.exists() or lock.is_symlink():
+                    conflict(name, "backplane_lock", "Preserve Backplane .env.lock. Confirm no installer, preparation or bootstrap process is running before removing only that confirmed stale lock, then rerun the same selection.")
             profiles = [p for p in recorded.get("COMPOSE_PROFILES", "").split(",") if p]
             if name == "backplane":
                 if "COMPOSE_PROFILES" not in recorded:
@@ -320,7 +321,7 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                 raise ValueError("Installation inputs must be literal env values without quotes, escapes or interpolation.")
             item = {"name": name, "prefix": prefix, "root": directory, "env": env, "template": template if name == "edge" else directory / ".env.example",
                     "source": read_source(env), "template_source": read_source(template if name == "edge" else directory / ".env.example"), "recorded": recorded, "values": values, "changes": changes,
-                    "files": files, "profiles": profiles, "command": command, "action": action, "ids": containers.split(),
+                    "files": files, "profiles": profiles, "command": command, "action": action, "ids": containers.split(), "volumes": set(volumes.split()) | set(named.split()),
                     "resources": bool(containers or volumes or named or name == "gateway" and data.exists() and any(data.iterdir()))}
             if docker:
                 qualify(item, inspect)

@@ -68,9 +68,13 @@ files, known resource inventory, and free or qualified selected TCP listeners.
 Existing containers, including stopped containers, must match rendered effective
 image IDs, service selection, and named-volume/bind mounts. Unknown custody,
 missing saved secrets, foreign publications, or an upgrade stop all execution before
-env/container changes. Each action names the owning recovery runbook. Env-only
-interrupted preparation with no durable resources resumes its recorded selection.
-Orphaned durable resources without container identity require owning recovery.
+env/container changes. Each action names the owning recovery runbook. Interrupted
+preparation resumes with complete private saved secrets and native selection, even
+after volume creation with no containers or only some services present. Every found
+or referenced existing volume must carry `com.docker.compose.project` equal to the
+selected project. Unlabelled or foreign-labelled volumes are refused, including
+unmounted prefix collisions. Each present container must still qualify; the owning
+bootstrap completes missing services and checks its database/storage binding.
 
 Execution rechecks qualification under owning locks, publishes only selected public
 settings atomically, and calls the owning bootstraps serially from their checkouts.
@@ -79,15 +83,22 @@ Edge starts first, then its exact peer is reserved with the shipped
 without Tailscale. Its address is verified before sibling proxy trust is written;
 network CIDRs are never trusted. Existing native overlays retain their order.
 
-After a fresh Backplane launch, the installer records the verified server/workerd
-image IDs in its existing image override settings, preserving explicit operator
-overrides. This keeps subsequent owning bootstrap runs on those artifacts. Pre-existing
-Backplane installations with implicit build selection require explicit owning image
-qualification/reconfiguration before reuse. Observability custom overlays refuse
-because its bootstrap reconstructs
-its file list. These require owning bootstrap improvements or explicit owning
-reconfiguration, not an installer bypass. A stopped, unpinned Edge needs its original
-peer recovered before reuse. Do not run independent lifecycle commands concurrently.
+Backplane retains native image defaults and any explicit operator image overrides.
+The installer does not write image overrides. Each present container's image ID must
+match its rendered reference's current local image ID; default builds and workerd
+recipe verification remain the owning bootstrap's behavior.
+
+Edge labels newly created volumes with its selected Compose project. Existing
+unlabelled Edge volumes remain refused; this does not relabel or adopt them. Gateway's
+current owner creates unlabelled external volumes: a fresh launch can complete, but
+selected rerun/recovery refuses those volumes. Gateway needs an owning bootstrap
+change to label new volumes with the selected project and an explicit owning custody
+procedure for existing unlabelled data before this workflow supports its reuse.
+Observability custom overlays remain refused because its bootstrap reconstructs its
+file list. Its owning followup must preserve the recorded ordered `COMPOSE_FILE` for
+both config validation and startup. No installer shadow selection is used.
+A stopped, unpinned Edge needs its original peer recovered before reuse. Do not run
+independent lifecycle commands concurrently.
 
 Exit 0 means the requested owning bootstraps completed; exit 1 means preflight refused,
 2 means usage, and 3 means execution stopped. The bounded JSON result lists
@@ -95,8 +106,12 @@ Exit 0 means the requested owning bootstraps completed; exit 1 means preflight r
 Infrastructure acceptance and enrollment remain unverified by this aggregate result.
 Correct the owning failure and rerun the same selection. There is no global rollback,
 volume deletion, aggregate env, or job database. Native owner status records remain
-the interruption evidence; an unexplained Backplane lock requires its documented
-manual recovery after confirming preparation has stopped.
+the interruption evidence. SIGKILL can leave `<backplane-dir>/.env.lock`, which is
+preserved and blocks reruns. Following Backplane's documented stale-lock procedure,
+confirm no installer, preparation or bootstrap process is running, remove only that
+confirmed stale preparation lock, then rerun the same selection. Preserve env,
+capability files and enrollment checkpoints. A dead-looking PID is not authorization
+to unlink a lock; interruption recovery is not automatic across this boundary.
 
 Selected execution with `--tailscale` or `--status-timers` refuses before mutation.
 Their selected-only connection and timer recovery belong to H-CONNECT; dry-run can
