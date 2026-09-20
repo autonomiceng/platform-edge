@@ -395,12 +395,33 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
     parser.add_argument("--template", default=".env.example")
     parser.add_argument("--render-only", action="store_true", help="write only the env file, start nothing")
     parser.add_argument("--probe-only", action="store_true", help="refresh readiness and expiry without starting services")
+    from installation import add_arguments, preflight
+    add_arguments(parser)
     args = parser.parse_args(argv)
     if args.render_only and args.probe_only:
         parser.error("--render-only and --probe-only are mutually exclusive")
     root = Path(__file__).resolve().parent.parent
     env_file = (root / args.env_file).resolve()
     template = (root / args.template).resolve()
+    selected_options = any((args.gateway_dir, args.backplane_dir, args.observability_dir,
+                            args.gateway_backup_dir, args.gateway_email, args.backplane_backup_dir,
+                            args.capability_file, args.backplane_mode, args.tailscale, args.status_timers))
+    if selected_options and not args.stack:
+        parser.error("selected installation options require --stack")
+    if (args.stack or args.dry_run) and (args.render_only or args.probe_only):
+        parser.error("--stack/--dry-run cannot be combined with --render-only/--probe-only")
+    for stack in ("gateway", "backplane", "observability"):
+        names = {"gateway": ("gateway_dir", "gateway_backup_dir", "gateway_email"),
+                 "backplane": ("backplane_dir", "backplane_backup_dir", "capability_file", "backplane_mode"),
+                 "observability": ("observability_dir",)}[stack]
+        if any(getattr(args, name) for name in names) and stack not in args.stack:
+            parser.error("options for " + stack + " require --stack " + stack)
+    if args.stack and not args.dry_run:
+        raise Refused("installation_execution_not_implemented", "Selected-stack execution requires H-EXEC; use --dry-run. Nothing was changed.")
+    if args.dry_run:
+        plan = preflight(root, env_file, template, args, runner, Refused)
+        print(json.dumps(plan))
+        return 1 if plan["conflicts"] else 0
     if shutil.which("docker") is None and not args.render_only:
         raise Refused("docker_missing", "install Docker with the Compose plugin")
 
