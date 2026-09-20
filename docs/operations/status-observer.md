@@ -19,7 +19,10 @@ the current user's Docker permissions still apply. Different checkouts publish
 separately; one checkout supports one selected installation. Configuration failure
 produces unknown configuration, never an assertion that a component is disabled.
 
-Successful bootstrap records its execution and attempts the initial observation.
+Successful bootstrap attempts to record its execution and the initial observation.
+Recording failure produces a fixed warning and preserves bootstrap's real result.
+Safe ownership and permissions are required for `data/` and its status directories;
+group-writable existing directories can leave execution records unknown.
 `--probe-only` updates observations without claiming a new bootstrap execution.
 For regular refreshes, explicitly install the user timer:
 
@@ -44,8 +47,9 @@ the observer or timer. Merely fetching status does not run an observation.
 Each command has a byte and time bound. Configuration and component observations
 expire after 120 seconds. A stopped timer or frozen file therefore becomes stale
 in the console even if it remains HTTP-accessible. A failed probe cannot renew an
-old success. A successfully inspected inventory with no container reports absent;
-an inaccessible Docker daemon reports unknown. Paused containers are unknown.
+old success. An empty project inventory reports unknown because the selected env
+file may name a different project from a shell-only deployment override. An
+inaccessible Docker daemon also reports unknown. Paused containers are unknown.
 
 The observer atomically replaces `data/console/status.json` after checking file
 ownership and rejecting symlinks/hard links. Caddy mounts this directory read-only.

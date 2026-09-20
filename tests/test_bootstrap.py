@@ -132,6 +132,21 @@ class BootstrapTests(unittest.TestCase):
                 self.assertEqual(ready.call_args.args[0]["PE_PUBLIC_DOMAIN"], "localhost")
                 self.assertEqual(len(json.loads(output.getvalue())["hostnames"]), 7)
 
+    def test_status_permissions_do_not_mask_bootstrap_readiness(self):
+        for failure in (None, bootstrap.Refused('not_ready', 'original readiness failure')):
+            with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True), \
+                    patch.object(bootstrap.shutil, 'which', return_value='docker'), \
+                    patch.object(bootstrap, 'directory', side_effect=bootstrap.Unavailable()), \
+                    patch.object(bootstrap, 'wait_ready', side_effect=failure, return_value={}), \
+                    contextlib.redirect_stderr(io.StringIO()) as warning, contextlib.redirect_stdout(io.StringIO()):
+                if failure:
+                    with self.assertRaises(bootstrap.Refused) as raised:
+                        bootstrap.bootstrap(['--env-file', str(Path(directory) / '.env')], FakeRunner())
+                    self.assertIs(raised.exception, failure)
+                else:
+                    self.assertEqual(bootstrap.bootstrap(['--env-file', str(Path(directory) / '.env')], FakeRunner()), 0)
+                self.assertIn('Status execution record unavailable', warning.getvalue())
+
     def test_hostnames_come_from_domain_and_route_files(self):
         expected = ["example.test", "litellm.example.test", "langfuse.example.test", "s3.example.test",
                     "backplane.example.test", "grafana.example.test", "rustfs.example.test"]

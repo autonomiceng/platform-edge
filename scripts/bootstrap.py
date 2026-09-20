@@ -27,7 +27,16 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
-from status_io import directory, now, task_record
+from status_io import Unavailable, directory, now, task_record
+
+
+def record_bootstrap(root, env_file, started, state):
+    try:
+        with directory(root / "data/console"):
+            pass
+        task_record(root, env_file, started, state)
+    except (OSError, Unavailable):
+        print("Status execution record unavailable; check data directory ownership and permissions.", file=sys.stderr)
 
 PROJECT = "platform-edge"
 NETWORK = "platform"
@@ -389,9 +398,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         if not args.probe_only:
             check_ports(runner, settings, project)
             started = now()
-            with directory(root / "data/console"):
-                pass
-            task_record(root, env_file, started, "unknown")
+            record_bootstrap(root, env_file, started, "unknown")
             try:
                 ensure_network(runner, settings["PE_PLATFORM_NETWORK"])
                 ensure_volumes(runner, settings)
@@ -412,9 +419,9 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
                 compose_up(root, env_file, runner)
                 certificate = wait_ready(settings, root, env_file, runner)
             except BaseException:
-                task_record(root, env_file, started, "unavailable")
+                record_bootstrap(root, env_file, started, "unavailable")
                 raise
-            task_record(root, env_file, started, "healthy")
+            record_bootstrap(root, env_file, started, "healthy")
         else:
             certificate = wait_ready(settings, root, env_file, runner)
         observed = runner([sys.executable, str(root / "scripts/status_observer.py"),
