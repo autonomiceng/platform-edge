@@ -83,6 +83,16 @@
       "state": "healthy",
       "observedAt": "2026-09-20T11:59:58Z",
       "validForSeconds": 30
+    },
+    {
+      "id": "server",
+      "kind": "service",
+      "configured": true,
+      "state": "healthy",
+      "observedAt": "2026-09-20T11:59:58Z",
+      "validForSeconds": 60,
+      "configuredVersion": "custom",
+      "observedVersion": null
     }
   ]
 }
