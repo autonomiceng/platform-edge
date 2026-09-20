@@ -161,6 +161,15 @@ class ConsoleSetupTests(unittest.TestCase):
             with patch.object(tailscale_serve, 'checked', checked), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(tailscale_serve.main(args), 1)
             (bp / '.env').write_bytes(originals[bp / '.env'])
+            for directory, name in ((bp, 'compose.gateway.yaml'), (bp, 'compose.blobs.yaml'), (ob, 'compose.s3.yaml')):
+                (directory / name).symlink_to(directory / ('actual-' + name))
+            with patch.object(tailscale_serve, 'checked', checked), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(tailscale_serve.main(args), 0)
+            (bp / 'compose.edge.yaml').symlink_to(bp / 'actual-edge.yaml')
+            (bp / '.env').write_text(originals[bp / '.env'].decode().replace('COMPOSE_FILE=', 'COMPOSE_FILE=compose.edge.yaml:'))
+            with patch.object(tailscale_serve, 'checked', checked), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(tailscale_serve.main(args), 1)
+            (bp / '.env').write_bytes(originals[bp / '.env'])
             (ob / '.env').write_text(originals[ob / '.env'].decode().replace('OB_RUSTFS_CONSOLE=true', 'OB_RUSTFS_CONSOLE=false'))
             output = io.StringIO()
             with patch.object(tailscale_serve, 'checked', checked), contextlib.redirect_stdout(output):

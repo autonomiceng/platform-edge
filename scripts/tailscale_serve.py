@@ -222,14 +222,14 @@ def main(argv: list[str] | None = None) -> int:
             current = values(env)
             if prefix == "BP":
                 selected_files = {(directory / name).resolve() for name in current.get("COMPOSE_FILE", "compose.yaml").split(":")}
-                if directory / "compose.gateway.yaml" not in selected_files or directory / "compose.edge.yaml" in selected_files or "gateway" not in current.get("COMPOSE_PROFILES", "").split(","):
+                if (directory / "compose.gateway.yaml").resolve() not in selected_files or (directory / "compose.edge.yaml").resolve() in selected_files or "gateway" not in current.get("COMPOSE_PROFILES", "").split(","):
                     raise ValueError("Backplane must select its existing compose.gateway.yaml before connecting Tailscale")
                 services = ["server", "edge"]
             console_enabled = prefix in {"BP", "OB"} and current.get(prefix + "_RUSTFS_CONSOLE", "false") == "true"
             if console_enabled:
-                if prefix == "BP" and (directory / "compose.blobs.yaml" not in selected_files or "blobs" not in current.get("COMPOSE_PROFILES", "").split(",") or current.get("BP_BLOB_BACKEND") != "s3"):
+                if prefix == "BP" and ((directory / "compose.blobs.yaml").resolve() not in selected_files or "blobs" not in current.get("COMPOSE_PROFILES", "").split(",") or current.get("BP_BLOB_BACKEND") != "s3"):
                     raise ValueError("Backplane console requires its existing S3 blobs selection")
-                if prefix == "OB" and ("s3" not in current.get("COMPOSE_PROFILES", "").split(",") or directory / "compose.s3.yaml" not in {(directory / name).resolve() for name in current.get("COMPOSE_FILE", "compose.yaml").split(":")}):
+                if prefix == "OB" and ("s3" not in current.get("COMPOSE_PROFILES", "").split(",") or (directory / "compose.s3.yaml").resolve() not in {(directory / name).resolve() for name in current.get("COMPOSE_FILE", "compose.yaml").split(":")}):
                     raise ValueError("Observability console requires its existing S3 storage selection")
                 names = [*names, "backplane_rustfs" if prefix == "BP" else "observability_rustfs"]
                 services = [*services, "rustfs"]
