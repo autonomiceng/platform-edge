@@ -85,6 +85,8 @@ def check(root, env_file, unit_dir, runner=None):
         runner(['systemctl', '--user', 'show', '--property=Version'], timeout=10)
         for name in contents:
             listed = runner(['systemctl', '--user', 'list-unit-files', name, '--no-legend', '--no-pager'], timeout=10)
+            if not isinstance(listed, str):
+                raise Unavailable()
             if not listed.strip():
                 continue
             evidence = runner(['systemctl', '--user', 'show', name, '--property=FragmentPath', '--property=DropInPaths'], timeout=10)
@@ -116,6 +118,7 @@ def install(root, env_file, unit_dir, runner=run):
         raise Unavailable()
     contents = units(root, env_file)
     check(root, env_file, unit_dir)
+    check(root, env_file, unit_dir, runner)
     with directory(unit_dir, 0o700) as fd:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if not matching_pair(fd, contents):

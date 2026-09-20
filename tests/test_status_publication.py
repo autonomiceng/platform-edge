@@ -182,9 +182,9 @@ class PublicationTests(unittest.TestCase):
             return original(path, *args, **kwargs)
         calls = []
         with patch.object(installer.os, 'open', side_effect=opened), self.assertRaises(OSError):
-            installer.install(self.root, env, unit_dir, lambda *args, **kwargs: calls.append(args))
+            installer.install(self.root, env, unit_dir, lambda *args, **kwargs: calls.append(args) or '')
         self.assertEqual(list(unit_dir.iterdir()), [])
-        self.assertEqual(calls, [])
+        self.assertTrue(all(call[0][2] in ('show', 'list-unit-files') for call in calls))
 
     def test_activation_failure_retains_units_for_exact_pair_recovery(self):
         (self.root / 'scripts').mkdir()

@@ -196,6 +196,10 @@ class HostConnectionTests(unittest.TestCase):
                 service.chmod(0o600)
         with self.assertRaises(Unavailable):
             timer.check(root, env, unit_dir, lambda *args, **kwargs: 'FragmentPath=/foreign.service\nDropInPaths=\n')
+        absent = self.host / 'absent-units'
+        with self.assertRaises(Unavailable):
+            timer.install(root, env, absent, lambda *args, **kwargs: 'FragmentPath=/foreign.service\nDropInPaths=\n')
+        self.assertFalse(absent.exists())
         before = self.snapshot()
         runner = ConnectionRunner()
         code, report = self.invoke('--stack', 'observability', '--status-timers', runner=runner)
