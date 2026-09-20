@@ -94,6 +94,11 @@
 	import edge-metrics
 	import stack-probes
 	import console-config
+	handle / {
+		root * /srv/console
+		templates
+		file_server
+	}
 
 	handle {
 		reverse_proxy lg-gateway:80 {
@@ -107,15 +112,6 @@
 		handle @probe {
 			header Cache-Control "no-store"
 			respond "" {err.status_code}
-		}
-		@console {
-			expression `{http.request.orig_uri.path} == "/" && {err.status_code} == 502`
-		}
-		handle @console {
-			root * /srv/console
-			rewrite * /index.html
-			templates
-			file_server
 		}
 		handle {
 			respond "Upstream unavailable" {err.status_code}

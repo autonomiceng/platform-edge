@@ -28,7 +28,7 @@ conflicts, starts Caddy and verifies both local listeners, including HTTPS certi
 
 ## Local integration
 
-Local Mode serves HTTP on 80 and self-signed HTTPS on 443, without redirecting HTTP or telling browsers to require HTTPS. Sibling ingresses use HTTP internally. A missing stack returns 502 on its hostnames while other stacks continue working. The root serves a fallback console when the gateway is absent.
+Local Mode serves HTTP on 80 and self-signed HTTPS on 443, without redirecting HTTP or telling browsers to require HTTPS. Sibling ingresses use HTTP internally. A missing stack returns 502 on its hostnames while other stacks continue working. The root always serves the Edge project console, including when Gateway is absent.
 
 The shared setup below uses HTTPS application URLs for browser login. Install Edge’s
 public root certificate on clients once; HTTP remains available for health checks and
@@ -181,7 +181,7 @@ are ready: `SMOKE_INTEGRATION=1 SMOKE_DOMAIN=example.com scripts/smoke.sh` (use
 
 | Service | Job | Data |
 | --- | --- | --- |
-| Caddy | TLS, hostname routing, a health path, a fallback page | `edge-data` (certificates and CA keys) and `edge-config` volumes |
+| Caddy | TLS, hostname routing, a health path, a project console | `edge-data` (certificates and CA keys) and `edge-config` volumes |
 
 Routes live in `routes.d/`, one file per stack. The image is pinned as `tag@sha256` in `compose.yaml`.
 

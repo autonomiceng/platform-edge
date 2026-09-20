@@ -4,7 +4,7 @@ Edge owns host ports 80 and 443. Its default loopback binding makes them accessi
 
 | Hostname | Upstream Alias |
 | --- | --- |
-| `example.com` | `lg-gateway:80`, with local `/health` and a fallback page |
+| `example.com` | Edge console at `/`; other Gateway paths use `lg-gateway:80` |
 | `litellm.example.com` | `lg-gateway:80` |
 | `langfuse.example.com` | `lg-gateway:80` |
 | `s3.example.com` | `lg-gateway:80` |
@@ -40,8 +40,9 @@ The HTTP console accepts arbitrary hostnames, including a Tailscale machine name
 Unknown-host `/health` is 200; other unknown paths remain 404, including `/metrics`.
 Application routes still require their configured hostnames. Console links use the
 configured application domain instead of inventing subdomains under an IP or Tailscale name.
-The configured root hostname still proxies to the gateway and retains the intentional 502
-fallback if that gateway is missing. Bootstrap does not require any sibling stack.
+The configured root hostname serves the Edge console independently of Gateway. Other
+Gateway paths still proxy to the Gateway and report upstream failures. Bootstrap does
+not require any sibling stack.
 
 For local sibling stacks behind Edge, choose their proxy access mode, keep internal HTTP,
 and configure the configured browser URL for the address customers will use. Applications

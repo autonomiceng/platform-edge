@@ -380,7 +380,8 @@ function serviceState(s) {
   return s.optional ? "optional" : "unknown";
 }
 function serviceVersion(s) {
-  const value = imageVersions[versionKeys[s.id]];
+  const value =
+    s.id === "edge" ? config?.edgeVersion : imageVersions[versionKeys[s.id]];
   return typeof value === "string" && value.length <= 128 ? value : s.version;
 }
 function serviceLinks(s) {
