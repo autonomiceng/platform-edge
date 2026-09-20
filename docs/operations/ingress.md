@@ -227,6 +227,15 @@ Do not attach a datastore to the Platform Network. All members of this network a
 
 ## Rollout and diagnosis
 
+When upgrading an existing Backplane installation from direct server routing, start
+and verify `bp-gateway` before applying the new Edge routes. Use the Backplane
+command above; verify `docker compose -f compose.yaml -f compose.gateway.yaml
+--profile gateway exec edge wget -qO- http://127.0.0.1/health/ready` reports ready.
+Then reload or bootstrap Edge. Fresh installs may start Edge first to create its
+network; Backplane remains unavailable until its selected stack starts. Edge itself
+must remain independently startable when Backplane is not installed.
+
+
 1. Render the edge settings with `python3 scripts/bootstrap.py --render-only`, then edit `.env` for the desired mode. This writes only the env file, with mode 0600.
 2. If an installed stack already owns ports 80 or 443, give its gateway spare loopback ports and run its bootstrap to release those ports. Keep its current access mode until Edge’s reserved address is known. For a new stack, prepare its env using its documented bootstrap. Keep the backplane’s optional `edge` profile off.
 3. Run `python3 scripts/bootstrap.py` in platform-edge. It creates the external network if missing, names a conflicting container before publishing, and starts Caddy with `docker compose up --wait`. It probes `127.0.0.1` on the selected HTTP or HTTPS port with the domain as Host. HTTPS uses that domain as SNI, validates the public certificate or trusts the installation’s self-signed root certificate read from the volume, and reports the root SHA-256 fingerprint and leaf `notAfter`. It never disables TLS verification. The publish address must accept loopback connections (use `127.0.0.1` or `0.0.0.0` for these host probes).

@@ -80,7 +80,7 @@ OB_BACKPLANE_URL=https://backplane.localhost
 
 Replace `192.0.2.2/32` above with Edge’s reserved address on the shared Docker network, as described in the [ingress guide](docs/operations/ingress.md).
 
-Backplane `.env` (start core services without its optional `edge` profile):
+Backplane `.env` (use the internal `gateway` profile; the standalone `edge` profile stays off):
 
 ```sh
 BP_ACCESS_MODE=proxy
@@ -88,6 +88,8 @@ BP_PUBLIC_URL=https://backplane.localhost
 BP_BIND_HOST=127.0.0.1
 BP_PORT=3000
 ```
+
+Start the internal gateway with `docker compose -f compose.yaml -f compose.gateway.yaml --profile gateway up -d --wait` from the Backplane checkout.
 
 The console also opens at `http://127.0.0.1`; verified direct HTTPS requires installing
 Edge's public CA root. For private access from other computers through Tailscale,
@@ -158,7 +160,7 @@ OB_BACKPLANE_URL=https://backplane.example.com
 
 Replace `192.0.2.2/32` above with Edge’s reserved address on the shared Docker network, as described in the [ingress guide](docs/operations/ingress.md).
 
-Backplane `.env` (start core services without its optional `edge` profile):
+Backplane `.env` (use the internal `gateway` profile; the standalone `edge` profile stays off):
 
 ```sh
 BP_ACCESS_MODE=proxy
@@ -167,7 +169,9 @@ BP_BIND_HOST=127.0.0.1
 BP_PORT=3000
 ```
 
-The Edge reaches the backplane at `bp-server:3000`; keep the backplane `edge` profile off.
+Start the internal gateway with `docker compose -f compose.yaml -f compose.gateway.yaml --profile gateway up -d --wait` from the Backplane checkout.
+
+Start Backplane with `docker compose -f compose.yaml -f compose.gateway.yaml --profile gateway up -d --wait`. Edge reaches it at `bp-gateway:80`; the internal gateway publishes no host ports. Keep the standalone `edge` profile off.
 The seven routed hosts are root, `litellm.`, `langfuse.`, `s3.`, `rustfs.`, `backplane.`
 and `grafana.` under the configured domain. Run shared-host acceptance after siblings
 are ready: `SMOKE_INTEGRATION=1 SMOKE_DOMAIN=example.com scripts/smoke.sh` (use
