@@ -160,7 +160,8 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused)
                 if key.startswith((prefix + "_", "COMPOSE_")) and "$" in value and key != "COMPOSE_FILE":
                     raise ValueError("Resolve interpolated installation settings with the owning bootstrap before planning.")
             # Resolve the owning Gateway template selection, not arbitrary shell expressions.
-            files = recorded.get("COMPOSE_FILE", "compose.yaml").replace("${LG_ACCESS_MODE:-local}", values.get("LG_ACCESS_MODE", "local"))
+            default_files = values.get("COMPOSE_FILE", "compose.yaml") if name == "gateway" else "compose.yaml"
+            files = recorded.get("COMPOSE_FILE", default_files).replace("${LG_ACCESS_MODE:-local}", values.get("LG_ACCESS_MODE", "local"))
             if "$" in files or any(not (directory / filename).is_file() for filename in files.split(os.pathsep)):
                 raise ValueError("Recorded Compose selection has unavailable or unresolved files; preserve and repair it.")
             if recorded.get(prefix + "_PLATFORM_NETWORK", network) != network:

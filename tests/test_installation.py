@@ -217,6 +217,9 @@ class InstallationTests(unittest.TestCase):
         env.write_text("BP_BACKUP_DIR='/mnt/with spaces'\n")
         self.assertEqual(installation.read_settings(env)["BP_BACKUP_DIR"], "/mnt/with spaces")
         gateway = self.host / "llm-gateway-stack"
+        (gateway / ".env.example").write_text("COMPOSE_FILE=compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml\n")
+        _, plan = self.invoke("--stack", "gateway", "--dry-run")
+        self.assertTrue(any("unavailable or unresolved files" in item["detail"] for item in plan["conflicts"]))
         (gateway / "compose.local.yaml").write_text("")
         (gateway / ".env").write_text("COMPOSE_FILE=compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml\nLG_BACKUP_DIR=" + str(self.backup) + "\nLG_ALLOW_SAME_FILESYSTEM_BACKUP=true\nLANGFUSE_INIT_USER_EMAIL=operator@company.test\n")
         _, plan = self.invoke("--stack", "gateway", "--dry-run")
