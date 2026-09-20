@@ -3,9 +3,19 @@
 	admin localhost:2019
 	metrics
 	skip_install_trust
-}
-
-(ca-none) {
+	# IP clients omit SNI; Docker NAT hides the requested loopback address.
+	default_sni 127.0.0.1
+	log default {
+		output stderr
+		format filter {
+			wrap json
+			fields {
+				request>headers delete
+				request>uri regexp \?.* ?REDACTED
+				resp_headers delete
+			}
+		}
+	}
 }
 
 (ca-acme) {
@@ -16,13 +26,10 @@
 	}
 }
 
-(ca-internal) {
-	tls internal
-}
-
 # The container liveness probe stays on HTTP; bootstrap verifies TLS separately.
 (health-http) {
 	:80 {
+		import access-log
 		respond /health 200
 		respond 404
 	}
@@ -31,14 +38,12 @@
 (health-https) {
 	import health-http
 	http://{$PE_PUBLIC_DOMAIN}, http://127.0.0.1 {
+		import access-log
 		route {
 			respond /health 200
 			redir https://{host}{uri} 308
 		}
 	}
-}
-
-(headers-http) {
 }
 
 (headers-https) {
@@ -55,5 +60,97 @@
 	}
 }
 
-import health-{$PE_SCHEME}
+(access-log) {
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>headers delete
+				request>uri regexp \?.* ?REDACTED
+				resp_headers delete
+			}
+		}
+	}
+}
+(access-headers-local) {
+}
+(access-headers-public) {
+	import headers-https
+}
+(access-headers-proxy) {
+}
+
+(health-public) {
+	import health-https
+}
+(console-handlers) {
+	import access-log
+	handle /health {
+		respond 200
+	}
+	handle / {
+		root * /srv/console
+		templates
+		file_server
+	}
+	handle {
+		respond 404
+	}
+}
+(health-local) {
+	:80 {
+		import console-handlers
+	}
+	http://127.0.0.1 {
+		import console-handlers
+	}
+	https://127.0.0.1 {
+		tls internal
+		import console-handlers
+	}
+}
+(health-proxy) {
+	:80 {
+		import console-handlers
+	}
+}
+
+(forwarded-proto-local) {
+	header_up X-Forwarded-Proto {scheme}
+}
+(forwarded-proto-public) {
+	header_up X-Forwarded-Proto {scheme}
+}
+(forwarded-proto-proxy) {
+	# The operator configures the external origin; never trust arbitrary headers.
+	header_up X-Forwarded-Proto {$PE_SCHEME}
+}
+
+# Internal scraping uses the stable network alias instead of an application domain.
+(edge-metrics) {
+	handle /metrics* {
+		@public not remote_ip {$PE_METRICS_ALLOW:127.0.0.0/8 ::1}
+		route {
+			respond @public 403
+			metrics /metrics/caddy {
+				disable_openmetrics
+			}
+			root * /config
+			header Content-Type "text/plain; version=0.0.4"
+			templates
+			respond /metrics `{{httpInclude "/metrics/caddy"}}{{if fileExists "pe-certificate.prom"}}{{include "pe-certificate.prom"}}{{end}}`
+			respond 404
+		}
+	}
+}
+http://pe-edge {
+	import access-log
+	import edge-metrics
+	handle {
+		respond 404
+	}
+}
+
+import health-{$PE_ACCESS_MODE:local}
 import /etc/caddy/routes.d/*.caddy

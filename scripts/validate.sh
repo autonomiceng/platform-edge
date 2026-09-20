@@ -38,19 +38,36 @@ assert caddy['pids_limit'] == 256 and float(caddy['cpus']) == 1, 'PID and CPU li
 assert caddy['read_only'] and caddy['tmpfs'] == ['/tmp'], 'writable-root policy'
 assert caddy['cap_drop'] == ['ALL'] and caddy['cap_add'] == ['NET_BIND_SERVICE'], 'capabilities'
 assert caddy['security_opt'] == ['no-new-privileges:true'], 'privilege escalation'
+assert caddy['logging'] == {'driver': 'journald', 'options': {'cache-disabled': 'true'}}, 'journald without Docker cache'
 assert not caddy.get('env_file'), 'list environment explicitly'
 assert {p['target'] for p in caddy['ports']} == {80, 443}, 'HTTP and HTTPS only'
 PY
 echo 'compose config: PASS'
 caddy_image=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"]["caddy"]["image"])' "$work/config.json")
-for mode in 'http localhost none' 'https example.com acme' 'https example.com internal'; do
+for mode in 'local http localhost' 'public https example.com' 'proxy https example.com'; do
   # Each mode is a fixed three-word tuple.
   # shellcheck disable=SC2086
   set -- $mode
-  docker run --rm -e "PE_SCHEME=$1" -e "PE_PUBLIC_DOMAIN=$2" -e "PE_TLS_ISSUER=$3" -e PE_ACME_EMAIL= \
+  docker run --rm -e "PE_ACCESS_MODE=$1" -e "PE_SCHEME=$2" -e "PE_PUBLIC_DOMAIN=$3" -e PE_ACME_EMAIL= \
     -v "$root/Caddyfile:/etc/caddy/Caddyfile:ro" \
     -v "$root/routes.d:/etc/caddy/routes.d:ro" \
     -v "$root/docker/console:/srv/console:ro" \
     "$caddy_image" caddy validate --config /etc/caddy/Caddyfile
 done
-echo 'Caddyfile (3 modes): PASS'
+echo 'Caddyfile (3 access modes): PASS'
+
+PE_ACCESS_MODE=proxy docker compose --env-file "$work/.env" -f compose.yaml -f compose.proxy.yaml config --format json > "$work/proxy.json"
+python3 - "$work/proxy.json" <<'PYCODE'
+import json, sys
+service = json.load(open(sys.argv[1]))['services']['caddy']
+assert [p['target'] for p in service['ports']] == [80], 'proxy must publish HTTP only'
+PYCODE
+echo 'proxy publishes HTTP only: PASS'
+
+PE_ACCESS_MODE=public PE_SCHEME='' docker compose --env-file "$work/.env" -f compose.yaml -f compose.public.yaml config --format json > "$work/public.json"
+python3 - "$work/public.json" <<'PYCODE'
+import json, sys
+service = json.load(open(sys.argv[1]))['services']['caddy']
+assert service['environment']['PE_SCHEME'] == 'https', 'public empty scheme must resolve to HTTPS'
+PYCODE
+echo 'public default scheme: PASS'

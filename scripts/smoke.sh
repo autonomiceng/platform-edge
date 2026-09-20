@@ -16,7 +16,7 @@ if [ "$integration" = 1 ]; then
 else
   export PE_PUBLIC_DOMAIN=localhost PE_PLATFORM_NETWORK="$COMPOSE_PROJECT_NAME-platform"
 fi
-export PE_SCHEME=http PE_TLS_ISSUER=none PE_ACME_EMAIL='' PE_BACKUP_KEEP=7
+export PE_ACCESS_MODE=local PE_SCHEME=http PE_ACME_EMAIL='' PE_BACKUP_KEEP=7
 export PE_METRICS_ALLOW="127.0.0.0/8 ::1"
 export PE_VOLUME_PREFIX="$COMPOSE_PROJECT_NAME" PE_BACKUP_DIR=/tmp/unused-edge-smoke-backups
 export PE_BIND_HOST=127.0.0.1 PE_HTTP_PORT="${SMOKE_HTTP_PORT:-18280}" PE_HTTPS_PORT="${SMOKE_HTTPS_PORT:-18643}"
@@ -104,7 +104,7 @@ ok 'bootstrap reached readiness'
 
 for scheme in http https; do
   if [ "$scheme" = https ]; then
-    export PE_SCHEME=https PE_TLS_ISSUER=internal
+    export PE_SCHEME=https
     python3 scripts/bootstrap.py --env-file "$env_file"
     docker compose --env-file "$env_file" cp caddy:/data/caddy/pki/authorities/local/root.crt "$work/root.crt"
     ok 'internal TLS bootstrap verified certificate, SNI and HTTPS readiness'
@@ -144,8 +144,8 @@ assert headers['x-smoke-authorization'].strip() == 'bearer smoke-operator-token'
 PY
     ok "$scheme $host: upstream, Host and unspoofed X-Forwarded-Proto/For/Host"
     if [ "$scheme" = https ]; then
-      grep -iq '^Strict-Transport-Security: max-age=31536000' "$work/headers" || fail "$host missing HSTS"
-      ok "$host: HSTS"
+      if grep -iq '^Strict-Transport-Security:' "$work/headers"; then fail "local $host enables HSTS"; fi
+      ok "$host: local HTTPS without HSTS"
     fi
   done
   for path in /health/ready /health/ready/ /health/ready. //HEALTH//ready; do
@@ -169,8 +169,8 @@ PY
   for host in unknown.invalid rustfs.localhost; do
     code=$(curl --noproxy '*' --max-time 10 -sS -o /dev/null -w '%{http_code}' -H "Host: $host" \
       "http://127.0.0.1:$PE_HTTP_PORT/")
-    [ "$code" = 404 ] || fail "unknown HTTP host $host in $scheme mode returned $code"
-    ok "unknown HTTP host $host is 404 in $scheme mode"
+    [ "$code" = 200 ] || fail "unknown HTTP host $host in $scheme mode returned $code"
+    ok "unknown HTTP host $host serves the console in $scheme mode"
   done
 done
 
@@ -195,6 +195,9 @@ curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -fsS \
 grep -q '^caddy_http_requests_total' "$work/metrics" || fail 'Caddy metrics missing'
 grep -q '^pe_certificate_not_after_seconds ' "$work/metrics" || fail 'certificate expiry metric missing'
 ok 'allowlisted metrics include Caddy and certificate expiry'
+curl --noproxy '*' --max-time 10 -fsS -H 'Host: pe-edge' "http://127.0.0.1:$PE_HTTP_PORT/metrics" > "$work/internal-metrics"
+grep -q '^pe_certificate_not_after_seconds ' "$work/internal-metrics" || fail 'internal metrics hostname is unavailable'
+ok 'stable internal metrics hostname serves the allowlisted scraper'
 
 edge_id=$(docker compose --env-file "$env_file" ps -q caddy)
 docker inspect "$edge_id" "$lg_stub" "$bp_stub" "$ob_stub" > "$work/containers.json"
@@ -259,4 +262,49 @@ code=$(curl --noproxy '*' --max-time 10 -sS -o /dev/null -w '%{http_code}' \
   "http://127.0.0.1:$PE_HTTP_PORT/health")
 [ "$code" = 200 ] || fail 'edge health depends on an upstream'
 ok 'edge health survives absent stacks'
+
+# Local mode must keep both protocols usable without a redirect or HSTS.
+export PE_ACCESS_MODE=local PE_SCHEME=http
+python3 scripts/bootstrap.py --env-file "$env_file" >/dev/null
+docker compose --env-file "$env_file" cp caddy:/data/caddy/pki/authorities/local/root.crt "$work/root.crt" >/dev/null
+for protocol in http https; do
+  if [ "$protocol" = http ]; then
+    code=$(curl --noproxy '*' --max-time 10 -sS -D "$work/headers" -o "$work/body" -w '%{http_code}' \
+      -H 'Host: backplane.localhost' "http://127.0.0.1:$PE_HTTP_PORT/")
+  else
+    code=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -sS -D "$work/headers" -o "$work/body" -w '%{http_code}' \
+      --resolve "backplane.localhost:$PE_HTTPS_PORT:127.0.0.1" "https://backplane.localhost:$PE_HTTPS_PORT/")
+  fi
+  [ "$code" = 200 ] || fail "local $protocol application returned $code"
+  if grep -iq '^Strict-Transport-Security:\|^Location:' "$work/headers"; then fail "local $protocol forces HTTPS"; fi
+  ok "local $protocol application without redirect or HSTS"
+done
+for host in 127.0.0.1 example.tail123.ts.net; do
+  code=$(curl --noproxy '*' --max-time 10 -sS -H "Host: $host" -o "$work/body" -w '%{http_code}' "http://127.0.0.1:$PE_HTTP_PORT/")
+  [ "$code" = 200 ] || fail "alias console $host returned $code"
+  grep -q 'Platform Edge' "$work/body" || fail 'alias console missing'
+  grep -q '"domain": "localhost"' "$work/body" || fail 'console domain template not rendered'
+  ok "HTTP console accepts $host"
+done
+curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -fsS "https://127.0.0.1:$PE_HTTPS_PORT/health" >/dev/null
+ok 'verified HTTPS IP health'
+curl --noproxy '*' --max-time 10 -fsS -H 'X-Api-Key: edge-secret-header' "http://127.0.0.1:$PE_HTTP_PORT/health?token=edge-secret-query" >/dev/null
+docker compose --env-file "$env_file" logs --no-log-prefix caddy > "$work/logs" 2>&1
+grep -q 'http.log.access' "$work/logs" || fail 'access logs unavailable through Docker journald reader'
+grep -q '/health?REDACTED' "$work/logs" || fail 'query redaction was not observed'
+if grep -q 'edge-secret-header\|edge-secret-query' "$work/logs"; then fail 'access logs contain credentials'; fi
+ok 'journald access logs readable without Alloy; headers and query strings removed'
+# Probe proxy mode through its explicit override; never publish its unused HTTPS port.
+export PE_ACCESS_MODE=proxy PE_SCHEME=https
+export COMPOSE_FILE="$root/compose.yaml:$root/compose.proxy.yaml"
+python3 scripts/bootstrap.py --env-file "$env_file" >/dev/null
+body=$(curl --noproxy '*' --max-time 10 -fsS -H 'Host: backplane.localhost' -H 'X-Forwarded-Proto: forged' "http://127.0.0.1:$PE_HTTP_PORT/")
+[ "$body" = 'bp-server|backplane.localhost|https' ] || fail 'proxy lost configured public scheme'
+docker compose --env-file "$env_file" ps --format json > "$work/proxy-ports.json"
+python3 - "$work/proxy-ports.json" <<'PYCODE'
+import json, sys
+service = json.loads(open(sys.argv[1]).read())
+assert [p['TargetPort'] for p in service['Publishers'] if p.get('PublishedPort')] == [80], service
+PYCODE
+ok 'proxy preserves public HTTPS and publishes HTTP only'
 echo "SMOKE CONTRACT PASSED ($pass checks)"

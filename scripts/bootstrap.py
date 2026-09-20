@@ -30,12 +30,12 @@ PROJECT = "platform-edge"
 NETWORK = "platform"
 RESTORE_MARKER = ".pe-restore-incomplete"
 ENV_LINE = re.compile(r"^(?:export\s+)?(?P<key>[A-Z][A-Z0-9_]*)=(?P<value>.*)$")
-ROUTE_LINE = re.compile(r"^\{\$PE_SCHEME\}://(?P<host>(?:[a-z0-9-]+\.)*\{\$PE_PUBLIC_DOMAIN\})\s*\{$")
+ROUTE_LINE = re.compile(r"^\s*https?://(?P<host>(?:[a-z0-9-]+\.)*\{\$PE_PUBLIC_DOMAIN\})\s*\{$")
 PORT = re.compile(r"(?P<host>\[[^]]+\]|[^, ]+):(?P<first>\d+)(?:-(?P<last>\d+))?->[^, ]+/tcp")
 DEFAULTS = {
+    "PE_ACCESS_MODE": "local",
     "PE_PUBLIC_DOMAIN": "localhost",
     "PE_SCHEME": "http",
-    "PE_TLS_ISSUER": "none",
     "PE_BIND_HOST": "127.0.0.1",
     "PE_HTTP_PORT": "80",
     "PE_HTTPS_PORT": "443",
@@ -94,7 +94,7 @@ def read_env(path: Path) -> dict[str, str]:
         if not match:
             continue
         key, value = match.group("key"), match.group("value").strip()
-        if key not in DEFAULTS and key != "COMPOSE_PROJECT_NAME":
+        if key not in DEFAULTS and key not in {"COMPOSE_PROJECT_NAME", "COMPOSE_FILE"}:
             continue
         if key in values:
             raise Refused("env_repair_required", f"{key} is set twice in {path}")
@@ -112,10 +112,19 @@ def settings_for(values: dict[str, str]) -> dict[str, str]:
         key: os.environ.get(key, values.get(key, default)) or default
         for key, default in DEFAULTS.items()
     }
-    scheme, issuer = settings["PE_SCHEME"], settings["PE_TLS_ISSUER"]
-    if (scheme, issuer) not in {("http", "none"), ("https", "acme"), ("https", "internal")}:
-        raise Refused("invalid_settings", "use http/none, https/acme, or https/internal")
+    mode = settings["PE_ACCESS_MODE"]
+    if mode not in {"local", "public", "proxy"}:
+        raise Refused("invalid_settings", "PE_ACCESS_MODE must be local, public, or proxy")
+    settings["PE_TLS_ISSUER"] = {"local": "internal", "public": "acme", "proxy": "none"}[mode]
+    configured_scheme = os.environ.get("PE_SCHEME", values.get("PE_SCHEME", ""))
+    settings["PE_SCHEME"] = configured_scheme or ("http" if mode == "local" else "https")
+    if settings["PE_SCHEME"] not in {"http", "https"} or (mode == "public" and settings["PE_SCHEME"] != "https"):
+        raise Refused("invalid_settings", "PE_SCHEME must be http or https; public mode requires https")
     domain = settings["PE_PUBLIC_DOMAIN"]
+    if domain.lower() == "pe-edge":
+        raise Refused("invalid_settings", "pe-edge is reserved for internal metrics; choose an application domain")
+    if mode == "public" and ("." not in domain or domain.lower().endswith(".localhost")):
+        raise Refused("invalid_settings", "public mode needs your own domain, such as example.com")
     if len(domain) > 253 or not all(re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label)
                                    for label in domain.split(".")):
         raise Refused("invalid_settings", "PE_PUBLIC_DOMAIN must be a DNS hostname without a port")
@@ -125,10 +134,11 @@ def settings_for(values: dict[str, str]) -> dict[str, str]:
         pass
     else:
         raise Refused("invalid_settings", "PE_PUBLIC_DOMAIN must be a DNS hostname, not an IP address")
+    # Compose parses the base port mappings before applying the proxy override.
     for key in ("PE_HTTP_PORT", "PE_HTTPS_PORT"):
         if not settings[key].isdigit() or not 1 <= int(settings[key]) <= 65535:
             raise Refused("invalid_settings", f"{key} must be a port from 1 to 65535")
-    if int(settings["PE_HTTP_PORT"]) == int(settings["PE_HTTPS_PORT"]):
+    if mode != "proxy" and int(settings["PE_HTTP_PORT"]) == int(settings["PE_HTTPS_PORT"]):
         raise Refused("invalid_settings", "HTTP and HTTPS must use different host ports")
     try:
         ipaddress.ip_address(settings["PE_BIND_HOST"].strip("[]"))
@@ -164,7 +174,9 @@ def check_ports(runner: Runner, settings: dict[str, str], project: str) -> None:
     result = runner(["docker", "ps", "--format", "json"])
     if result.returncode != 0:
         raise Refused("docker_unavailable", result.stderr.strip())
-    wanted = {int(settings["PE_HTTP_PORT"]), int(settings["PE_HTTPS_PORT"])}
+    wanted = {int(settings["PE_HTTP_PORT"])}
+    if settings.get("PE_ACCESS_MODE") != "proxy":
+        wanted.add(int(settings["PE_HTTPS_PORT"]))
     bind = settings["PE_BIND_HOST"].strip("[]")
     for line in result.stdout.splitlines():
         container = json.loads(line)
@@ -192,8 +204,7 @@ def ensure_network(runner: Runner, name: str = NETWORK) -> None:
 
 
 def compose_up(root: Path, env_file: Path, runner: Runner) -> None:
-    result = runner([
-        "docker", "compose", "--project-directory", str(root), "--env-file", str(env_file),
+    result = runner(compose_command(root, env_file) + [
         "up", "--detach", "--wait", "--wait-timeout", "300",
     ])
     if result.returncode != 0:
@@ -212,7 +223,27 @@ def ensure_volumes(runner: Runner, settings: dict[str, str]) -> None:
 
 
 def compose_command(root: Path, env_file: Path) -> list[str]:
-    return ["docker", "compose", "--project-directory", str(root), "--env-file", str(env_file)]
+    command = ["docker", "compose", "--project-directory", str(root), "--env-file", str(env_file)]
+    values = read_env(env_file) if env_file.exists() else {}
+    mode = os.environ.get("PE_ACCESS_MODE", values.get("PE_ACCESS_MODE", "local"))
+    if mode in {"proxy", "public"}:
+        files = os.environ.get("COMPOSE_FILE", values.get("COMPOSE_FILE", "compose.yaml")).split(os.pathsep)
+        files = [str((root / name).resolve()) for name in files if name]
+        override = str(root / f"compose.{mode}.yaml")
+        for name in [name for name in files if name != override] + [override]:
+            command += ["-f", name]
+    return command
+
+
+def access_urls(settings: dict[str, str]) -> list[str]:
+    mode = settings["PE_ACCESS_MODE"]
+    schemes = ("http", "https") if mode == "local" else (("http",) if mode == "proxy" else (settings["PE_SCHEME"],))
+    urls = []
+    for scheme in schemes:
+        port = settings["PE_HTTPS_PORT" if scheme == "https" else "PE_HTTP_PORT"]
+        suffix = "" if port == ("443" if scheme == "https" else "80") else ":" + port
+        urls.append(f"{scheme}://{settings['PE_PUBLIC_DOMAIN']}{suffix}/")
+    return urls
 
 
 def ca_fingerprint(pem: str) -> str:
@@ -255,7 +286,13 @@ def wait_ready(settings: dict[str, str], root: Path, env_file: Path,
                 if result.returncode:
                     raise OSError("internal CA root is not available in edge-data")
                 ca = result.stdout
-            certificate = probe(settings, settings["PE_PUBLIC_DOMAIN"], ca)
+            mode = settings.get("PE_ACCESS_MODE", "local")
+            if mode == "local":
+                probe(dict(settings, PE_SCHEME="http"), settings["PE_PUBLIC_DOMAIN"])
+                certificate = probe(dict(settings, PE_SCHEME="https"), settings["PE_PUBLIC_DOMAIN"], ca)
+            else:
+                listener = dict(settings, PE_SCHEME="http") if mode == "proxy" else settings
+                certificate = probe(listener, settings["PE_PUBLIC_DOMAIN"], ca)
             if ca:
                 certificate["ca_sha256"] = ca_fingerprint(ca)
             if certificate:
@@ -335,8 +372,11 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         certificate = wait_ready(settings, root, env_file, runner)
         print(json.dumps({
             "project": project,
+            "access_mode": settings["PE_ACCESS_MODE"],
             "scheme": settings["PE_SCHEME"],
             "certificate": certificate,
+            "listener_urls": access_urls(settings),
+            "trust": "Install the public CA root for direct HTTPS" if settings["PE_TLS_ISSUER"] == "internal" else None,
             "hostnames": routed_hostnames(root / "routes.d", settings["PE_PUBLIC_DOMAIN"]),
             "next": "Configure each stack for the shared edge; see docs/operations/ingress.md.",
         }))

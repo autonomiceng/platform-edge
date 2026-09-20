@@ -1,0 +1,5 @@
+# Match the public-mode browser scheme selected by bootstrap.
+services:
+  caddy:
+    environment:
+      PE_SCHEME: ${PE_SCHEME:-https}

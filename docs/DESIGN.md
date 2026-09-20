@@ -10,8 +10,8 @@ Multiple standalone stacks each ship an ingress, but only one ingress can own a 
 
 - Caddy is the only service and publisher in this project. Defaults bind HTTP and HTTPS ports to loopback.
 - All six hostnames are configured even when some stacks are absent. An unavailable alias produces a request failure, independent of other aliases.
-- `/health` returns 200 independently of upstream readiness. It is available on the root site and over HTTP in every TLS mode.
-- Every application route sets `Host` to the requested hostname and `X-Forwarded-Proto` to the scheme received by the Edge.
+- `/health` returns 200 independently of upstream readiness. It is available on the root site and over HTTP in every access mode.
+- Every application route sets `Host` to the requested hostname and `X-Forwarded-Proto` to the scheme received by Edge, or the configured external scheme when another gateway handles HTTPS.
 - The root gateway failure serves a small static fallback page with status 502. Its three same-origin probes show which stack ingress answers. Application health remains a stack concern.
 - Bootstrap renders no secrets, locks the env inode, refuses container port conflicts, ensures the network and external volumes, runs Compose with `--wait`, and prints route-derived hostnames. HTTPS readiness verifies the local TLS handshake with domain SNI and publishes the root leaf expiry. Exit codes match the sibling bootstrap contract: 0 ready, 1 refused, 2 usage, 3 not ready.
 
@@ -33,14 +33,18 @@ The root `Caddyfile` holds the shared global block and issuer snippets. `routes.
 
 ## Access modes
 
-Local Mode uses HTTP and `localhost`. Public Mode uses HTTPS with ACME; Private Mode uses HTTPS with Caddy's internal CA. The root HTTP health site is explicit in HTTPS mode because automatic redirect routes precede a catch-all site. Other root HTTP paths redirect to HTTPS. [Caddy documents this routing order](https://caddyserver.com/docs/automatic-https).
+Local mode serves HTTP and self-signed HTTPS together, without redirects or browser policies that force HTTPS. Public mode obtains trusted certificates for your domain and redirects HTTP to HTTPS. Behind another gateway (`proxy`), Edge receives HTTP and the other gateway handles HTTPS. In public mode, the explicit root HTTP health route remains reachable before the redirect. [Caddy documents this routing order](https://caddyserver.com/docs/automatic-https).
 
-The ACME email is scoped to the ACME issuer so it is ignored in the other modes. Its empty value uses Caddy's default. Site addresses use the public scheme. Stack Caddys use a separate HTTP listen scheme behind the Edge, while their applications retain public HTTPS origins. Backplane ignores forwarded headers and requires an explicit public URL.
+The certificate contact email is used only for public certificates. Its empty value uses Caddy's default. Site addresses follow the access mode; the canonical application scheme remains a separate setting. Stack Caddys use a separate HTTP listen scheme behind the Edge, while their applications retain public HTTPS origins. Backplane ignores forwarded headers and requires an explicit public URL.
 
 ## Operations
 
 The ingress runbook contains exact per-stack settings and rollout order. Only move ports or restart services as an authorized installation action. Port conflict checks include overlapping TCP bindings and port ranges, and ignore this project's existing Caddy for idempotent reruns. Host-process conflicts and races after preflight remain Compose startup errors.
 
-Validation uses the pinned image and mounts every Route File in HTTP, ACME and internal CA modes. Smoke owns a fresh project and network, starts three independent stubs using the same image, then tests routing, TLS scheme forwarding, restart with an absent alias, and fallback behavior. Smoke refuses existing project containers or volumes and never adopts an existing network.
+Validation uses the pinned image and mounts every Route File in local, public and proxy modes. Smoke owns a fresh project and network, starts three independent stubs using the same image, then tests routing, TLS scheme forwarding, restart with an absent alias, and fallback behavior. Smoke refuses existing project containers or volumes and never adopts an existing network.
 
 Adding a hostname requires updating its Route File and the fallback page and extending smoke coverage. Bootstrap derives its JSON hostnames directly from the simple site-address lines in Route Files. Images are pinned only in Compose. The shared conventions file is copied verbatim; this repo has no application secrets, datastore checkpoint tooling or separate stack gateway. Certificate Checkpoints and restore drills are described in [backup](operations/backup.md).
+
+Access logs are JSON on stdout; runtime diagnostics are on stderr. Docker sends both to
+journald without a Docker log cache. The host owns journal retention, and Alloy collection
+is optional. Local console aliases do not change application origins or grant metrics access.
