@@ -102,6 +102,7 @@ def inspect_caddy(config, runner, clock):
         return row
     except (Unavailable, KeyError, TypeError, ValueError, AttributeError):
         row.pop('observedImageId', None)
+        row.pop('observedVersion', None)
         row.update(state='unknown', observedAt=None)
         return row
 
@@ -141,7 +142,11 @@ def observe(root, env_file, runner=run, clock=now):
         regular(fd, '.status.lock')
         lock = os.open('.status.lock', os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=fd)
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                # Another observer owns publication; its atomic result is sufficient.
+                return None
             document = collect(root, env_file, runner, clock)
             publish(fd, 'status.json', document)
         finally:

@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
 import status_io as io
@@ -17,6 +18,7 @@ SECRET = 'private://credential-token'
 class Runner:
     def __init__(self):
         self.fail = set()
+        self.unsupported = set()
         self.found = 'a' * 64
         self.config = {'name': 'selected', 'services': {'caddy': {
             'image': 'private/image:2.11.4@sha256:' + 'b' * 64, 'environment': {'SECRET': SECRET}}}}
@@ -37,6 +39,8 @@ class Runner:
             kind, result = 'version', 'v2.11.4 h1:build'
         else:
             kind, result = 'health', ''
+        if kind in self.unsupported:
+            raise io.Unsupported()
         if kind in self.fail:
             raise io.Unavailable(SECRET)
         return result
@@ -63,6 +67,12 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(self.collect()['components'][0]['state'], 'unavailable')
         self.runner.fail.add('version')
         self.assertNotIn('observedVersion', self.collect()['components'][0])
+
+    def test_probe_that_cannot_run_is_unknown_not_unavailable(self):
+        self.runner.unsupported.add('health')
+        row = self.collect()['components'][0]
+        self.assertEqual(row['state'], 'unknown')
+        self.assertEqual(row['observedVersion'], '2.11.4')
 
     def test_empty_or_failed_inventory_does_not_claim_a_missing_installation(self):
         self.runner.found = ''
@@ -103,6 +113,16 @@ class ObserverTests(unittest.TestCase):
             self.assertIsNone(observer.version(value))
         self.runner.config['name'] = None
         self.assertIsNone(self.collect()['configurationObservedAt'])
+
+    def test_publication_lock_collision_is_a_successful_no_op(self):
+        with patch.object(observer.fcntl, 'flock', side_effect=BlockingIOError):
+            self.assertIsNone(observer.observe(self.root, self.env, self.runner, lambda: AT))
+        self.assertFalse((self.root / 'data/console/status.json').exists())
+
+    def test_unrelated_publication_lock_storage_failure_is_not_suppressed(self):
+        with patch.object(observer.os, 'open', side_effect=BlockingIOError):
+            with self.assertRaises(BlockingIOError):
+                observer.observe(self.root, self.env, self.runner, lambda: AT)
 
 
 if __name__ == '__main__':
