@@ -1,5 +1,7 @@
 // Public status v1. Keep parsing, evidence age and transport independent of the DOM.
 const StackStatus = (() => {
+  const MAX_BYTES = 65536;
+  const DEADLINE_MS = 4000;
   const ids = {
     edge: ["caddy", "bootstrap"],
     gateway: [
@@ -88,7 +90,7 @@ const StackStatus = (() => {
   const fresh = (time, seconds, now) =>
     time !== null && time <= now + 5000 && now - time <= seconds * 1000;
   function parse(text, stack, now = Date.now(), date = null) {
-    if (new TextEncoder().encode(text).length > 65536)
+    if (new TextEncoder().encode(text).length > MAX_BYTES)
       throw new Error("Status too large");
     const d = JSON.parse(text);
     if (
@@ -253,7 +255,7 @@ const StackStatus = (() => {
       timer = setTimeout(() => {
         controller.abort();
         reject(new Error("Request deadline"));
-      }, 4000);
+      }, DEADLINE_MS);
     });
     try {
       return await Promise.race([
@@ -272,7 +274,7 @@ const StackStatus = (() => {
             )
           )
             throw new Error("Metadata unavailable");
-          if (Number(response.headers.get("Content-Length")) > 65536)
+          if (Number(response.headers.get("Content-Length")) > MAX_BYTES)
             throw new Error("Status too large");
           reader = response.body.getReader();
           const chunks = [];
@@ -281,7 +283,7 @@ const StackStatus = (() => {
             const { value, done } = await reader.read();
             if (done) break;
             size += value.byteLength;
-            if (size > 65536) throw new Error("Status too large");
+            if (size > MAX_BYTES) throw new Error("Status too large");
             chunks.push(value);
           }
           const bytes = new Uint8Array(size);
