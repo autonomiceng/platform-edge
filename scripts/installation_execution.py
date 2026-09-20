@@ -198,7 +198,7 @@ def qualify(item: dict, inspect) -> None:
                      for port in service.get("ports", []) if port.get("protocol", "tcp") == "tcp" and "published" in port]
     containers = []
     for identity in item["ids"]:
-        projection = '{"Id":{{json .Id}},"Image":{{json .Image}},"Mounts":{{json .Mounts}},"Labels":{{json .Config.Labels}},"Ports":{{json .NetworkSettings.Ports}},"Networks":{{json .NetworkSettings.Networks}},"Running":{{json .State.Running}},"Binds":{{json .HostConfig.Binds}},"ExplicitMounts":{{json .HostConfig.Mounts}}}'
+        projection = '{"Id":{{json .Id}},"Image":{{json .Image}},"Mounts":{{json .Mounts}},"Labels":{{json .Config.Labels}},"Ports":{{json .NetworkSettings.Ports}},"Networks":{{json .NetworkSettings.Networks}},"Running":{{json .State.Running}},"Binds":{{json (index .HostConfig "Binds")}},"ExplicitMounts":{{json (index .HostConfig "Mounts")}}}'
         container = json.loads(inspect(["docker", "inspect", "--format", projection, identity]))
         service = container["Labels"].get("com.docker.compose.service")
         if service not in services or container["Labels"].get("com.docker.compose.project") != item["action"]["project"]:
