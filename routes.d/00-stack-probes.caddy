@@ -13,6 +13,8 @@
 			reverse_proxy {args[2]} {
 				header_up -Authorization
 				header_up -Cookie
+				header_up -If-Match
+				header_up -If-Unmodified-Since
 				header_up -If-None-Match
 				header_up -If-Modified-Since
 				header_up -Range

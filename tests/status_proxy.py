@@ -15,6 +15,7 @@ def request(stack, method='GET', mode='', host='localhost'):
     headers = {'Host': host, 'Authorization': 'Bearer smoke-private',
                'Cookie': 'session=smoke-private', 'X-Smoke-Status': mode}
     headers.update({'Range': 'bytes=0-2', 'If-Range': '"smoke-range"',
+                    'If-Match': '"not-current"', 'If-Unmodified-Since': 'Thu, 01 Jan 1970 00:00:00 GMT',
                     'If-None-Match': '*', 'If-Modified-Since': 'Wed, 31 Dec 2099 23:59:59 GMT'})
     req = Request(f'{base}/stack-status/{stack}', headers=headers, method=method)
     try:
