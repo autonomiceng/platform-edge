@@ -111,6 +111,7 @@
 		header Cache-Control "no-store"
 		rewrite * /health/rustfs-console
 		reverse_proxy lg-gateway:80 {
+			header_up X-Forwarded-For {http.request.remote.host}
 			import probe-response
 			header_up -Authorization
 			header_up -Cookie
@@ -123,6 +124,7 @@
 		header Cache-Control "no-store"
 		rewrite * /
 		reverse_proxy lg-gateway:80 {
+			header_up X-Forwarded-For {http.request.remote.host}
 			import probe-response
 			header_up -Authorization
 			header_up -Cookie
@@ -156,6 +158,7 @@
 		header Cache-Control "no-store"
 		rewrite * /health/litellm
 		reverse_proxy lg-gateway:80 {
+			header_up X-Forwarded-For {http.request.remote.host}
 			import probe-response
 			header_up -Authorization
 			header_up -Cookie
@@ -168,6 +171,7 @@
 		header Cache-Control "no-store"
 		rewrite * /health/langfuse
 		reverse_proxy lg-gateway:80 {
+			header_up X-Forwarded-For {http.request.remote.host}
 			import probe-response
 			header_up -Authorization
 			header_up -Cookie
@@ -180,6 +184,7 @@
 		header Cache-Control "no-store"
 		rewrite * /health/rustfs
 		reverse_proxy lg-gateway:80 {
+			header_up X-Forwarded-For {http.request.remote.host}
 			import probe-response
 			header_up -Authorization
 			header_up -Cookie

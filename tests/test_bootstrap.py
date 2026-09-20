@@ -93,6 +93,8 @@ class BootstrapTests(unittest.TestCase):
                 bootstrap.bootstrap(["--env-file", str(env), "--render-only"], runner)
             self.assertEqual(env.read_bytes(), edited)
             self.assertEqual(bootstrap.read_env(env)["PE_CADDY_IMAGE"], "local/edge:experiment")
+            env.write_text('PE_TRUSTED_PROXIES="192.0.2.1 2001:db8::1"\n')
+            self.assertEqual(bootstrap.read_env(env)["PE_TRUSTED_PROXIES"], "192.0.2.1 2001:db8::1")
             self.assertEqual(runner.calls, [])
             self.assertEqual(json.loads(output.getvalue().splitlines()[0])["generated"], [])
 

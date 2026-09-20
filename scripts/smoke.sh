@@ -16,7 +16,7 @@ if [ "$integration" = 1 ]; then
 else
   export PE_PUBLIC_DOMAIN=localhost PE_PLATFORM_NETWORK="$COMPOSE_PROJECT_NAME-platform"
 fi
-export PE_CADDY_IMAGE='' PE_ACCESS_MODE=local PE_SCHEME=http PE_ACME_EMAIL='' PE_BACKUP_KEEP=7 PE_TAILSCALE_HOST=''
+export PE_CADDY_IMAGE='' PE_ACCESS_MODE=local PE_SCHEME=http PE_ACME_EMAIL='' PE_BACKUP_KEEP=7 PE_TAILSCALE_HOST='' PE_TRUSTED_PROXIES=''
 export PE_METRICS_ALLOW="127.0.0.0/8 ::1"
 export PE_VOLUME_PREFIX="$COMPOSE_PROJECT_NAME" PE_BACKUP_DIR=/tmp/unused-edge-smoke-backups
 export PE_BIND_HOST=127.0.0.1 PE_HTTP_PORT="${SMOKE_HTTP_PORT:-18280}" PE_HTTPS_PORT="${SMOKE_HTTPS_PORT:-18643}"
@@ -409,14 +409,38 @@ curl --noproxy '*' --max-time 10 -fsS "http://127.0.0.1:$PE_HTTP_PORT/health" >/
 curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -fsS "https://127.0.0.1:$PE_HTTPS_PORT/health" >/dev/null
 ok 'Tailscale routes coexist with local HTTP and verified self-signed HTTPS'
 docker start "$lg_stub" "$ob_stub" >/dev/null
-for item in '8443 lg-gateway' '8444 lg-gateway' '8445 lg-gateway' '8446 lg-gateway' '8447 ob-gateway' '8448 bp-gateway' '8449 lg-gateway'; do
+for item in '8443 lg-gateway' '8444 lg-gateway' '8445 lg-gateway' '8446 lg-gateway' '8447 ob-gateway' '8448 bp-gateway' '8449 lg-gateway' '8450 bp-gateway' '8451 ob-gateway'; do
   # shellcheck disable=SC2086
   set -- $item
-  body=$(curl --noproxy '*' --retry 5 --retry-all-errors --retry-delay 1 --max-time 10 -fsS -H "Host: $PE_TAILSCALE_HOST:$1" -H 'X-Forwarded-Proto: forged' "http://127.0.0.1:$PE_HTTP_PORT/authority")
+  body=$(curl --noproxy '*' --retry 5 --retry-all-errors --retry-delay 1 --max-time 10 -fsS -D "$work/headers" -H 'X-Forwarded-For: 198.51.100.9' -H "Host: $PE_TAILSCALE_HOST:$1" -H 'X-Forwarded-Proto: forged' "http://127.0.0.1:$PE_HTTP_PORT/authority")
   [ "$body" = "$2|$PE_TAILSCALE_HOST:$1|https" ] || fail "Tailscale application $1 lost route, Host or scheme: $body"
-  ok "Tailscale $1 reaches $2 with exact authority and HTTPS scheme"
+  if grep -qi 'X-Smoke-Forwarded-For:.*198.51.100.9' "$work/headers"; then fail 'Tailscale route accepted forged client address'; fi
+  ok "Tailscale $1 reaches $2 with exact authority, HTTPS scheme and unspoofed client"
 done
 code=$(curl --noproxy '*' --max-time 10 -sS -H "Host: $PE_TAILSCALE_HOST:8448" -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PE_HTTP_PORT/metrics")
 [ "$code" = 404 ] || fail 'Tailscale backplane leaked operator endpoint'
 ok 'Tailscale backplane retains operator endpoint restrictions'
+# Trust only the host relay, then prove that forwarded clients remain distinct from Docker peers.
+PE_TRUSTED_PROXIES=$(docker network inspect --format '{{(index .IPAM.Config 0).Gateway}}' "$PE_PLATFORM_NETWORK")
+export PE_TRUSTED_PROXIES
+python3 scripts/bootstrap.py --env-file "$env_file" >/dev/null
+for port in 8443 8444 8445 8446 8447 8448 8449; do
+  curl --noproxy '*' --max-time 10 -fsS -D "$work/headers" -o /dev/null \
+    -H "Host: $PE_TAILSCALE_HOST:$port" -H 'X-Forwarded-For: 198.51.100.9' \
+    "http://127.0.0.1:$PE_HTTP_PORT/authority"
+  if grep -qi 'X-Smoke-Forwarded-For:.*198.51.100.9' "$work/headers"; then fail 'existing route changed client forwarding after console trust setup'; fi
+  grep -qi 'X-Smoke-Forwarded-For:' "$work/headers" || fail 'existing route has no upstream forwarding evidence'
+  ok "existing route $port retains peer-address forwarding after console trust setup"
+done
+for port in 8450 8451; do
+  curl --noproxy '*' --max-time 10 -fsS -D "$work/headers" -o /dev/null \
+    -H "Host: $PE_TAILSCALE_HOST:$port" -H 'X-Forwarded-For: 100.64.0.7' \
+    "http://127.0.0.1:$PE_HTTP_PORT/authority"
+  grep -qi '^X-Smoke-Forwarded-For: 100.64.0.7' "$work/headers" || { grep -i '^X-Smoke-Forwarded-For:' "$work/headers"; echo "expected ingress peer: $PE_TRUSTED_PROXIES"; fail 'trusted ingress lost the original client'; }
+  docker exec "$bp_stub" wget -S -q -O /dev/null --header="Host: $PE_TAILSCALE_HOST:$port" \
+    --header='X-Forwarded-For: 100.64.0.7' http://pe-edge/authority > "$work/untrusted.headers" 2>&1
+  if grep -qi 'X-Smoke-Forwarded-For:.*100.64.0.7' "$work/untrusted.headers"; then fail 'untrusted Docker peer forged a console client'; fi
+  grep -qi 'X-Smoke-Forwarded-For:' "$work/untrusted.headers" || fail 'untrusted client proof has no upstream evidence'
+  ok "console $port preserves the trusted client and rejects Docker peer header spoofing"
+done
 echo "SMOKE CONTRACT PASSED ($pass checks)"

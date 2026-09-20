@@ -1,8 +1,25 @@
 (tailscale-apps) {
+	@ts_backplane_rustfs expression `"{$PE_TAILSCALE_HOST}" != "" && {http.request.hostport} == "{$PE_TAILSCALE_HOST}:{$PE_TAILSCALE_BACKPLANE_RUSTFS_PORT:8450}"`
+	handle @ts_backplane_rustfs {
+		reverse_proxy bp-gateway:80 {
+			header_up X-Forwarded-Proto https
+			# Send only the client address validated at this ingress.
+			header_up X-Forwarded-For {http.vars.client_ip}
+		}
+	}
+	@ts_observability_rustfs expression `"{$PE_TAILSCALE_HOST}" != "" && {http.request.hostport} == "{$PE_TAILSCALE_HOST}:{$PE_TAILSCALE_OBSERVABILITY_RUSTFS_PORT:8451}"`
+	handle @ts_observability_rustfs {
+		reverse_proxy ob-gateway:80 {
+			header_up X-Forwarded-Proto https
+			# Send only the client address validated at this ingress.
+			header_up X-Forwarded-For {http.vars.client_ip}
+		}
+	}
 	@ts_rustfs expression `"{$PE_TAILSCALE_HOST}" != "" && {http.request.hostport} == "{$PE_TAILSCALE_HOST}:{$PE_TAILSCALE_RUSTFS_PORT:8449}"`
 	handle @ts_rustfs {
 		reverse_proxy lg-gateway:80 {
 			header_up X-Forwarded-Proto https
+			header_up X-Forwarded-For {http.request.remote.host}
 		}
 	}
 	@ts_litellm expression `"{$PE_TAILSCALE_HOST}" != "" && {http.request.hostport} == "{$PE_TAILSCALE_HOST}:{$PE_TAILSCALE_LITELLM_PORT:8443}"`
@@ -11,6 +28,7 @@
 			reverse_proxy lg-gateway:80 {
 				# Preserve Host including its port for login origins and S3 signatures.
 				header_up X-Forwarded-Proto https
+				header_up X-Forwarded-For {http.request.remote.host}
 			}
 		}
 	}
@@ -20,6 +38,7 @@
 			reverse_proxy lg-gateway:80 {
 				# Preserve Host including its port for login origins and S3 signatures.
 				header_up X-Forwarded-Proto https
+				header_up X-Forwarded-For {http.request.remote.host}
 			}
 		}
 	}
@@ -29,6 +48,7 @@
 			reverse_proxy lg-gateway:80 {
 				# Preserve Host including its port for login origins and S3 signatures.
 				header_up X-Forwarded-Proto https
+				header_up X-Forwarded-For {http.request.remote.host}
 			}
 		}
 	}
@@ -38,6 +58,7 @@
 			reverse_proxy lg-gateway:80 {
 				# Preserve Host including its port for login origins and S3 signatures.
 				header_up X-Forwarded-Proto https
+				header_up X-Forwarded-For {http.request.remote.host}
 			}
 		}
 	}
@@ -47,6 +68,7 @@
 			reverse_proxy ob-gateway:80 {
 				# Preserve Host including its port for login origins and S3 signatures.
 				header_up X-Forwarded-Proto https
+				header_up X-Forwarded-For {http.request.remote.host}
 			}
 		}
 	}
@@ -60,6 +82,7 @@
 			reverse_proxy bp-gateway:80 {
 				# Preserve Host including its port for login origins and S3 signatures.
 				header_up X-Forwarded-Proto https
+				header_up X-Forwarded-For {http.request.remote.host}
 			}
 		}
 	}

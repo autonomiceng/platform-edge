@@ -435,3 +435,55 @@ The Caddy status proxy separately limits connection setup, response headers and
 idle reads; its read timeout is not a total response-body deadline. Direct clients
 of these routes must apply their own total deadline and size limit. Producers are
 trusted stack services publishing bounded public metadata.
+
+### Optional private storage consoles
+
+Backplane and Observability can expose their already enabled native RustFS consoles
+at Tailscale ports 8450 and 8451. The Edge console adds links only for connected
+endpoints. Each service keeps its native login, and agents continue to use Backplane's
+Files API. The connector does not enable a storage backend or migrate any data.
+
+First deploy the reviewed sibling console feature and explicitly enable
+`BP_RUSTFS_CONSOLE=true` or `OB_RUSTFS_CONSOLE=true` in that installation. Backplane
+must persist its existing `compose.gateway.yaml` and `compose.blobs.yaml` in
+`COMPOSE_FILE` and their `gateway,blobs` profiles in `COMPOSE_PROFILES` (keep any
+other selected files and profiles). Observability requires its existing `s3`
+profile and `compose.s3.yaml`. Do not add these settings to a filesystem installation
+as a substitute for its migration procedure.
+
+Run `scripts/tailscale_serve.py --dry-run` to inspect the proposed links. Its optional
+`--console-allow '100.64.0.0/10 fd7a:115c:a1e0::/48'` explicitly permits Tailnet clients
+at enabled Backplane and Observability consoles. Supply narrower client IPs/CIDRs
+when required. Without this option, each existing `BP_RUSTFS_CONSOLE_ALLOW` or `OB_RUSTFS_CONSOLE_ALLOW` list is preserved. General monitoring allowlists are unchanged.
+Tailnet access policy and native application login still apply. No Funnel endpoint
+is adopted; Funnel must remain disabled on these listeners. These client ranges are never trusted proxy ranges.
+
+`PE_TRUSTED_PROXIES` contains only exact ingress peer IPs. The connector records the
+Platform Network's IPv4 host gateway because Tailscale Serve reaches Edge through
+its loopback host port. Edge accepts forwarded client information only from that
+peer and sends one validated client address to the console gateways. Each sibling
+trusts only Edge's pinned Platform Network address. Arbitrary clients cannot supply
+their own forwarded identity. The host and Docker administrators remain trusted;
+local host processes can reach the same loopback ingress. A different host networking
+layout needs explicit validation of its ingress peer before deployment.
+
+The whole console origin is proxied, including login, administrative requests and
+S3 requests. Host, port and HTTPS scheme are retained for native authentication and
+request signatures. RustFS has no published host port and stays off the Platform
+Network. The connector checks current images and persistent mounts before changing
+settings and recreates only the selected services. Keep a verified checkpoint before
+running it; a partial failure can be corrected and rerun without deleting volumes.
+
+With trusted peers configured, any additional host proxy must replace untrusted
+forwarded-client headers and must not forward Tailnet console authorities. Prefer
+per-operator `/32` or `/128` client entries. The broader Tailnet ranges also admit
+shared-in nodes allowed by Tailscale policy. Agents must not receive host networking
+or Docker administration authority if they are outside this trusted host boundary.
+
+The setup result reports console access from the setup host separately. A 401,
+403 or 404 from that exact HTTPS origin means access was denied or the console
+was unavailable to this host; it does not prove a working login. Complete the
+native login check from an explicitly allowed client. Existing application
+routes retain their previous peer-address forwarding; only the new console
+routes forward the validated client address. Docker configurations with
+`userland-proxy: false` require explicit ingress-peer validation before use.
