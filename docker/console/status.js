@@ -196,13 +196,15 @@ const StackStatus = (() => {
       components,
     };
   }
+  function configurationFresh(doc, now, failed) {
+    return Boolean(doc?.clockAgrees && !failed && fresh(doc.configuration, doc.configurationValidForSeconds, now));
+  }
+  function telemetry(doc, now = Date.now(), failed = false) {
+    return configurationFresh(doc, now, failed) ? doc.telemetry : "unknown";
+  }
   function view(doc, id, now = Date.now(), failed = false) {
     const c = doc?.components[id];
-    const configFresh = Boolean(
-      doc?.clockAgrees &&
-        !failed &&
-        fresh(doc.configuration, doc.configurationValidForSeconds, now),
-    );
+    const configFresh = configurationFresh(doc, now, failed);
     const observedFresh = Boolean(
       c &&
         doc.clockAgrees &&
@@ -215,7 +217,9 @@ const StackStatus = (() => {
       : !doc.clockAgrees
         ? "Clock disagreement"
         : failed
-          ? "Metadata unavailable · stale"
+          ? c && c.observed !== null
+            ? "Metadata unavailable · stale"
+            : "Metadata unavailable"
           : c && c.observed !== null && !current
             ? "Stale observation"
             : !c || c.observed === null
@@ -319,6 +323,6 @@ const StackStatus = (() => {
       }),
     );
   }
-  return { ids, parse, view, legacy, request, pool };
+  return { ids, parse, view, telemetry, legacy, request, pool };
 })();
 if (typeof module !== "undefined") module.exports = StackStatus;

@@ -255,3 +255,12 @@ test("bounded independent jobs survive a rejected producer", async () => {
   assert.equal(peak, 3);
   assert.equal(completed, 7);
 });
+
+test("failed metadata labels stale only when a prior observation exists", () => {
+  const doc = parse(input());
+  delete doc.components.workerd;
+  assert.equal(S.view(doc, "workerd", now, true).reason, "Metadata unavailable");
+  assert.equal(S.view(doc, "server", now, true).reason, "Metadata unavailable · stale");
+  assert.equal(S.telemetry(doc, now, true), "unknown");
+  assert.equal(S.telemetry(doc, now), doc.telemetry);
+});
