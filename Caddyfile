@@ -85,6 +85,13 @@
 	import health-https
 }
 (console-config) {
+    @console-assets path /console/app.js /console/catalog.js /console/style.css /console/icons/*
+    handle @console-assets {
+        root * /srv/console
+        uri strip_prefix /console
+        header Cache-Control "no-cache"
+        file_server
+    }
 	handle /edge-config.json {
 		root * /srv/console
 		rewrite * /config.json

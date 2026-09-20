@@ -369,3 +369,22 @@ inspect them with `journalctl -u tailscaled` or configure a separate journal pip
 Caddy removes request and response headers and query strings from access logs and
 request-bearing error diagnostics. Do not put credentials in URL paths. URLs and request
 IDs remain log fields, not Loki index labels.
+
+## Project console
+
+The Edge console groups applications and supporting services by project. Search filters
+service names and descriptions. Project overview links narrow the same interface; Map
+shows application and log-collection paths with independent toggles. Component details
+link to the component’s upstream repository; project headers link to the stack repository.
+
+Refresh and automatic checks every 30 seconds update application addresses and health
+without reloading the page. Checks pause while the page is hidden. Backend services
+without a public probe show **Not checked**; optional components show **Optional**.
+The catalog describes the supported architecture, not a Docker inventory. Connections
+show expected dependencies, not live traffic; the logging layer applies when Alloy
+collection is configured. Installation task outcomes are **Not recorded** until a stack
+provides that metadata. Missing stacks do not block other projects.
+
+The console reads only same-origin, uncached access settings, application probes and
+optional Gateway version metadata. It has no Docker socket, credentials or installation
+privileges. Version metadata describes pinned images; it does not prove container health.
