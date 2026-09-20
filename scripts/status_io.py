@@ -18,7 +18,7 @@ class Unavailable(Exception):
 
 
 class Unsupported(Unavailable):
-    """The installed image does not provide this known probe executable."""
+    """The probe could not execute or yield readable evidence about the component."""
 
 
 def now():
@@ -61,8 +61,10 @@ def run(argv, *, timeout=4, limit=65536, cwd=None, env=None):
                 if process.poll() is None:
                     process.kill()  # Only the child captured at spawn.
                 process.wait()
-    except (OSError, UnicodeError, subprocess.SubprocessError) as error:
+    except (OSError, UnicodeError) as error:
         raise Unsupported() from error
+    except subprocess.SubprocessError as error:
+        raise Unavailable() from error
 
 
 def read_json(text, limit=65536):
