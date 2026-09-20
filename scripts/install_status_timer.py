@@ -91,21 +91,11 @@ def check(root, env_file, unit_dir, runner=None):
                     {'FragmentPath=', 'DropInPaths=', 'LoadState=not-found'},
                     {'FragmentPath=' + str(unit_dir / name), 'DropInPaths=', 'LoadState=loaded'}):
                 raise Unavailable()
-    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
     try:
-        for part in Path(os.path.abspath(unit_dir)).parts[1:]:
-            try:
-                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-            except FileNotFoundError:
-                return
-            os.close(fd)
-            fd = child
-        info = os.fstat(fd)
-        if info.st_uid != os.getuid() or info.st_mode & 0o022:
-            raise Unavailable()
-        matching_pair(fd, contents)
-    finally:
-        os.close(fd)
+        with directory(unit_dir, create=False, ancestors=True) as fd:
+            matching_pair(fd, contents)
+    except FileNotFoundError:
+        return
 
 
 def install(root, env_file, unit_dir, runner=run):
@@ -117,7 +107,7 @@ def install(root, env_file, unit_dir, runner=run):
     contents = units(root, env_file)
     check(root, env_file, unit_dir)
     check(root, env_file, unit_dir, runner)
-    with directory(unit_dir, 0o700) as fd:
+    with directory(unit_dir, 0o700, ancestors=True) as fd:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if not matching_pair(fd, contents):
             written = []

@@ -47,6 +47,14 @@ The installer always queries each unit with `show`; enumeration can omit loaded
 units. Absence requires `LoadState=not-found` with empty fragment and drop-in paths.
 An unavailable manager or inconclusive response still refuses before writing.
 
+Unit-directory ancestors must be owned by root or the installation user and must
+not be group- or other-writable, except trusted sticky directories with existing
+trusted children. Every new component requires a parent owned by the installation
+user with no group/other write permission; the final unit directory has the same
+strict rule. Symlink ancestors are refused. These checks apply only to timer units,
+not general status publication. Inspect unsafe ancestors with the host administrator;
+the installer never changes existing directory permissions.
+
 Activation reloads systemd, verifies the loaded service and timer fragment paths with
 `LoadState=loaded` and no drop-ins, enables the timer, then checks enabled and active
 state. A failure after activation starts retains the pair. Repeat the same installation

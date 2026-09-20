@@ -329,6 +329,104 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(before, {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in unit_dir.iterdir()})
         self.assertIn(['systemctl', '--user', 'enable', '--now', installer.NAME + '.timer'], calls)
 
+    def test_timer_unsafe_grandparent_refuses_fresh_and_existing_units_without_writes(self):
+        base = self.root
+        (base / 'scripts').mkdir()
+        (base / 'scripts/status_observer.py').touch()
+        (base / 'compose.yaml').touch()
+        env = base / '.env'
+        env.touch(mode=0o600)
+        unit_dir = None
+        def select(path):
+            nonlocal unit_dir
+            unit_dir = path
+        def invoke(*, check=False):
+            action = installer.check if check else installer.install
+            action(base, env, unit_dir, lambda argv, **options: manager_response(argv, unit_dir))
+        def snapshot():
+            return {str(path): (path.lstat().st_mode, path.lstat().st_mtime_ns,
+                               path.read_bytes() if path.is_file() else str(path.readlink()) if path.is_symlink() else None)
+                    for path in base.rglob('*')}
+        grandparent = base / 'unit-tree'
+        parent = grandparent / 'private'
+        parent.mkdir(parents=True, mode=0o700)
+        select(parent / 'systemd/user')
+        grandparent.chmod(0o775)
+        for check in (True, False):
+            before = snapshot()
+            with self.assertRaises(io.Unavailable):
+                invoke(check=check)
+            self.assertEqual(snapshot(), before)
+        self.assertFalse((parent / 'systemd').exists())
+
+        # Generic status publication retains its existing shared-ancestor policy.
+        with io.directory(grandparent / 'public') as fd:
+            io.publish(fd, 'status.json', {'status': 'unchanged'})
+        self.assertTrue((grandparent / 'public/status.json').is_file())
+        grandparent.chmod(0o700)
+        invoke()
+        grandparent.chmod(0o775)
+        before = snapshot()
+        for check in (True, False):
+            with self.assertRaises(io.Unavailable):
+                invoke(check=check)
+            self.assertEqual(snapshot(), before)
+
+    def test_timer_sticky_ancestor_allows_existing_child_but_not_creation_or_symlinks(self):
+        base = self.root
+        (base / 'scripts').mkdir()
+        (base / 'scripts/status_observer.py').touch()
+        (base / 'compose.yaml').touch()
+        env = base / '.env'
+        env.touch(mode=0o600)
+        unit_dir = None
+        def select(path):
+            nonlocal unit_dir
+            unit_dir = path
+        def invoke(*, check=False):
+            action = installer.check if check else installer.install
+            action(base, env, unit_dir, lambda argv, **options: manager_response(argv, unit_dir))
+        def snapshot():
+            return {str(path): (path.lstat().st_mode, path.lstat().st_mtime_ns,
+                               path.read_bytes() if path.is_file() else str(path.readlink()) if path.is_symlink() else None)
+                    for path in base.rglob('*')}
+        sticky = base / 'sticky'
+        sticky.mkdir()
+        sticky.chmod(0o1777)
+        private = sticky / 'private'
+        private.mkdir(mode=0o700)
+        select(private / 'systemd/user')
+        before = snapshot()
+        invoke(check=True)
+        self.assertEqual(snapshot(), before)
+        invoke()
+        before = snapshot()
+        invoke(check=True)
+        invoke()
+        self.assertEqual(snapshot(), before)
+
+        # Neither preflight nor creation may treat a missing child of a sticky parent as safe.
+        select(sticky / 'missing/systemd/user')
+        for check in (True, False):
+            before = snapshot()
+            with self.assertRaises(io.Unavailable):
+                invoke(check=check)
+            self.assertEqual(snapshot(), before)
+        # Exercise creation itself, independently of the installer's earlier read-only check.
+        with self.assertRaises(io.Unavailable), io.directory(sticky / 'missing/systemd/user', ancestors=True):
+            self.fail('created under a writable parent')
+        self.assertFalse((sticky / 'missing').exists())
+
+        link = base / 'unit-link'
+        link.symlink_to(private, target_is_directory=True)
+        select(link / 'systemd/user')
+        for check in (True, False):
+            before = snapshot()
+            with self.assertRaises((OSError, io.Unavailable)):
+                invoke(check=check)
+            self.assertEqual(snapshot(), before)
+
+
 
 if __name__ == '__main__':
     unittest.main()
