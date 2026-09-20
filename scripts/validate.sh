@@ -6,7 +6,7 @@ cd "$root"
 # Validate the shipped default independently of operator image and Compose overrides.
 export PE_CADDY_IMAGE=''
 unset COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PROFILES
-for tool in python3 shellcheck; do
+for tool in python3 shellcheck node; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
 work=$(mktemp -d)
@@ -20,6 +20,7 @@ python3 -m py_compile scripts/*.py tests/*.py
 echo 'python: PASS'
 python3 -c 'import json,sys; [json.load(open(path)) for path in sys.argv[1:]]' docs/operations/status-fixtures/*.json
 echo 'status fixtures parse: PASS'
+node --test tests/status*.test.cjs
 command -v docker >/dev/null || { echo 'missing tool: docker' >&2; exit 1; }
 docker compose version >/dev/null
 docker compose --env-file "$work/.env" -f compose.yaml config -q

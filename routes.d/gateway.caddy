@@ -1,90 +1,3 @@
-(stack-probes) {
-	handle /stack-versions/gateway {
-		header Cache-Control "no-store"
-		rewrite * /versions.json
-		reverse_proxy lg-gateway:80 {
-			header_up -Authorization
-			header_up -Cookie
-			header_up Host {$PE_PUBLIC_DOMAIN}
-			import forwarded-proto-{$PE_ACCESS_MODE:local}
-		}
-	}
-
-	handle /health/rustfs {
-		header Cache-Control "no-store"
-		rewrite * /health/rustfs-console
-		reverse_proxy lg-gateway:80 {
-			import probe-response
-			header_up -Authorization
-			header_up Host {$PE_PUBLIC_DOMAIN}
-			import forwarded-proto-{$PE_ACCESS_MODE:local}
-		}
-	}
-	# Same-origin probes for the fallback page. A missing alias becomes a 502.
-	handle /health/gateway {
-		header Cache-Control "no-store"
-		rewrite * /
-		reverse_proxy lg-gateway:80 {
-			import probe-response
-			header_up -Authorization
-			header_up Host {$PE_PUBLIC_DOMAIN}
-			import forwarded-proto-{$PE_ACCESS_MODE:local}
-		}
-	}
-	handle /health/backplane {
-		header Cache-Control "no-store"
-		rewrite * /health/ready
-		reverse_proxy bp-gateway:80 {
-			import probe-response
-			header_up -Authorization
-			header_up Host backplane.{$PE_PUBLIC_DOMAIN}
-			import forwarded-proto-{$PE_ACCESS_MODE:local}
-		}
-	}
-	handle /health/observability {
-		header Cache-Control "no-store"
-		rewrite * /health/grafana
-		reverse_proxy ob-gateway:80 {
-			import probe-response
-			header_up -Authorization
-			header_up Host {$PE_PUBLIC_DOMAIN}
-			import forwarded-proto-{$PE_ACCESS_MODE:local}
-		}
-	}
-	handle /health/litellm {
-		header Cache-Control "no-store"
-		rewrite * /health/litellm
-		reverse_proxy lg-gateway:80 {
-			import probe-response
-			header_up -Authorization
-			header_up Host {$PE_PUBLIC_DOMAIN}
-			import forwarded-proto-{$PE_ACCESS_MODE:local}
-		}
-	}
-
-	handle /health/langfuse {
-		header Cache-Control "no-store"
-		rewrite * /health/langfuse
-		reverse_proxy lg-gateway:80 {
-			import probe-response
-			header_up -Authorization
-			header_up Host {$PE_PUBLIC_DOMAIN}
-			import forwarded-proto-{$PE_ACCESS_MODE:local}
-		}
-	}
-
-	handle /health/s3 {
-		header Cache-Control "no-store"
-		rewrite * /health/rustfs
-		reverse_proxy lg-gateway:80 {
-			import probe-response
-			header_up -Authorization
-			header_up Host {$PE_PUBLIC_DOMAIN}
-			import forwarded-proto-{$PE_ACCESS_MODE:local}
-		}
-	}
-}
-
 (gateway-root-routes) {
 	import access-log
 	import access-headers-{$PE_ACCESS_MODE:local}
@@ -108,6 +21,7 @@
 		}
 	}
 	handle_errors {
+		import status-errors
 		import access-headers-{$PE_ACCESS_MODE:local}
 		@probe expression `{http.request.orig_uri.path} in ["/health/gateway", "/health/backplane", "/health/observability", "/health/litellm", "/health/langfuse", "/health/s3", "/health/rustfs"]`
 		handle @probe {

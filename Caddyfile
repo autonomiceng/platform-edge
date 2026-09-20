@@ -85,7 +85,7 @@
 	import health-https
 }
 (console-config) {
-    @console-assets path /console/app.js /console/catalog.js /console/style.css /console/icons/*
+    @console-assets path /console/app.js /console/catalog.js /console/status.js /console/style.css /console/icons/*
     handle @console-assets {
         root * /srv/console
         uri strip_prefix /console
@@ -123,6 +123,7 @@
 	}
 	}
 	handle_errors {
+		import status-errors
 		@probe path /health/*
 		handle @probe {
 			header Cache-Control "no-store"

@@ -238,6 +238,32 @@ test("deadline covers a body that never completes", async () => {
   );
   assert.equal(cancelled, true);
 });
+test("deadline cancels an ongoing trickle of body chunks", async () => {
+  let chunks = 0, cancelled = false, interval;
+  const body = new ReadableStream({
+    start(controller) {
+      interval = setInterval(() => {
+        chunks++;
+        controller.enqueue(new TextEncoder().encode(" "));
+      }, 50);
+    },
+    cancel() {
+      cancelled = true;
+      clearInterval(interval);
+    },
+  });
+  const started = Date.now();
+  try {
+    await assert.rejects(S.request("/status", async () => new Response(body, {
+      headers: { "Content-Type": "application/json" },
+    })), /deadline/);
+    assert.ok(chunks > 1);
+    assert.ok(Date.now() - started < 6000);
+    assert.equal(cancelled, true);
+  } finally {
+    clearInterval(interval);
+  }
+});
 test("bounded independent jobs survive a rejected producer", async () => {
   let active = 0,
     peak = 0,

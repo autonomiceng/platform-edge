@@ -89,17 +89,50 @@ cat > "$work/stub.caddy" <<'CADDY'
 		header Authorization *
 	}
 	respond @probe_credentials 401
+	handle /status.json {
+		route {
+			@authorization header Authorization *
+			respond @authorization "credential leaked" 401
+			@cookie header Cookie *
+			respond @cookie "cookie leaked" 401
+			@missing header X-Smoke-Status missing
+			respond @missing "private diagnostic" 404
+			@failure header X-Smoke-Status failure
+			respond @failure "private diagnostic" 503
+			@html header X-Smoke-Status html
+			handle @html {
+				header Content-Type text/html
+				respond "<html>fallback</html>" 200
+			}
+			import {$STUB_STATUS_HANDLER:/etc/caddy/respond-status.caddy}
+		}
+	}
+	header /versions.json Content-Type application/json
 	respond /versions.json `{"images":{"litellm":"1.2.3"}}`
 	respond /authority "{$STUB_ALIAS}|{http.request.hostport}|{http.request.header.X-Forwarded-Proto}"
 	respond "{$STUB_ALIAS}|{host}|{http.request.header.X-Forwarded-Proto}"
 }
 CADDY
+cat > "$work/respond-status.caddy" <<'CADDY'
+header Content-Type application/json
+respond `{"producer":"{$STUB_ALIAS}","host":"{http.request.host}","scheme":"{http.request.header.X-Forwarded-Proto}"}`
+CADDY
+cat > "$work/file-status.caddy" <<'CADDY'
+root * /srv/stub-status
+file_server
+CADDY
+mkdir "$work/stub-status"
+printf '%s\n' '{"producer":"ob-gateway","host":"localhost","scheme":"http"}' > "$work/stub-status/status.json"
 lg_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias lg-gateway -e STUB_ALIAS=lg-gateway \
-  -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" "$caddy_image")
+  -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" -v "$work/respond-status.caddy:/etc/caddy/respond-status.caddy:ro" \
+  "$caddy_image")
 bp_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias bp-gateway -e STUB_ALIAS=bp-gateway \
-  -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" "$caddy_image")
+  -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" -v "$work/respond-status.caddy:/etc/caddy/respond-status.caddy:ro" \
+  "$caddy_image")
 ob_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias ob-gateway -e STUB_ALIAS=ob-gateway \
-  -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" "$caddy_image")
+  -e STUB_STATUS_HANDLER=/etc/caddy/file-status.caddy -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" \
+  -v "$work/file-status.caddy:/etc/caddy/file-status.caddy:ro" -v "$work/stub-status:/srv/stub-status:ro" \
+  "$caddy_image")
 fi
 edge_started=1
 python3 scripts/bootstrap.py --env-file "$env_file"
@@ -119,6 +152,8 @@ assert not headers.get("x-smoke-authorization", "").strip()
 assert not headers.get("x-smoke-cookie", "").strip()
 PYVERSIONS
   ok 'console version metadata is uncached and forwards no browser credentials'
+  python3 tests/status_proxy.py "http://127.0.0.1:$PE_HTTP_PORT"
+  ok 'status proxy methods, credential stripping, content type and body suppression'
 fi
 
 
@@ -259,6 +294,8 @@ code=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -sS \
 [ "$code" = 502 ] && [ ! -s "$work/body" ] || fail 'failed probe leaked a body or hid failure'
 grep -iq '^Cache-Control: no-store' "$work/headers" || fail 'failed probe can be cached'
 ok 'failed console probe is empty and uncached'
+python3 tests/status_proxy.py "http://127.0.0.1:$PE_HTTP_PORT" --absent-observability
+ok 'status producer connection failure is empty and independent'
 body=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -fsS --resolve "litellm.localhost:$PE_HTTPS_PORT:127.0.0.1" \
   -H 'Host: litellm.localhost' "https://litellm.localhost:$PE_HTTPS_PORT/")
 [ "$body" = 'lg-gateway|litellm.localhost|https' ] || fail 'gateway failed with observability absent'
@@ -271,7 +308,7 @@ code=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -sS --resolve 
 grep -q 'Platform Edge' "$work/console.html" || fail 'console missing'
 grep -qi 'Cache-Control: no-cache' "$work/console.headers" || fail 'console HTML must revalidate'
 ok 'Edge console remains available when Gateway is absent'
-for asset in app.js style.css icons/caddy.svg; do
+for asset in app.js catalog.js status.js style.css icons/caddy.svg; do
   curl --noproxy '*' --max-time 10 -fsS -H 'Host: localhost' "http://127.0.0.1:$PE_HTTP_PORT/console/$asset" > "$work/asset"
   [ -s "$work/asset" ] || fail "empty console asset: $asset"
   ok "console asset $asset remains available without Gateway"
