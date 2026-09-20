@@ -18,12 +18,15 @@ Multiple standalone stacks each ship an ingress, but only one ingress can own a 
 
 No high availability, dynamic service discovery, authentication, rate limiting or edge dashboards are promised.
 
-Selected host installation is currently a read-only plan in `scripts/installation.py`,
-entered through bootstrap's `--stack`/`--dry-run` flags. It inspects only selected
-sibling configuration, delegates lifecycle ownership to their existing bootstraps,
-and refuses execution until H-EXEC. Existing installation evidence requires an
-owning Checkpoint/upgrade review. The [preflight contract](operations/ingress.md#selected-installation-preflight-h-select)
-lists deferred execution checks and does not claim readiness or enrollment.
+Selected host installation enters through bootstrap's `--stack`/`--dry-run` flags.
+`scripts/installation.py` preflights only selected sibling configuration;
+`scripts/installation_execution.py` qualifies existing image/mount custody, preserves
+owning env state atomically, and invokes each owning bootstrap after all selected
+checks pass. Edge's exact peer is pinned before sibling trust is written. No lifecycle
+logic or secret generation moves out of the owning stacks. The
+[installation contract](operations/ingress.md#selected-installation) describes recovery,
+owner-interface limits, and the separate H-CONNECT work. Aggregate completion does
+not claim host acceptance or enrollment.
 
 ## Shape
 

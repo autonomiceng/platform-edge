@@ -1,6 +1,7 @@
 """Selected preflight contract. Files are real fixtures; Docker is never invoked."""
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -17,13 +18,94 @@ import bootstrap
 import installation
 
 
-class FakeRunner:
-    def __init__(self, listeners="", occupied=False, publications=""):
-        self.listeners = listeners
-        self.occupied = occupied
-        self.publications = publications
+OWNER_SOURCE = {
+    "edge": "# Edge has no managed secrets\n",
+    "gateway": 'SECRETS: dict[str, int] = {"POSTGRES_PASSWORD": 24}\nPREFIXED: dict[str, tuple] = {"LANGFUSE_INIT_PROJECT_SECRET_KEY": ("sk-lf-", 24)}\n',
+    "observability": 'SECRETS: dict[str, int] = {"OB_GRAFANA_ADMIN_PASSWORD": 24, "OB_S3_ACCESS_KEY": 10, "OB_S3_SECRET_KEY": 24}\n',
+    "backplane": '// --mode full|minimal\nconst core = ["BP_AUTH_SECRET", "BP_POSTGRES_ADMIN_PASSWORD", "BP_POSTGRES_PASSWORD", "BP_OPERATIONS_TOKEN"];\nconst blobs = ["BP_RUSTFS_ROOT_USER", "BP_RUSTFS_ROOT_PASSWORD", "BP_BLOB_S3_ACCESS_KEY", "BP_BLOB_S3_SECRET_KEY"];\n',
+}
 
-    def __call__(self, argv):
+
+class FakeRunner:
+    def __init__(self, listeners="", occupied=False, publications="", fail=None):
+        self.listeners, self.occupied, self.publications = listeners, occupied, publications
+        self.containers, self.images, self.configs = {}, {}, {}
+        self.started = []
+        self.fail = fail
+        self.fail_after_persist = None
+        self.inventory_failed = False
+
+    def render(self, root, values):
+        name = next(name for name, (_, directory, _) in installation.STACKS.items() if root.name == directory)
+        prefix, project, _ = installation.STACKS[name]
+        project = values.get("COMPOSE_PROJECT_NAME", project)
+        volume = values.get(prefix + "_VOLUME_PREFIX") or project
+        ports = {"edge": (80, 443), "gateway": (18080,), "backplane": (3000,), "observability": (18180,)}[name]
+        service = "server" if name == "backplane" else "caddy"
+        services = {service: {"image": "fixture/" + name + ":1", "volumes": [
+            {"type": "volume", "source": "data", "target": "/data"},
+            {"type": "bind", "source": str(root / "Caddyfile"), "target": "/config", "read_only": True}],
+            "ports": [{"host_ip": "127.0.0.1", "published": str(port), "target": port} for port in ports]}}
+        if name == "edge":
+            services["caddy"]["networks"] = {"platform": {"ipv4_address": values.get("PE_TAILSCALE_EDGE_IP", "")}}
+        if name == "backplane":
+            profiles = values.get("COMPOSE_PROFILES", "blobs,compute,gateway").split(",")
+            services["server"]["image"] = values.get("BP_SERVER_IMAGE") or "fixture/backplane:1"
+            if "compute" in profiles:
+                services["workerd"] = {"image": values.get("BP_WORKERD_IMAGE") or "fixture/workerd:1", "volumes": [], "ports": []}
+            services["server"]["environment"] = {"BP_BLOB_BACKEND": "s3" if "blobs" in profiles else "filesystem", "BP_COMPUTE_URL": "http://workerd:8080" if "compute" in profiles else ""}
+        for desired in services.values():
+            self.images.setdefault(desired["image"], desired["image"] if desired["image"].startswith("sha256:") else "sha256:" + hashlib.sha256(desired["image"].encode()).hexdigest())
+        config = {"name": project, "services": services, "volumes": {"data": {"name": volume + "_data"}}}
+        self.configs[project] = config
+        return config
+
+    def container(self, root, values):
+        config = self.render(root, values)
+        for service, desired in config["services"].items():
+            identity = config["name"] + "-" + service
+            self.containers[identity] = {"Id": identity, "Image": self.images[desired["image"]],
+                "Labels": {"com.docker.compose.project": config["name"], "com.docker.compose.service": service},
+                "Mounts": [{"Type": mount["type"], "Name": config["volumes"][mount["source"]]["name"] if mount["type"] == "volume" else None,
+                            "Source": mount["source"], "Destination": mount["target"]} for mount in desired["volumes"]],
+                "Ports": {str(port["target"]) + "/tcp": [{"HostIp": port["host_ip"], "HostPort": port["published"]}] for port in desired["ports"]},
+                "Networks": {"platform": {"IPAddress": "172.30.0.2"}}, "Running": True}
+
+    def __call__(self, argv, **options):
+        if len(argv) > 1 and argv[1].endswith(("scripts/bootstrap.py", "infra/bootstrap/prepare.ts")):
+            root = Path(argv[1]).parents[2 if argv[0] == "bun" else 1]
+            name = next(name for name, (_, directory, _) in installation.STACKS.items() if root.name == directory)
+            if Path(options.get("cwd", ".")) != root:
+                return subprocess.CompletedProcess(argv, 1, "", "owner checkout unavailable")
+            self.started.append(name)
+            if self.fail == name:
+                return subprocess.CompletedProcess(argv, 1, "private capability" * 10000, "private secret" * 10000)
+            env = Path(argv[argv.index("--env-file") + 1])
+            values = installation.read_settings(env)
+            profiles = values.get("COMPOSE_PROFILES", "").split(",")
+            if name == "backplane":
+                if "COMPOSE_PROFILES" not in values:
+                    profiles = (["blobs", "compute"] if "minimal" not in argv else []) + ["gateway"]
+                    values.update(COMPOSE_FILE=":".join([str(root / "compose.yaml")] + [str(root / ("compose." + p + ".yaml")) for p in profiles]),
+                                  COMPOSE_PROFILES=",".join(profiles), COMPOSE_PROJECT_NAME=root.name,
+                                  BP_BLOB_BACKEND="s3" if "blobs" in profiles else "filesystem")
+            from installation_execution import secret_keys
+            keys = secret_keys(name, OWNER_SOURCE[name], profiles)
+            additions = {key: "owner-secret-" + key for key in keys if key not in values}
+            if name == "backplane":
+                additions.update({key: value for key, value in values.items() if key not in installation.read_settings(env)})
+            with env.open("a") as handle:
+                handle.write("".join(key + "=" + value + "\n" for key, value in additions.items()))
+            env.chmod(0o600)
+            if name == "observability":
+                marker = root / "data/installation/storage-mode"
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text("filesystem\n")
+            if self.fail_after_persist == name:
+                (root / "data/console").mkdir(parents=True, exist_ok=True)
+                return subprocess.CompletedProcess(argv, 1, "private capability", "private error")
+            self.container(root, installation.read_settings(env))
+            return subprocess.CompletedProcess(argv, 0, "private capability", "private warning")
         if argv == ["ss", "-H", "-ltn"]:
             output = self.listeners
         elif argv[:3] == ["docker", "context", "inspect"]:
@@ -32,11 +114,29 @@ class FakeRunner:
             output = "28.0.0"
         elif argv[:3] == ["docker", "compose", "version"]:
             output = "2.24.4"
-        elif argv == ["docker", "ps", "--format", "{{.Ports}}"]:
-            output = self.publications
+        elif argv[:2] == ["docker", "compose"]:
+            values = dict(options["env"], COMPOSE_PROFILES=",".join(argv[i + 1] for i, value in enumerate(argv[:-1]) if value == "--profile"))
+            output = json.dumps(self.render(Path(argv[argv.index("--project-directory") + 1]), values))
+        elif argv == ["docker", "ps", "--no-trunc", "--format", "json"]:
+            rows = [{"ID": c["Id"], "Ports": ", ".join(binding["HostIp"] + ":" + binding["HostPort"] + "->" + target
+                    for target, bindings in c["Ports"].items() for binding in bindings)} for c in self.containers.values() if c["Running"]]
+            rows += [{"ID": "foreign", "Ports": line} for line in self.publications.splitlines()]
+            output = "\n".join(map(json.dumps, rows))
         elif argv[:3] == ["docker", "network", "ls"]:
             output = ""
-        elif argv[:3] == ["docker", "ps", "-aq"] or argv[:3] == ["docker", "volume", "ls"]:
+        elif argv[:3] == ["docker", "image", "inspect"]:
+            output = self.images[argv[-1]]
+        elif argv[:2] == ["docker", "inspect"]:
+            value = self.containers[argv[-1]]
+            output = value["Image"] if argv[3] == "{{.Image}}" else json.dumps(value["Networks"] if argv[3] == "{{json .NetworkSettings.Networks}}" else value)
+        elif argv[:2] == ["docker", "ps"]:
+            project = next(v.split("=", 2)[2] for v in argv if v.startswith("label=com.docker.compose.project="))
+            service = next((v.split("=", 2)[2] for v in argv if v.startswith("label=com.docker.compose.service=")), None)
+            output = "\n".join(c["Id"] for c in self.containers.values() if c["Labels"]["com.docker.compose.project"] == project
+                               and (service is None or c["Labels"]["com.docker.compose.service"] == service))
+        elif argv[:3] == ["docker", "volume", "ls"]:
+            if self.inventory_failed:
+                return subprocess.CompletedProcess(argv, 1, "", "private inventory error")
             output = "existing" if self.occupied else ""
         else:
             raise AssertionError("unexpected or mutating inspection: " + repr(argv))
@@ -52,10 +152,12 @@ class InstallationTests(unittest.TestCase):
         for name, (_, directory, entrypoint) in installation.STACKS.items():
             checkout = self.host / directory
             for filename in {entrypoint, "scripts/install_status_timer.py", ".env.example", "compose.yaml", "compose.proxy.yaml",
-                             "compose.edge.yaml", "compose.gateway.yaml", "package.json", "bun.lock", "Caddyfile"}:
+                             "compose.edge.yaml", "compose.gateway.yaml", "compose.blobs.yaml", "compose.compute.yaml", "compose.public.yaml", "compose.tailscale.yaml", "package.json", "bun.lock", "Caddyfile"}:
                 path = checkout / filename
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("")
+            checkout.chmod(0o755)
+            (checkout / entrypoint).write_text(OWNER_SOURCE[name])
             if name == "edge":
                 (checkout / ".env.example").write_bytes((ROOT / ".env.example").read_bytes())
         self.backup = self.host / "backups"
@@ -75,7 +177,7 @@ class InstallationTests(unittest.TestCase):
             code = bootstrap.bootstrap(list(args), runner or FakeRunner())
         return code, json.loads(output.getvalue())
 
-    def test_empty_selection_retains_render_and_selected_execution_refuses_before_writing(self):
+    def test_empty_selection_retains_render_and_connection_flags_refuse_before_writing(self):
         code, rendered = self.invoke("--render-only")
         self.assertEqual(code, 0)
         self.assertEqual(rendered["generated"], [])
@@ -83,8 +185,8 @@ class InstallationTests(unittest.TestCase):
         (self.root / ".env").unlink()
         before = self.snapshot()
         with self.assertRaises(bootstrap.Refused) as caught:
-            self.invoke("--stack", "edge")
-        self.assertEqual(caught.exception.code, "installation_execution_not_implemented")
+            self.invoke("--stack", "edge", "--tailscale")
+        self.assertEqual(caught.exception.code, "installation_connection_pending")
         self.assertEqual(self.snapshot(), before)
 
     def test_exact_subset_does_not_read_other_sibling_configuration(self):
@@ -126,13 +228,14 @@ class InstallationTests(unittest.TestCase):
         (checkout / ".env").write_text("COMPOSE_FILE=" + selection + "\nCOMPOSE_PROFILES=gateway\n"
             "COMPOSE_PROJECT_NAME=retained\nBP_VOLUME_PREFIX=retained-data\nBP_PLATFORM_NETWORK=other\n"
             "BP_POSTGRES_PASSWORD=private-secret\nBP_BACKUP_DIR=" + str(self.backup) + "\n")
+        (checkout / ".env").chmod(0o600)
         before = self.snapshot()
         code, plan = self.invoke("--stack", "backplane", "--backplane-mode", "full", "--capability-file", str(self.capability), "--dry-run", runner=FakeRunner(occupied=True))
         self.assertEqual(code, 1)
         action = plan["actions"][1]
         self.assertEqual(action["compose_selection"], {"COMPOSE_FILE": selection, "COMPOSE_PROFILES": "gateway"})
         self.assertEqual((action["project"], action["volume_prefix"]), ("retained", "retained-data"))
-        self.assertTrue({"mode_conflict", "network_conflict", "checkpoint_review_required"} <= {issue["code"] for issue in plan["conflicts"]})
+        self.assertTrue({"mode_conflict", "network_conflict", "prerequisite_failed"} <= {issue["code"] for issue in plan["conflicts"]})
         self.assertNotIn("private-secret", json.dumps(plan))
         self.assertEqual(self.snapshot(), before)
 
@@ -159,13 +262,14 @@ class InstallationTests(unittest.TestCase):
         self.assertIn("tailscale_access", {issue["code"] for issue in plan["conflicts"]})
 
     def test_add_stack_plan_preserves_existing_routes_and_tailscale_apps(self):
-        (self.root / ".env").write_text("PE_TAILSCALE_HOST=machine.tailnet.ts.net\nPE_TAILSCALE_APPS=litellm,backplane\n")
+        (self.root / ".env").write_text("PE_TAILSCALE_HOST=machine.tailnet.ts.net\nPE_TAILSCALE_APPS=litellm,backplane,grafana\n")
         route = self.root / "routes.d" / "operator.caddy"
         route.parent.mkdir()
         route.write_text("# existing operator routing\n")
+        (self.root / ".env").chmod(0o600)
         before = self.snapshot()
         code, plan = self.invoke("--stack", "observability", "--tailscale", "--status-timers", "--dry-run")
-        self.assertEqual(code, 1)  # Installed Edge requires identity verification in H-EXEC.
+        self.assertEqual(code, 0)  # Env-only Edge can resume; connection actions remain deferred.
         self.assertEqual(plan["selected"], ["edge", "observability"])
         self.assertEqual(plan["actions"][1]["origin"], "https://machine.tailnet.ts.net:8447")
         self.assertIn("preserve existing PE_TAILSCALE_APPS", plan["actions"][2]["action"])

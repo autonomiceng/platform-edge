@@ -85,8 +85,8 @@ class Refused(Exception):
 
 
 def run_detached(argv: list[str], *, timeout: float, stdin=subprocess.DEVNULL,
-                 stdout=subprocess.PIPE, text: bool = False) -> subprocess.CompletedProcess:
-    with subprocess.Popen(argv, stdin=stdin, stdout=stdout, stderr=subprocess.PIPE,
+                 stdout=subprocess.PIPE, text: bool = False, env=None, stderr=subprocess.PIPE, cwd=None) -> subprocess.CompletedProcess:
+    with subprocess.Popen(argv, stdin=stdin, stdout=stdout, stderr=stderr, env=env, cwd=cwd,
                           text=text, start_new_session=True) as child:
         try:
             output, error = child.communicate(timeout=timeout)
@@ -104,11 +104,16 @@ def run_detached(argv: list[str], *, timeout: float, stdin=subprocess.DEVNULL,
 
 
 def run(argv: list[str], *, start_new_session: bool = False,
-        timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+        timeout: float | None = None, env=None, quiet: bool = False, cwd=None) -> subprocess.CompletedProcess[str]:
     # Compose startup has its own 300s health budget; allow image/startup overhead.
     budget = timeout if timeout is not None else (360 if {"up", "run"} & set(argv) else 120)
     try:
-        return run_detached(argv, timeout=budget, text=True)
+        options = {"env": env} if env is not None else {}
+        if cwd is not None:
+            options["cwd"] = cwd
+        if quiet:
+            options.update(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return run_detached(argv, timeout=budget, text=True, **options)
     except subprocess.TimeoutExpired:
         if start_new_session:
             raise
@@ -395,7 +400,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
     parser.add_argument("--template", default=".env.example")
     parser.add_argument("--render-only", action="store_true", help="write only the env file, start nothing")
     parser.add_argument("--probe-only", action="store_true", help="refresh readiness and expiry without starting services")
-    from installation import add_arguments, preflight
+    from installation import add_arguments, install
     add_arguments(parser)
     args = parser.parse_args(argv)
     if args.render_only and args.probe_only:
@@ -416,12 +421,14 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
                  "observability": ("observability_dir",)}[stack]
         if any(getattr(args, name) for name in names) and stack not in args.stack:
             parser.error("options for " + stack + " require --stack " + stack)
-    if args.stack and not args.dry_run:
-        raise Refused("installation_execution_not_implemented", "Selected-stack execution requires H-EXEC; use --dry-run. Nothing was changed.")
-    if args.dry_run:
-        plan = preflight(root, env_file, template, args, runner, Refused)
-        print(json.dumps(plan))
-        return 1 if plan["conflicts"] else 0
+    if args.stack and not args.dry_run and (args.tailscale or args.status_timers):
+        raise Refused("installation_connection_pending", "Selected Tailscale and status timers require H-CONNECT; nothing was changed.")
+    if args.stack or args.dry_run:
+        if (root / args.env_file).is_symlink():
+            raise Refused("installation_env_custody", "Selected installation env files must not be symlinks.")
+        code, report = install(root, env_file, template, args, runner, Refused)
+        print(json.dumps(report))
+        return code
     if shutil.which("docker") is None and not args.render_only:
         raise Refused("docker_missing", "install Docker with the Compose plugin")
 

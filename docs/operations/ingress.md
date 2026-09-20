@@ -12,12 +12,11 @@ Edge owns host ports 80 and 443. Its default loopback binding makes them accessi
 | `backplane.example.com` | `bp-gateway:80` |
 | `grafana.example.com` | `ob-gateway:80` |
 
-## Selected installation preflight (H-SELECT)
+## Selected installation
 
-`bootstrap.py --stack NAME --dry-run` prints a read-only JSON plan. Repeat `--stack`
-for `edge`, `gateway`, `backplane`, or `observability`; Edge is always implicit.
-No `--stack` retains the existing standalone Edge bootstrap. `--dry-run` alone
-plans Edge only. Omission never removes an installed stack, route, or Tailscale app.
+Repeat `bootstrap.py --stack NAME` to select `edge`, `gateway`, `backplane`, or
+`observability`. Edge is implicit. No `--stack` retains standalone Edge bootstrap.
+Omission never removes an installed stack, route, or Tailscale application.
 
 ```sh
 python3 scripts/bootstrap.py --stack backplane --stack observability \
@@ -26,51 +25,83 @@ python3 scripts/bootstrap.py --stack backplane --stack observability \
   --capability-file /home/operator/private/backplane-enrollment --dry-run
 ```
 
-Selected checkout defaults are the sibling directories `llm-gateway-stack`,
-`agent-backplane`, and `observability-stack` beside the Edge checkout. Override them
-with `--gateway-dir`, `--backplane-dir`, and `--observability-dir`. Unselected sibling
-configuration is not read. Configure Edge access and network in its existing env
-file, or use `--template` for fresh planning. Unset selected stack and Compose shell
-exports to avoid ambiguous installation identities.
+Remove `--dry-run` to execute the selected owning bootstraps after all selected
+preflight checks pass. Dry-run writes nothing and reports `executable`, conflicts,
+ordered native Compose selection, listeners, origins, and owning recovery runbooks.
+It renders Compose with fixed, in-memory interpolation sentinels for missing fresh
+secrets. Only owning bootstraps generate and store actual secrets. A plan proves no
+runtime readiness or enrollment. `--dry-run` alone plans Edge only; render/probe
+flags cannot be combined with selected installation or dry-run.
 
-Gateway needs `--gateway-backup-dir` and `--gateway-email` unless already recorded
-as `LG_BACKUP_DIR` and `LANGFUSE_INIT_USER_EMAIL`. Its backup directory must exist,
-not overlap Postgres data, and use a separate filesystem unless its owning
-`LG_ALLOW_SAME_FILESYSTEM_BACKUP=true` development policy explicitly permits it.
-Backplane needs an existing writable backup directory and an absolute capability
-output path with a private, writable parent. The capability contents are never read.
-Existing backup and login settings cannot be replaced by these inputs.
+Checkout defaults are sibling `llm-gateway-stack`, `agent-backplane`, and
+`observability-stack` directories. Override them with `--gateway-dir`,
+`--backplane-dir`, and `--observability-dir`. Only selected sibling configuration is
+read. Configure Edge through its env or fresh `--template`. Unset selected stack,
+managed secret, and Compose exports. Env files must be owned, private, single-link
+regular files; their parent directories must be owned and not group/other writable.
 
-The plan checks required commands/configuration files, a local Unix-socket Docker
-context, Compose 2.24.4+, selected project/prefix inventory, network, host and Docker
-TCP publications, and backup/capability path constraints. New sibling proxy listeners
-use loopback ports 18080 (Gateway), 18180 (Observability), and 3000 (Backplane).
-Recorded listener ports are preserved. Local Backplane uses HTTPS through Edge;
-clients must trust Edge's public CA certificate. Exact Edge peer trust is planned,
-never guessed before execution. Public and Tailscale access retain their contracts in this runbook.
+Gateway needs `--gateway-backup-dir` and `--gateway-email` unless recorded as
+`LG_BACKUP_DIR` and `LANGFUSE_INIT_USER_EMAIL`. Backups must use an existing writable
+separate filesystem, without overlap with Postgres data, unless the owning
+`LG_ALLOW_SAME_FILESYSTEM_BACKUP=true` development policy permits the same filesystem.
+Backplane needs an existing writable backup directory and `--capability-file` with
+an absolute path and a private writable parent. Capability contents are never read
+by the installer. Existing backup/email values cannot be replaced by these inputs.
+An unchanged rerun does **not** require a retained Checkpoint. Empty configured
+backup directories are valid; live data, certificates, and credentials remain protected.
 
-`--backplane-mode full|minimal` records the request and reports B-PROMOTE as pending:
-the inspected owning bootstrap does not yet accept mode selection. Omission preserves
-recorded selection and delegates fresh defaults to Backplane. `--tailscale` and
-`--status-timers` plan selected-only connection and owning timer installation.
-They do not invoke the current Tailscale helper, which still discovers all siblings.
+Fresh Backplane uses its owning full default with gateway ingress; pass
+`--backplane-mode minimal` for filesystem Files without Functions. Recorded native
+files, profiles, backend, project and volume prefix remain authoritative on rerun.
+Conflicting modes require Backplane's upgrade/migration procedure. This requires the
+full/minimal owning bootstrap interface, including capability readiness checks.
 
-H-SELECT never writes env/state, generates secrets, builds, starts services, installs
-timers, or enrolls a user. Exit 0 means the available preflight checks found no
-conflicts, not infrastructure readiness or enrollment. Exit 1 reports conflicts;
-usage errors are exit 2. Selected execution without `--dry-run` refuses before any
-inspection or mutation until H-EXEC is implemented. Render/probe flags cannot be
-combined with selected installation or dry-run flags.
+Fresh siblings use proxy mode on the shared Platform Network and loopback ports
+18080 (Gateway), 18180 (Observability), and 3000 (Backplane). Local Backplane uses
+HTTPS through Edge; install the public Edge CA root in client trust stores. Existing
+public origins and already connected Tailnet application origins are preserved.
+A newly added application uses direct Edge access until H-CONNECT connects it.
+Native console enable flags, login requirements, and client allowlists are preserved.
 
-Conservative boundary: **any recorded env, data, container, or volume requires the
-owning Checkpoint/upgrade review**, including a rendered-only or interrupted install.
-H-EXEC must distinguish safe reuse from an upgrade by checking image/mount identity,
-secrets, storage selection, and native Compose keys under owning locks. It must also
-finish exact peer reservation, fresh configuration validation, Tailscale authentication
-and Serve conflicts, matching timer recovery, capability readiness, and enrollment.
-These checks appear as deferred obligations, not successful checks. An add-stack plan
-preserves existing routes and settings but remains blocked until installed identity
-can be verified. This preparatory slice does not advance BDEFAULT, H-PROOF, or PE18.
+Preflight requires trusted local Docker, Compose 2.24.4+, selected configuration
+files, known resource inventory, and free or qualified selected TCP listeners.
+Existing containers, including stopped containers, must match rendered effective
+image IDs, service selection, and named-volume/bind mounts. Unknown custody,
+missing saved secrets, foreign publications, or an upgrade stop all execution before
+env/container changes. Each action names the owning recovery runbook. Env-only
+interrupted preparation with no durable resources resumes its recorded selection.
+Orphaned durable resources without container identity require owning recovery.
+
+Execution rechecks qualification under owning locks, publishes only selected public
+settings atomically, and calls the owning bootstraps serially from their checkouts.
+Edge starts first, then its exact peer is reserved with the shipped
+`compose.tailscale.yaml` and `PE_TAILSCALE_EDGE_IP` setting. This reservation also works
+without Tailscale. Its address is verified before sibling proxy trust is written;
+network CIDRs are never trusted. Existing native overlays retain their order.
+
+After a fresh Backplane launch, the installer records the verified server/workerd
+image IDs in its existing image override settings, preserving explicit operator
+overrides. This keeps subsequent owning bootstrap runs on those artifacts. Pre-existing
+Backplane installations with implicit build selection require explicit owning image
+qualification/reconfiguration before reuse. Observability custom overlays refuse
+because its bootstrap reconstructs
+its file list. These require owning bootstrap improvements or explicit owning
+reconfiguration, not an installer bypass. A stopped, unpinned Edge needs its original
+peer recovered before reuse. Do not run independent lifecycle commands concurrently.
+
+Exit 0 means the requested owning bootstraps completed; exit 1 means preflight refused,
+2 means usage, and 3 means execution stopped. The bounded JSON result lists
+`completed` stacks and `stopped_at`; raw child output is discarded to protect secrets.
+Infrastructure acceptance and enrollment remain unverified by this aggregate result.
+Correct the owning failure and rerun the same selection. There is no global rollback,
+volume deletion, aggregate env, or job database. Native owner status records remain
+the interruption evidence; an unexplained Backplane lock requires its documented
+manual recovery after confirming preparation has stopped.
+
+Selected execution with `--tailscale` or `--status-timers` refuses before mutation.
+Their selected-only connection and timer recovery belong to H-CONNECT; dry-run can
+still show these deferred actions with `executable=false`. Root must run fresh/rerun
+host acceptance. Merge remains gated by H-PROOF, BDEFAULT, and HSELECT.
 
 ## Image overrides
 
