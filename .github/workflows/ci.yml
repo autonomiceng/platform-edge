@@ -24,6 +24,8 @@ jobs:
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
       - run: scripts/validate.sh
       - run: python3 -m unittest discover -s tests -v
+      - name: Status contract checks
+        run: node --test tests/status*.test.cjs
       - name: Install browser test tools
         run: |
           npm install --prefix "$RUNNER_TEMP/edge-browser" --no-package-lock playwright@1.63.0
