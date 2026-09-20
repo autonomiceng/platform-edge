@@ -235,7 +235,7 @@ def qualify(item: dict, inspect) -> None:
         raise ValueError("Duplicate service containers require the owning recovery procedure.")
     owned = {container["Id"] for container in containers}
     for volume in sorted(unlabelled):
-        users = set(inspect(["docker", "ps", "-aq", "--filter", "volume=" + volume]).split())
+        users = set(inspect(["docker", "ps", "-aq", "--no-trunc", "--filter", "volume=" + volume]).split())
         mounted = any(mount.get("Name") == volume for container in containers for mount in container["Mounts"])
         if not mounted or not users or not users <= owned:
             raise ValueError("Volume ownership is unlabelled and cannot be established from qualified containers; use the owning recovery runbook.")

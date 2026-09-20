@@ -138,7 +138,7 @@ class FakeRunner:
             output = value["Image"] if argv[3] == "{{.Image}}" else json.dumps(value["Networks"] if argv[3] == "{{json .NetworkSettings.Networks}}" else value)
         elif argv[:2] == ["docker", "ps"] and any(v.startswith("volume=") for v in argv):
             volume = next(v.removeprefix("volume=") for v in argv if v.startswith("volume="))
-            output = "\n".join(c["Id"] for c in self.containers.values() if any(m.get("Name") == volume for m in c["Mounts"]))
+            output = "\n".join(c["Id"] if "--no-trunc" in argv else c["Id"][:12] for c in self.containers.values() if any(m.get("Name") == volume for m in c["Mounts"]))
         elif argv[:2] == ["docker", "ps"]:
             project = next(v.split("=", 2)[2] for v in argv if v.startswith("label=com.docker.compose.project="))
             service = next((v.split("=", 2)[2] for v in argv if v.startswith("label=com.docker.compose.service=")), None)
