@@ -16,6 +16,19 @@ import status_io as io
 AT = "2026-09-20T12:00:00Z"
 
 
+def manager_response(argv, unit_dir):
+    if argv[2:] == ['show', '--property=Version']:
+        return 'Version=255\n'
+    if argv[2] == 'show':
+        fragment = unit_dir / argv[3]
+        if fragment.is_file():
+            return 'LoadState=loaded\nFragmentPath=' + str(fragment) + '\nDropInPaths=\n'
+        return 'LoadState=not-found\nFragmentPath=\nDropInPaths=\n'
+    if argv[2] in ('daemon-reload', 'enable', 'is-enabled', 'is-active'):
+        return ''
+    raise AssertionError(argv)
+
+
 class PublicationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -149,7 +162,7 @@ class PublicationTests(unittest.TestCase):
         calls = []
         def runner(argv, **_):
             calls.append(argv)
-            return 'FragmentPath=' + str(unit_dir / argv[3]) + '\nDropInPaths=\n' if 'show' in argv else ''
+            return manager_response(argv, unit_dir)
         installer.install(root, env, unit_dir, runner)
         self.assertIn(['systemctl', '--user', 'enable', '--now', 'platform-edge-status.timer'], calls)
         self.assertEqual(calls[-1], ['systemctl', '--user', 'is-active', 'platform-edge-status.timer'])
@@ -182,9 +195,9 @@ class PublicationTests(unittest.TestCase):
             return original(path, *args, **kwargs)
         calls = []
         with patch.object(installer.os, 'open', side_effect=opened), self.assertRaises(OSError):
-            installer.install(self.root, env, unit_dir, lambda *args, **kwargs: calls.append(args) or '')
+            installer.install(self.root, env, unit_dir, lambda argv, **kwargs: calls.append(argv) or manager_response(argv, unit_dir))
         self.assertEqual(list(unit_dir.iterdir()), [])
-        self.assertTrue(all(call[0][2] in ('show', 'list-unit-files') for call in calls))
+        self.assertTrue(all(call[2] == 'show' for call in calls))
 
     def test_activation_failure_retains_units_for_exact_pair_recovery(self):
         (self.root / 'scripts').mkdir()
@@ -197,7 +210,7 @@ class PublicationTests(unittest.TestCase):
         def fail_enable(argv, **_):
             if 'enable' in argv:
                 raise io.Unavailable()
-            return 'FragmentPath=' + str(unit_dir / argv[3]) + '\nDropInPaths=\n' if 'show' in argv else ''
+            return manager_response(argv, unit_dir)
 
         with self.assertRaises(io.Unavailable):
             installer.install(self.root, env, unit_dir, fail_enable)
@@ -222,9 +235,6 @@ class PublicationTests(unittest.TestCase):
             expected = Path(value) if Path(value).is_absolute() else Path.home() / '.config'
             self.assertEqual(install.call_args.args[2], expected / 'systemd/user')
 
-
-if __name__ == '__main__':
-    unittest.main()
     def test_absent_unit_enumeration_falls_back_to_show_without_writes(self):
         (self.root / 'scripts').mkdir()
         (self.root / 'scripts/status_observer.py').touch()
@@ -242,8 +252,8 @@ if __name__ == '__main__':
                     raise io.Unavailable()
                 return 'Version=255\n'
             if argv[2] == 'list-unit-files':
-                # Actual absent-unit exit 1, empty stdout/stderr, mapped by status_io.run.
-                raise io.Unavailable()
+                # A zero-exit empty enumeration must never hide the loaded unit.
+                return ''
             if argv[2] == 'show':
                 if failure == 'unit-show':
                     raise io.Unavailable()
@@ -258,6 +268,7 @@ if __name__ == '__main__':
         installer.check(self.root, env, unit_dir, runner)
         self.assertFalse(env.exists())
         self.assertFalse(unit_dir.parent.parent.exists())
+        self.assertTrue(all(call[2] == 'show' for call in calls))
         for suffix in ('.service', '.timer'):
             self.assertTrue(any(call[2:4] == ['show', installer.NAME + suffix]
                                 and '--property=LoadState' in call for call in calls))
@@ -284,3 +295,43 @@ if __name__ == '__main__':
                     patch.object(installer, action, side_effect=io.Unavailable()), patch('builtins.print') as printed:
                 self.assertEqual(installer.main(), 1)
             self.assertTrue(printed.call_args.args[0].startswith('status timer ' + diagnostic + ' failed;'))
+
+    def test_reload_requires_loaded_units_before_enable_and_preserves_pair_for_retry(self):
+        (self.root / 'scripts').mkdir()
+        (self.root / 'scripts/status_observer.py').touch()
+        (self.root / 'compose.yaml').touch()
+        env = self.root / '.env'
+        env.touch(mode=0o600)
+        unit_dir = self.root / 'units'
+        calls = []
+        reloaded = False
+        load_state = 'loaded'
+
+        def runner(argv, **options):
+            nonlocal reloaded
+            calls.append(argv)
+            if argv[2] == 'daemon-reload':
+                reloaded = True
+            response = manager_response(argv, unit_dir)
+            return response.replace('LoadState=loaded', 'LoadState=' + load_state) if reloaded else response
+
+        for load_state in ('bad-setting', 'error', 'not-found'):
+            with self.subTest(load_state=load_state):
+                calls.clear()
+                reloaded = False
+                with self.assertRaises(io.Unavailable):
+                    installer.install(self.root, env, unit_dir, runner)
+                self.assertIn(['systemctl', '--user', 'daemon-reload'], calls)
+                self.assertFalse(any(call[2] == 'enable' for call in calls))
+                self.assertEqual({path.name for path in unit_dir.iterdir()},
+                                 {installer.NAME + '.service', installer.NAME + '.timer'})
+        before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in unit_dir.iterdir()}
+        load_state = 'loaded'
+        reloaded = False
+        installer.install(self.root, env, unit_dir, runner)
+        self.assertEqual(before, {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in unit_dir.iterdir()})
+        self.assertIn(['systemctl', '--user', 'enable', '--now', installer.NAME + '.timer'], calls)
+
+
+if __name__ == '__main__':
+    unittest.main()

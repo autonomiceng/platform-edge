@@ -51,8 +51,13 @@ An unchanged rerun does **not** require a retained Checkpoint. Empty configured
 backup directories are valid; live data, certificates, and credentials remain protected.
 
 Observability requires its alert destination settings before setup. For a development
-installation, explicitly record `OB_ALERTS=placeholder` in its `.env` to permit
-degraded alert delivery. The installer does not choose that exception automatically.
+installation, explicitly record `OB_ALERTS=placeholder` in its `.env` or selected
+`.env.example` to permit degraded alert delivery. The owning template leaves alert
+settings empty; the installer does not choose that exception automatically. This
+early guard checks only for a webhook or an email/SMTP pair, excluding the owner
+sentinel email suffix `@example.invalid`, or an explicit placeholder. The owning
+bootstrap validates destination syntax later; malformed settings can still refuse
+after Edge has started.
 
 Fresh Backplane uses its owning full default with gateway ingress; pass
 `--backplane-mode minimal` for filesystem Files without Functions. Recorded native

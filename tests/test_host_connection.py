@@ -12,6 +12,7 @@ import installation
 import install_status_timer as timer
 import tailscale_serve as tailscale
 from status_io import Unavailable
+from test_status_publication import manager_response
 
 
 class ConnectionRunner(fixtures.FakeRunner):
@@ -312,7 +313,7 @@ class HostConnectionTests(unittest.TestCase):
             calls.append(argv)
             if failing and 'is-active' in argv:
                 raise Unavailable()
-            return 'FragmentPath=' + str(unit_dir / argv[3]) + '\nDropInPaths=\n' if 'show' in argv else ''
+            return manager_response(argv, unit_dir)
         with self.assertRaises(Unavailable):
             timer.install(root, env, unit_dir, runner)
         before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in unit_dir.iterdir()}

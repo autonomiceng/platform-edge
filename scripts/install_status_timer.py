@@ -84,15 +84,7 @@ def check(root, env_file, unit_dir, runner=None):
     if runner is not None:
         runner(['systemctl', '--user', 'show', '--property=Version'], timeout=10)
         for name in contents:
-            try:
-                listed = runner(['systemctl', '--user', 'list-unit-files', name, '--no-legend', '--no-pager'], timeout=10)
-            except Unavailable:
-                # An absent unit can make enumeration exit 1; show must establish absence.
-                listed = None
-            if listed is not None and not isinstance(listed, str):
-                raise Unavailable()
-            if listed is not None and not listed.strip():
-                continue
+            # Enumerations can omit loaded units; inspect each name directly.
             evidence = runner(['systemctl', '--user', 'show', name, '--property=FragmentPath',
                                '--property=DropInPaths', '--property=LoadState'], timeout=10)
             if not isinstance(evidence, str) or set(evidence.strip().splitlines()) not in (
@@ -148,8 +140,8 @@ def install(root, env_file, unit_dir, runner=run):
         runner(['systemctl', '--user', 'daemon-reload'], timeout=10)
         for name in contents:
             evidence = runner(['systemctl', '--user', 'show', name, '--property=FragmentPath',
-                               '--property=DropInPaths'], timeout=10)
-            expected = {'FragmentPath=' + str(unit_dir / name), 'DropInPaths='}
+                               '--property=DropInPaths', '--property=LoadState'], timeout=10)
+            expected = {'FragmentPath=' + str(unit_dir / name), 'DropInPaths=', 'LoadState=loaded'}
             if not isinstance(evidence, str) or set(evidence.strip().splitlines()) != expected:
                 raise Unavailable()
         runner(['systemctl', '--user', 'enable', '--now', NAME + '.timer'], timeout=10)
