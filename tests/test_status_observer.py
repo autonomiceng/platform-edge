@@ -101,6 +101,8 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual((row['observedAt'], row['lastExecutionAt']), (AT, OLD))
         before = (self.root / 'data/console/status.json').read_bytes()
         self.assertEqual(json.loads(before), doc)
+        again = observer.observe(self.root, self.env, self.runner, lambda: AT)
+        self.assertEqual(again['components'][1]['lastExecutionAt'], OLD)
         self.assertEqual((self.root / 'data/console/status.json').read_bytes(), before)
         io.task_record(self.root, self.env, '2026-09-20T12:01:00Z', 'healthy')
         self.assertEqual(self.collect()['components'][1]['state'], 'unknown')
