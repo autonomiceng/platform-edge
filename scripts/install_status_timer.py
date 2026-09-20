@@ -84,14 +84,20 @@ def check(root, env_file, unit_dir, runner=None):
     if runner is not None:
         runner(['systemctl', '--user', 'show', '--property=Version'], timeout=10)
         for name in contents:
-            listed = runner(['systemctl', '--user', 'list-unit-files', name, '--no-legend', '--no-pager'], timeout=10)
-            if not isinstance(listed, str):
+            try:
+                listed = runner(['systemctl', '--user', 'list-unit-files', name, '--no-legend', '--no-pager'], timeout=10)
+            except Unavailable:
+                # An absent unit can make enumeration exit 1; show must establish absence.
+                listed = None
+            if listed is not None and not isinstance(listed, str):
                 raise Unavailable()
-            if not listed.strip():
+            if listed is not None and not listed.strip():
                 continue
-            evidence = runner(['systemctl', '--user', 'show', name, '--property=FragmentPath', '--property=DropInPaths'], timeout=10)
-            if not isinstance(evidence, str) or set(evidence.strip().splitlines()) not in ({'FragmentPath=', 'DropInPaths='},
-                                                         {'FragmentPath=' + str(unit_dir / name), 'DropInPaths='}):
+            evidence = runner(['systemctl', '--user', 'show', name, '--property=FragmentPath',
+                               '--property=DropInPaths', '--property=LoadState'], timeout=10)
+            if not isinstance(evidence, str) or set(evidence.strip().splitlines()) not in (
+                    {'FragmentPath=', 'DropInPaths=', 'LoadState=not-found'},
+                    {'FragmentPath=' + str(unit_dir / name), 'DropInPaths=', 'LoadState=loaded'}):
                 raise Unavailable()
     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -169,7 +175,7 @@ def main():
             return 0
         install(args.checkout, args.env_file, unit_dir)
     except (OSError, UnicodeError, Unavailable):
-        print('status timer installation failed; preserve units and retry the same checkout/env. '
+        print(f"status timer {'check' if args.check else 'installation'} failed; preserve units and retry the same checkout/env. "
               'Foreign or partial pairs require owning recovery; no units were overwritten.', file=sys.stderr)
         return 1
     print('Status timer enabled. An active user manager with Docker access is required; '

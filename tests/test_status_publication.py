@@ -225,3 +225,62 @@ class PublicationTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+    def test_absent_unit_enumeration_falls_back_to_show_without_writes(self):
+        (self.root / 'scripts').mkdir()
+        (self.root / 'scripts/status_observer.py').touch()
+        (self.root / 'compose.yaml').touch()
+        env = self.root / '.env'
+        unit_dir = self.root / 'config/systemd/user'
+        calls = []
+        evidence = 'LoadState=not-found\nFragmentPath=\nDropInPaths=\n'
+        failure = ''
+
+        def runner(argv, **options):
+            calls.append(argv)
+            if argv[2:] == ['show', '--property=Version']:
+                if failure == 'manager':
+                    raise io.Unavailable()
+                return 'Version=255\n'
+            if argv[2] == 'list-unit-files':
+                # Actual absent-unit exit 1, empty stdout/stderr, mapped by status_io.run.
+                raise io.Unavailable()
+            if argv[2] == 'show':
+                if failure == 'unit-show':
+                    raise io.Unavailable()
+                if (unit_dir / argv[3]).is_file():
+                    return ('FragmentPath=' + str(unit_dir / argv[3]) + '\nDropInPaths=\n' +
+                            ('LoadState=loaded\n' if '--property=LoadState' in argv else ''))
+                return evidence
+            if argv[2] in ('daemon-reload', 'enable', 'is-enabled', 'is-active'):
+                return ''
+            raise AssertionError(argv)
+
+        installer.check(self.root, env, unit_dir, runner)
+        self.assertFalse(env.exists())
+        self.assertFalse(unit_dir.parent.parent.exists())
+        for suffix in ('.service', '.timer'):
+            self.assertTrue(any(call[2:4] == ['show', installer.NAME + suffix]
+                                and '--property=LoadState' in call for call in calls))
+        env.touch(mode=0o600)
+        absent = evidence
+        for evidence, failure in ((absent, 'manager'), (absent, 'unit-show'),
+                                  ('LoadState=loaded\nFragmentPath=/foreign.service\nDropInPaths=\n', ''),
+                                  (absent.replace('DropInPaths=', 'DropInPaths=/run/override.conf'), '')):
+            with self.subTest(evidence=evidence, failure=failure):
+                before = {str(path): (path.lstat().st_mode, path.lstat().st_mtime_ns) for path in self.root.rglob('*')}
+                for action in (installer.check, installer.install):
+                    with self.assertRaises(io.Unavailable):
+                        action(self.root, env, unit_dir, runner)
+                    self.assertEqual(before, {str(path): (path.lstat().st_mode, path.lstat().st_mtime_ns) for path in self.root.rglob('*')})
+        evidence, failure = absent, ''
+        installer.install(self.root, env, unit_dir, runner)
+        self.assertEqual({path.name for path in unit_dir.iterdir()},
+                         {installer.NAME + '.service', installer.NAME + '.timer'})
+
+    def test_timer_failure_diagnostic_names_requested_action(self):
+        for flag, action, diagnostic in (('--check', 'check', 'check'), ('--install', 'install', 'installation')):
+            argv = ['install_status_timer.py', flag, '--checkout', str(self.root), '--env-file', str(self.root / '.env')]
+            with self.subTest(flag=flag), patch.object(sys, 'argv', argv), \
+                    patch.object(installer, action, side_effect=io.Unavailable()), patch('builtins.print') as printed:
+                self.assertEqual(installer.main(), 1)
+            self.assertTrue(printed.call_args.args[0].startswith('status timer ' + diagnostic + ' failed;'))
