@@ -130,7 +130,7 @@ def compose(item: dict) -> list[str]:
     command = ["docker", "compose", "--project-name", item["action"]["project"], "--project-directory", str(item["root"]),
                "--env-file", str(item["env"] if item["env"].exists() else Path("/dev/null"))]
     files = list(item["files"])
-    mode = item["values"].get("PE_ACCESS_MODE", "local")
+    mode = item["changes"].get("PE_ACCESS_MODE", item["values"].get("PE_ACCESS_MODE", "local"))
     if item["name"] == "edge" and mode in {"public", "proxy"}:
         override = item["root"] / ("compose." + mode + ".yaml")
         files = [file for file in files if (item["root"] / file).resolve() != override] + [str(override)]
@@ -286,12 +286,16 @@ def execute(prepared: list[dict], runner, inspect, refused=bootstrap.Refused) ->
                 if name != "edge" and name != "backplane":
                     trust_key = item["prefix"] + "_TRUSTED_PROXIES"
                     changes[trust_key] = item["recorded"].get(trust_key, peer + "/32")
-                if name == "backplane" and item["recorded"].get("BP_RUSTFS_CONSOLE") == "true":
+                if name == "backplane" and item["values"].get("BP_RUSTFS_CONSOLE") == "true":
                     changes["BP_TRUSTED_PROXIES"] = item["recorded"].get("BP_TRUSTED_PROXIES", peer + "/32")
                 if name != "edge":
                     trust = changes.get(item["prefix"] + "_TRUSTED_PROXIES", peer)
                     if {str(ipaddress.ip_interface(value).ip) for value in trust.split()} != {peer}:
                         raise ValueError("The pinned peer differs from the qualified proxy trust.")
+                if name == "gateway" and prepared[0].get("connection"):
+                    from tailscale_serve import operator_allow
+                    allowed = operator_allow(item["values"].get("LG_OPERATOR_ALLOW", "127.0.0.0/8 ::1"))
+                    changes["LG_OPERATOR_ALLOW"] = " ".join(dict.fromkeys(allowed + [peer]))
                 publish(item, changes)
                 lock.close()
                 response = runner(item["command"], timeout=1800, quiet=True, cwd=str(item["root"]))
@@ -306,6 +310,10 @@ def execute(prepared: list[dict], runner, inspect, refused=bootstrap.Refused) ->
                     if pin not in [str((item["root"] / file).resolve()) for file in files]:
                         files.append(pin)
                     pin_settings = {"PE_TAILSCALE_EDGE_IP": peer, "COMPOSE_FILE": ":".join(files)}
+                    if item.get("connection"):
+                        network = json.loads(inspect(["docker", "network", "inspect", item["action"]["network"]]))[0]
+                        from tailscale_serve import bridge_gateway
+                        pin_settings["PE_TRUSTED_PROXIES"] = bridge_gateway(network)
                     if amended(source, pin_settings) != source:
                         with owner_lock(item):
                             publish(item, pin_settings)

@@ -16,6 +16,19 @@ import status_io as io
 AT = "2026-09-20T12:00:00Z"
 
 
+def manager_response(argv, unit_dir):
+    if argv[2:] == ['show', '--property=Version']:
+        return 'Version=255\n'
+    if argv[2] == 'show':
+        fragment = unit_dir / argv[3]
+        if fragment.is_file():
+            return 'LoadState=loaded\nFragmentPath=' + str(fragment) + '\nDropInPaths=\n'
+        return 'LoadState=not-found\nFragmentPath=\nDropInPaths=\n'
+    if argv[2] in ('daemon-reload', 'enable', 'is-enabled', 'is-active'):
+        return ''
+    raise AssertionError(argv)
+
+
 class PublicationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -147,9 +160,12 @@ class PublicationTests(unittest.TestCase):
         env.touch()
         unit_dir = self.root / 'units'
         calls = []
-        installer.install(root, env, unit_dir, lambda argv, **_: calls.append(argv))
-        self.assertEqual(calls, [['systemctl', '--user', 'daemon-reload'],
-                                 ['systemctl', '--user', 'enable', '--now', 'platform-edge-status.timer']])
+        def runner(argv, **_):
+            calls.append(argv)
+            return manager_response(argv, unit_dir)
+        installer.install(root, env, unit_dir, runner)
+        self.assertIn(['systemctl', '--user', 'enable', '--now', 'platform-edge-status.timer'], calls)
+        self.assertEqual(calls[-1], ['systemctl', '--user', 'is-active', 'platform-edge-status.timer'])
         text = (unit_dir / 'platform-edge-status.service').read_text()
         self.assertIn('$$money%%', text)
         self.assertIn('\\"quotes\\"', text)
@@ -158,9 +174,9 @@ class PublicationTests(unittest.TestCase):
         self.assertNotIn('EnvironmentFile', text)
         self.assertIn('OnUnitInactiveSec=30s', (unit_dir / 'platform-edge-status.timer').read_text())
         calls.clear()
-        with self.assertRaises(io.Unavailable):
-            installer.install(root, env, unit_dir, lambda argv, **_: calls.append(argv))
-        self.assertEqual(calls, [])
+        before = {path: path.stat().st_mtime_ns for path in unit_dir.iterdir()}
+        installer.install(root, env, unit_dir, runner)
+        self.assertEqual(before, {path: path.stat().st_mtime_ns for path in unit_dir.iterdir()})
         for value in ('path\nExecStart=bad', 'path\x00bad'):
             with self.assertRaises(io.Unavailable):
                 installer.quote(value)
@@ -179,11 +195,11 @@ class PublicationTests(unittest.TestCase):
             return original(path, *args, **kwargs)
         calls = []
         with patch.object(installer.os, 'open', side_effect=opened), self.assertRaises(OSError):
-            installer.install(self.root, env, unit_dir, lambda *args, **kwargs: calls.append(args))
+            installer.install(self.root, env, unit_dir, lambda argv, **kwargs: calls.append(argv) or manager_response(argv, unit_dir))
         self.assertEqual(list(unit_dir.iterdir()), [])
-        self.assertEqual(calls, [])
+        self.assertTrue(all(call[2] == 'show' for call in calls))
 
-    def test_activation_failure_retains_units_for_disable_first_recovery(self):
+    def test_activation_failure_retains_units_for_exact_pair_recovery(self):
         (self.root / 'scripts').mkdir()
         (self.root / 'scripts/status_observer.py').touch()
         (self.root / 'compose.yaml').touch()
@@ -194,6 +210,7 @@ class PublicationTests(unittest.TestCase):
         def fail_enable(argv, **_):
             if 'enable' in argv:
                 raise io.Unavailable()
+            return manager_response(argv, unit_dir)
 
         with self.assertRaises(io.Unavailable):
             installer.install(self.root, env, unit_dir, fail_enable)
@@ -207,7 +224,7 @@ class PublicationTests(unittest.TestCase):
         with patch.object(sys, 'argv', argv), patch.object(installer, 'install', side_effect=UnicodeError()), \
                 patch('builtins.print') as printed:
             self.assertEqual(installer.main(), 1)
-        self.assertIn('generated units may remain', printed.call_args.args[0])
+        self.assertIn('preserve units', printed.call_args.args[0])
 
     def test_xdg_relative_and_empty_values_use_home_config(self):
         argv = ['installer', '--checkout', str(self.root), '--env-file', str(self.root / '.env'), '--install']
@@ -217,6 +234,198 @@ class PublicationTests(unittest.TestCase):
                 self.assertEqual(installer.main(), 0)
             expected = Path(value) if Path(value).is_absolute() else Path.home() / '.config'
             self.assertEqual(install.call_args.args[2], expected / 'systemd/user')
+
+    def test_absent_units_are_established_by_show_without_writes(self):
+        (self.root / 'scripts').mkdir()
+        (self.root / 'scripts/status_observer.py').touch()
+        (self.root / 'compose.yaml').touch()
+        env = self.root / '.env'
+        unit_dir = self.root / 'config/systemd/user'
+        calls = []
+        evidence = 'LoadState=not-found\nFragmentPath=\nDropInPaths=\n'
+        failure = ''
+
+        def runner(argv, **options):
+            calls.append(argv)
+            if argv[2:] == ['show', '--property=Version']:
+                if failure == 'manager':
+                    raise io.Unavailable()
+                return 'Version=255\n'
+            if argv[2] == 'show':
+                if failure == 'unit-show':
+                    raise io.Unavailable()
+                if (unit_dir / argv[3]).is_file():
+                    return ('FragmentPath=' + str(unit_dir / argv[3]) + '\nDropInPaths=\n' +
+                            ('LoadState=loaded\n' if '--property=LoadState' in argv else ''))
+                return evidence
+            if argv[2] in ('daemon-reload', 'enable', 'is-enabled', 'is-active'):
+                return ''
+            raise AssertionError(argv)
+
+        installer.check(self.root, env, unit_dir, runner)
+        self.assertFalse(env.exists())
+        self.assertFalse(unit_dir.parent.parent.exists())
+        self.assertTrue(all(call[2] == 'show' for call in calls))
+        for suffix in ('.service', '.timer'):
+            self.assertTrue(any(call[2:4] == ['show', installer.NAME + suffix]
+                                and '--property=LoadState' in call for call in calls))
+        env.touch(mode=0o600)
+        absent = evidence
+        for evidence, failure in ((absent, 'manager'), (absent, 'unit-show'),
+                                  ('LoadState=loaded\nFragmentPath=/foreign.service\nDropInPaths=\n', ''),
+                                  (absent.replace('DropInPaths=', 'DropInPaths=/run/override.conf'), '')):
+            with self.subTest(evidence=evidence, failure=failure):
+                before = {str(path): (path.lstat().st_mode, path.lstat().st_mtime_ns) for path in self.root.rglob('*')}
+                for action in (installer.check, installer.install):
+                    with self.assertRaises(io.Unavailable):
+                        action(self.root, env, unit_dir, runner)
+                    self.assertEqual(before, {str(path): (path.lstat().st_mode, path.lstat().st_mtime_ns) for path in self.root.rglob('*')})
+        evidence, failure = absent, ''
+        installer.install(self.root, env, unit_dir, runner)
+        self.assertEqual({path.name for path in unit_dir.iterdir()},
+                         {installer.NAME + '.service', installer.NAME + '.timer'})
+
+    def test_timer_failure_diagnostic_names_requested_action(self):
+        for flag, action, diagnostic in (('--check', 'check', 'check'), ('--install', 'install', 'installation')):
+            argv = ['install_status_timer.py', flag, '--checkout', str(self.root), '--env-file', str(self.root / '.env')]
+            with self.subTest(flag=flag), patch.object(sys, 'argv', argv), \
+                    patch.object(installer, action, side_effect=io.Unavailable()), patch('builtins.print') as printed:
+                self.assertEqual(installer.main(), 1)
+            self.assertTrue(printed.call_args.args[0].startswith('status timer ' + diagnostic + ' failed;'))
+
+    def test_reload_requires_loaded_units_before_enable_and_preserves_pair_for_retry(self):
+        (self.root / 'scripts').mkdir()
+        (self.root / 'scripts/status_observer.py').touch()
+        (self.root / 'compose.yaml').touch()
+        env = self.root / '.env'
+        env.touch(mode=0o600)
+        unit_dir = self.root / 'units'
+        calls = []
+        reloaded = False
+        load_state = 'loaded'
+
+        def runner(argv, **options):
+            nonlocal reloaded
+            calls.append(argv)
+            if argv[2] == 'daemon-reload':
+                reloaded = True
+            response = manager_response(argv, unit_dir)
+            return response.replace('LoadState=loaded', 'LoadState=' + load_state) if reloaded else response
+
+        for load_state in ('bad-setting', 'error', 'not-found'):
+            with self.subTest(load_state=load_state):
+                calls.clear()
+                reloaded = False
+                with self.assertRaises(io.Unavailable):
+                    installer.install(self.root, env, unit_dir, runner)
+                self.assertIn(['systemctl', '--user', 'daemon-reload'], calls)
+                self.assertFalse(any(call[2] == 'enable' for call in calls))
+                self.assertEqual({path.name for path in unit_dir.iterdir()},
+                                 {installer.NAME + '.service', installer.NAME + '.timer'})
+        before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in unit_dir.iterdir()}
+        load_state = 'loaded'
+        reloaded = False
+        installer.install(self.root, env, unit_dir, runner)
+        self.assertEqual(before, {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in unit_dir.iterdir()})
+        self.assertIn(['systemctl', '--user', 'enable', '--now', installer.NAME + '.timer'], calls)
+
+    def test_timer_unsafe_grandparent_refuses_fresh_and_existing_units_without_writes(self):
+        base = self.root
+        (base / 'scripts').mkdir()
+        (base / 'scripts/status_observer.py').touch()
+        (base / 'compose.yaml').touch()
+        env = base / '.env'
+        env.touch(mode=0o600)
+        unit_dir = None
+        def select(path):
+            nonlocal unit_dir
+            unit_dir = path
+        def invoke(*, check=False):
+            action = installer.check if check else installer.install
+            action(base, env, unit_dir, lambda argv, **options: manager_response(argv, unit_dir))
+        def snapshot():
+            return {str(path): (path.lstat().st_mode, path.lstat().st_mtime_ns,
+                               path.read_bytes() if path.is_file() else str(path.readlink()) if path.is_symlink() else None)
+                    for path in base.rglob('*')}
+        grandparent = base / 'unit-tree'
+        parent = grandparent / 'private'
+        parent.mkdir(parents=True, mode=0o700)
+        select(parent / 'systemd/user')
+        grandparent.chmod(0o775)
+        for check in (True, False):
+            before = snapshot()
+            with self.assertRaises(io.Unavailable):
+                invoke(check=check)
+            self.assertEqual(snapshot(), before)
+        self.assertFalse((parent / 'systemd').exists())
+
+        # Generic status publication retains its existing shared-ancestor policy.
+        with io.directory(grandparent / 'public') as fd:
+            io.publish(fd, 'status.json', {'status': 'unchanged'})
+        self.assertTrue((grandparent / 'public/status.json').is_file())
+        grandparent.chmod(0o700)
+        invoke()
+        grandparent.chmod(0o775)
+        before = snapshot()
+        for check in (True, False):
+            with self.assertRaises(io.Unavailable):
+                invoke(check=check)
+            self.assertEqual(snapshot(), before)
+
+    def test_timer_sticky_ancestor_allows_existing_child_but_not_creation_or_symlinks(self):
+        base = self.root
+        (base / 'scripts').mkdir()
+        (base / 'scripts/status_observer.py').touch()
+        (base / 'compose.yaml').touch()
+        env = base / '.env'
+        env.touch(mode=0o600)
+        unit_dir = None
+        def select(path):
+            nonlocal unit_dir
+            unit_dir = path
+        def invoke(*, check=False):
+            action = installer.check if check else installer.install
+            action(base, env, unit_dir, lambda argv, **options: manager_response(argv, unit_dir))
+        def snapshot():
+            return {str(path): (path.lstat().st_mode, path.lstat().st_mtime_ns,
+                               path.read_bytes() if path.is_file() else str(path.readlink()) if path.is_symlink() else None)
+                    for path in base.rglob('*')}
+        sticky = base / 'sticky'
+        sticky.mkdir()
+        sticky.chmod(0o1777)
+        private = sticky / 'private'
+        private.mkdir(mode=0o700)
+        select(private / 'systemd/user')
+        before = snapshot()
+        invoke(check=True)
+        self.assertEqual(snapshot(), before)
+        invoke()
+        before = snapshot()
+        invoke(check=True)
+        invoke()
+        self.assertEqual(snapshot(), before)
+
+        # Neither preflight nor creation may treat a missing child of a sticky parent as safe.
+        select(sticky / 'missing/systemd/user')
+        for check in (True, False):
+            before = snapshot()
+            with self.assertRaises(io.Unavailable):
+                invoke(check=check)
+            self.assertEqual(snapshot(), before)
+        # Exercise creation itself, independently of the installer's earlier read-only check.
+        with self.assertRaises(io.Unavailable), io.directory(sticky / 'missing/systemd/user', ancestors=True):
+            self.fail('created under a writable parent')
+        self.assertFalse((sticky / 'missing').exists())
+
+        link = base / 'unit-link'
+        link.symlink_to(private, target_is_directory=True)
+        select(link / 'systemd/user')
+        for check in (True, False):
+            before = snapshot()
+            with self.assertRaises((OSError, io.Unavailable)):
+                invoke(check=check)
+            self.assertEqual(snapshot(), before)
+
 
 
 if __name__ == '__main__':

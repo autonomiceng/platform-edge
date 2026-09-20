@@ -421,8 +421,6 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
                  "observability": ("observability_dir",)}[stack]
         if any(getattr(args, name) for name in names) and stack not in args.stack:
             parser.error("options for " + stack + " require --stack " + stack)
-    if args.stack and not args.dry_run and (args.tailscale or args.status_timers):
-        raise Refused("installation_connection_pending", "Selected Tailscale and status timers require H-CONNECT; nothing was changed.")
     if args.stack or args.dry_run:
         if (root / args.env_file).is_symlink():
             raise Refused("installation_env_custody", "Selected installation env files must not be symlinks.")

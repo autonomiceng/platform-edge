@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import bootstrap
+import tailscale_serve
 from installation_execution import custody, execute, qualify, read_source
 
 STACKS = {
@@ -54,10 +55,22 @@ def read_settings(path: Path) -> dict[str, str]:
     return result
 
 
+def timer_command(item):
+    command = [sys.executable, str(item["root"] / "scripts/install_status_timer.py"),
+               "--checkout", str(item["root"]), "--env-file", str(item["env"])]
+    if item["name"] == "backplane":
+        command += ["--compose-project", item["action"]["project"]]
+        for filename in item["files"]:
+            command += ["--compose-file", str((item["root"] / filename).resolve())]
+        for profile in item["profiles"]:
+            command += ["--profile", profile]
+    return command
+
+
 def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused, prepared=None):
     prepared = [] if prepared is None else prepared
     selected = [name for name in STACKS if name == "edge" or name in args.stack]
-    result = {"selected": selected, "actions": [], "conflicts": [], "executable": False, "execution_supported": not (args.tailscale or args.status_timers),
+    result = {"selected": selected, "actions": [], "conflicts": [], "executable": False, "execution_supported": True,
               "infrastructure": "unverified", "enrollment": "unverified",
               "deferred": ["Backplane enrollment remains a separate bp bootstrap action; readiness is not enrollment."]}
 
@@ -102,6 +115,21 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
     except (OSError, ValueError, bootstrap.Refused):
         conflict("edge", "edge_settings", "Repair Edge settings before planning installation.")
         return result
+    if args.tailscale and (edge["PE_ACCESS_MODE"] == "public" or edge["PE_BIND_HOST"] != "127.0.0.1"):
+        conflict("edge", "tailscale_access", "Tailscale requires local/proxy access with the loopback listener.")
+        return result
+    origin_settings = dict(edge)
+    connection = None
+    if args.tailscale:
+        try:
+            tail_status = json.loads(inspect(["tailscale", "status", "--json"]))
+            tail_serve = tailscale_serve.serve_status(inspect(["tailscale", "serve", "status", "--json"]))
+            connection = tailscale_serve.selected_plan(edge, {}, tail_status, tail_serve)
+            edge = bootstrap.settings_for(edge | connection["changes"]["edge"])
+            result["connection"] = {"links": tailscale_serve.links(connection["endpoints"]), "state": "planned"}
+        except (OSError, ValueError, KeyError, TypeError, bootstrap.Refused):
+            conflict("edge", "tailscale_preflight", "Cannot verify the selected private Tailscale endpoints.")
+            return result
     network = edge["PE_PLATFORM_NETWORK"]
     peer = edge["PE_TAILSCALE_EDGE_IP"] or None
     if docker:
@@ -109,9 +137,12 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
             networks = inspect(["docker", "network", "ls", "--format", "{{.Name}}"])
             if network in networks.splitlines():
                 network_type = inspect(["docker", "network", "inspect", network, "--format", "{{.Driver}} {{.Internal}}"])
+                if args.tailscale:
+                    bridge = tailscale_serve.bridge_gateway(json.loads(inspect(["docker", "network", "inspect", network]))[0])
+                    connection["changes"]["edge"]["PE_TRUSTED_PROXIES"] = bridge
                 if network_type != "bridge false":
                     raise ValueError("Platform Network must be a non-internal local bridge.")
-        except (ValueError, OSError, bootstrap.Refused):
+        except (ValueError, OSError, KeyError, TypeError, IndexError, bootstrap.Refused):
             conflict("edge", "network_unverified", "Cannot verify the existing Platform Network as a non-internal bridge.")
     if (args.tailscale or edge["PE_TAILSCALE_HOST"]) and (edge["PE_ACCESS_MODE"] == "public" or edge["PE_BIND_HOST"] != "127.0.0.1"):
         conflict("edge", "tailscale_access", "Tailscale requires local/proxy access with the loopback listener.")
@@ -186,20 +217,26 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                 named = inspect(["docker", "volume", "ls", "--filter", "name=^" + re.escape(volume_prefix) + ("-" if name == "gateway" else "_"), "--format", "{{.Name}}"])
                 existing = existing or bool(containers or volumes or named)
             action["installation"] = "existing" if existing else ("fresh" if docker else "unknown")
-            scheme = "https" if name == "backplane" or args.tailscale or edge["PE_TAILSCALE_HOST"] else edge["PE_SCHEME"]
-            port = edge["PE_HTTPS_PORT" if scheme == "https" else "PE_HTTP_PORT"]
+            scheme = "https" if name == "backplane" or origin_settings["PE_TAILSCALE_HOST"] else origin_settings["PE_SCHEME"]
+            port = origin_settings["PE_HTTPS_PORT" if scheme == "https" else "PE_HTTP_PORT"]
             suffix = "" if port == ("443" if scheme == "https" else "80") else ":" + port
-            if edge["PE_ACCESS_MODE"] in {"public", "proxy"}:
+            if origin_settings["PE_ACCESS_MODE"] in {"public", "proxy"}:
                 suffix = ""
             host = {"edge": "", "gateway": "", "backplane": "backplane.", "observability": "grafana."}[name]
-            origin = scheme + "://" + host + edge["PE_PUBLIC_DOMAIN"] + suffix
+            origin = scheme + "://" + host + origin_settings["PE_PUBLIC_DOMAIN"] + suffix
             tail_app = {"edge": "", "gateway": "gateway", "backplane": "backplane", "observability": "grafana"}[name]
-            connected = edge["PE_TAILSCALE_APPS"].split(",")
-            if args.tailscale or edge["PE_TAILSCALE_HOST"] and (not tail_app or tail_app in connected):
-                tail_port = edge["PE_TAILSCALE_" + {"edge": "PORT", "gateway": "GATEWAY_PORT", "backplane": "BACKPLANE_PORT", "observability": "GRAFANA_PORT"}[name]]
-                origin = "https://" + edge["PE_TAILSCALE_HOST"] + ":" + tail_port if edge["PE_TAILSCALE_HOST"] else "planned: authenticated Tailscale machine HTTPS origin"
+            connected = origin_settings["PE_TAILSCALE_APPS"].split(",")
+            if origin_settings["PE_TAILSCALE_HOST"] and (not tail_app or tail_app in connected):
+                tail_port = origin_settings["PE_TAILSCALE_" + {"edge": "PORT", "gateway": "GATEWAY_PORT", "backplane": "BACKPLANE_PORT", "observability": "GRAFANA_PORT"}[name]]
+                origin = "https://" + origin_settings["PE_TAILSCALE_HOST"] + ":" + tail_port
             action["origin"] = origin
-            changes = {}
+            connection_changes = {}
+            if args.tailscale:
+                selected_connection = tailscale_serve.selected_plan(edge, {name: values}, tail_status, tail_serve)
+                connection["endpoints"].update(selected_connection["endpoints"])
+                connection_changes = selected_connection["changes"][name]
+                action["origin"] = selected_connection["endpoints"][tail_app or "Platform Edge"]["url"].rstrip("/")
+            changes = dict(connection_changes) if name == "edge" else {}
             if name == "edge":
                 ports = [edge["PE_HTTP_PORT"]] + ([edge["PE_HTTPS_PORT"]] if edge["PE_ACCESS_MODE"] != "proxy" else [])
                 bind = edge["PE_BIND_HOST"]
@@ -213,20 +250,20 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                 if name == "backplane":
                     expected["BP_PUBLIC_URL"] = origin
                 else:
-                    expected.update({prefix + "_PUBLIC_DOMAIN": edge["PE_PUBLIC_DOMAIN"], prefix + "_SCHEME": scheme,
+                    expected.update({prefix + "_PUBLIC_DOMAIN": origin_settings["PE_PUBLIC_DOMAIN"], prefix + "_SCHEME": scheme,
                                      prefix + "_PUBLIC_PORT_SUFFIX": suffix})
                 if name == "observability":
                     expected["OB_GRAFANA_URL"] = origin
                 if name == "gateway":
                     for app, label in (("gateway", "CONSOLE"), ("litellm", "LITELLM"), ("langfuse", "LANGFUSE"), ("s3", "S3"), ("rustfs", "RUSTFS")):
                         app_host = "" if app == "gateway" else app + "."
-                        url = scheme + "://" + app_host + edge["PE_PUBLIC_DOMAIN"] + suffix
-                        if edge["PE_TAILSCALE_HOST"] and app in connected:
-                            url = "https://" + edge["PE_TAILSCALE_HOST"] + ":" + edge["PE_TAILSCALE_" + app.upper() + "_PORT"]
+                        url = scheme + "://" + app_host + origin_settings["PE_PUBLIC_DOMAIN"] + suffix
+                        if origin_settings["PE_TAILSCALE_HOST"] and app in connected:
+                            url = "https://" + origin_settings["PE_TAILSCALE_HOST"] + ":" + origin_settings["PE_TAILSCALE_" + app.upper() + "_PORT"]
                         expected["LG_" + label + "_URL"] = url
                 expected[prefix + "_PLATFORM_NETWORK"] = network
                 expected[key] = ports[0]
-                if name != "backplane" or recorded.get("BP_RUSTFS_CONSOLE") == "true":
+                if name != "backplane" or values.get("BP_RUSTFS_CONSOLE") == "true":
                     proxies = [ipaddress.ip_interface(value) for value in recorded.get(prefix + "_TRUSTED_PROXIES", "").split()]
                     if any(proxy.network.prefixlen != proxy.max_prefixlen for proxy in proxies):
                         raise ValueError("Proxy trust must contain only the exact Edge address, never a network range.")
@@ -236,8 +273,12 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                     if recorded.get(prefix + "_TRUSTED_PROXIES") and peer:
                         if {str(ipaddress.ip_interface(v).ip) for v in recorded[prefix + "_TRUSTED_PROXIES"].split()} == {peer}:
                             expected[prefix + "_TRUSTED_PROXIES"] = recorded[prefix + "_TRUSTED_PROXIES"]
+                # Accept the original Edge origins or the requested Tailnet origins, never arbitrary public settings.
+                prior = dict(expected)
+                expected.update(connection_changes)
                 changes.update(expected)
-                if any(key in recorded and recorded[key] != value for key, value in expected.items()):
+                if any(key in recorded and recorded[key] != value and (not args.tailscale or recorded[key] != prior.get(key))
+                       for key, value in expected.items()):
                     conflict(name, "origin_conflict", "Recorded access settings differ; use the owning ingress/reconfiguration procedure.")
             for port in ports:
                 if not port.isdigit() or not 1 <= int(port) <= 65535:
@@ -315,8 +356,16 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                 mode_file = "compose." + edge["PE_ACCESS_MODE"] + ".yaml"
                 if str(directory / mode_file) not in [str((directory / f).resolve()) for f in files]:
                     files.append(mode_file)
+            if args.tailscale and name == "edge":
+                files = [file for file in files if (directory / file).resolve() != directory / "compose.proxy.yaml"]
+                if ":".join(files) != configured_files:
+                    changes["COMPOSE_FILE"] = ":".join(files)
             if name != "backplane" and "COMPOSE_FILE" not in recorded:
                 changes["COMPOSE_FILE"] = ":".join(files)
+            if args.tailscale and name in {"backplane", "observability"} and values.get(prefix + "_RUSTFS_CONSOLE") == "true":
+                required_profile = "blobs" if name == "backplane" else "s3"
+                if required_profile not in profiles or (directory / ("compose." + required_profile + ".yaml")) not in [(directory / f).resolve() for f in files]:
+                    raise ValueError("Enabled RustFS console requires its recorded native storage selection.")
             command = ["bun" if name == "backplane" else sys.executable, str(directory / entrypoint), "--env-file", str(env)]
             if name == "backplane":
                 changes.update(COMPOSE_PROJECT_NAME=project, BP_VOLUME_PREFIX=volume_prefix)
@@ -345,7 +394,7 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                 action["listeners"] = [bind + ":" + str(port) for bind, port in item["ports"]]
                 wanted.extend((name, bind, port) for bind, port in item["ports"])
                 prepared.append(item)
-            action["compose_selection"] = {"COMPOSE_FILE": recorded.get("COMPOSE_FILE", ":".join(files)), "COMPOSE_PROFILES": recorded.get("COMPOSE_PROFILES", ",".join(profiles))}
+            action["compose_selection"] = {"COMPOSE_FILE": changes.get("COMPOSE_FILE", recorded.get("COMPOSE_FILE", ":".join(files))), "COMPOSE_PROFILES": recorded.get("COMPOSE_PROFILES", ",".join(profiles))}
         except (OSError, ValueError, KeyError, TypeError, SyntaxError, bootstrap.Refused) as error:
             detail = str(error) if isinstance(error, ValueError) else "Selected installation inspection failed; repair paths/configuration without replacing state."
             conflict(name, "prerequisite_failed", detail)
@@ -362,11 +411,27 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
         if any(port == other_port and overlaps(address) for address, other_port in foreign_ports + [p for p in listeners if p not in owned_ports]) or any(port == other_port and overlaps(address) for _, address, other_port in wanted[:index]):
             conflict(name, "port_conflict", "Requested TCP listener has a foreign owner or is duplicated; preserve installed listeners.")
     if args.tailscale:
+        try:
+            final_connection = tailscale_serve.selected_plan(edge, {item["name"]: item["values"] for item in prepared}, tail_status, tail_serve)
+            edge_ports = {(bind, port) for name, bind, port in wanted if name == "edge"}
+            tailscale_serve.check_listeners(final_connection["endpoints"], tail_status, listeners, edge_ports)
+            tailscale_serve.check_listeners(final_connection["endpoints"], {}, foreign_ports)
+            if prepared:
+                prepared[0]["changes"].update(connection["changes"]["edge"])
+                prepared[0]["changes"].update(final_connection["changes"]["edge"])
+                prepared[0]["connection"] = final_connection
+            result["connection"] = {"links": tailscale_serve.links(final_connection["endpoints"]), "state": "planned"}
+        except (ValueError, KeyError, TypeError):
+            conflict("edge", "tailscale_conflict", "Selected Tailscale endpoint or host listener is foreign; nothing changed.")
         result["actions"].append({"stack": "edge", "action": "connect selected Tailscale applications; preserve existing PE_TAILSCALE_APPS", "depends_on": selected})
-        result["deferred"].append("H-CONNECT: selected-only Tailscale helper, authenticated machine/HTTPS/Serve conflict checks")
+
     if args.status_timers:
         result["actions"].append({"action": "install/resume owning status timers for selected stacks", "depends_on": selected})
-        result["deferred"].append("H-CONNECT: verify user manager, timer custody and matching interrupted units")
+        for item in prepared:
+            try:
+                inspect(timer_command(item) + ["--check"], cwd=str(item["root"]))
+            except (OSError, ValueError, bootstrap.Refused):
+                conflict(item["name"], "timer_preflight", "Owning timer must support --check and exact-pair retry for this native selection; preserve existing units. See docs/operations/status-observer.md.")
     result["executable"] = result["execution_supported"] and not result["conflicts"]
     return result
 
@@ -379,7 +444,28 @@ def install(root, env_file, template, args, runner, refused=bootstrap.Refused):
     def inspect(argv, **options):
         result = runner(argv, **options)
         if result.returncode:
+            if argv[:2] == ["tailscale", "serve"] and "status" not in argv:
+                raise tailscale_serve.ServeFailure(result)
             raise ValueError("Inspection failed.")
         return result.stdout.strip()
     report = execute(prepared, runner, inspect, refused)
+    if report["stopped_at"] is None and args.tailscale:
+        try:
+            report["connection"] = tailscale_serve.connect(prepared[0]["connection"]["endpoints"], inspect)
+            if report["connection"]["state"] != "verified":
+                report["stopped_at"] = "tailscale"
+        except (OSError, ValueError, KeyError, TypeError, KeyboardInterrupt, refused):
+            report.update(stopped_at="tailscale", connection={"state": "unverified"},
+                          next="Correct private HTTPS access and rerun the same selection; completed installations are retained.")
+    if report["stopped_at"] is None and args.status_timers:
+        report["timers"] = []
+        for item in prepared:
+            try:
+                response = runner(timer_command(item) + ["--install"], cwd=str(item["root"]), quiet=True, timeout=120)
+                if response.returncode:
+                    raise ValueError("Owning timer failed")
+            except (OSError, ValueError, KeyboardInterrupt, refused):
+                report.update(stopped_at=item["name"] + "-timer", next="Preserve installed units and rerun the same selection after correcting the owning timer failure.")
+                break
+            report["timers"].append(item["name"])
     return (3 if report["stopped_at"] else 0), report
