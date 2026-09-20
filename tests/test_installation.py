@@ -182,6 +182,8 @@ class InstallationTests(unittest.TestCase):
             (checkout / entrypoint).write_text(OWNER_SOURCE[name])
             if name == "edge":
                 (checkout / ".env.example").write_bytes((ROOT / ".env.example").read_bytes())
+            if name == "observability":
+                (checkout / ".env.example").write_text("OB_ALERTS=placeholder\n")
         self.backup = self.host / "backups"
         self.backup.mkdir()
         self.capability = self.host / "capability"
@@ -225,6 +227,20 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual([action["stack"] for action in plan["actions"]], plan["selected"])
         self.assertEqual(plan["actions"][1]["listeners"], ["127.0.0.1:18180"])
         self.assertEqual(self.snapshot(), before)
+
+    def test_observability_requires_explicit_alert_delivery_before_any_installation(self):
+        template = self.host / "observability-stack/.env.example"
+        for settings, allowed in [("", False), ("OB_ALERTS=placeholder\n", True),
+                                  ("OB_ALERT_WEBHOOK_URL=https://alerts.example.test/hook\n", True),
+                                  ("OB_ALERT_EMAIL=operator@company.test\nOB_SMTP_URL=smtps://mail.example.test\n", True)]:
+            with self.subTest(settings=settings):
+                template.write_text(settings)
+                before = self.snapshot()
+                code, plan = self.invoke("--stack", "observability", "--dry-run")
+                self.assertEqual(code, 0 if allowed else 1)
+                self.assertEqual(self.snapshot(), before)
+                if not allowed:
+                    self.assertIn("Configure Observability alert delivery", plan["conflicts"][0]["detail"])
 
     def test_missing_prerequisites_do_not_write_or_disclose_diagnostics(self):
         before = self.snapshot()
@@ -344,7 +360,7 @@ class InstallationTests(unittest.TestCase):
         env.write_text("OB_OPERATOR_ALLOW=127.0.0.1/8 ::1\nBP_BACKUP_DIR=/mnt/with spaces\n")
         self.assertEqual(installation.read_settings(env), {"OB_OPERATOR_ALLOW": "127.0.0.1/8 ::1", "BP_BACKUP_DIR": "/mnt/with spaces"})
         observability = self.host / "observability-stack"
-        (observability / ".env.example").write_text("OB_OPERATOR_ALLOW=127.0.0.1/8 ::1\nOB_RUSTFS_CONSOLE_ALLOW=127.0.0.1/8 ::1\n")
+        (observability / ".env.example").write_text("OB_ALERTS=placeholder\nOB_OPERATOR_ALLOW=127.0.0.1/8 ::1\nOB_RUSTFS_CONSOLE_ALLOW=127.0.0.1/8 ::1\n")
         code, plan = self.invoke("--stack", "observability", "--dry-run")
         self.assertEqual((code, plan["conflicts"]), (0, []))
         env.write_text("BP_BACKUP_DIR='/mnt/with spaces'\n")

@@ -50,6 +50,10 @@ by the installer. Existing backup/email values cannot be replaced by these input
 An unchanged rerun does **not** require a retained Checkpoint. Empty configured
 backup directories are valid; live data, certificates, and credentials remain protected.
 
+Observability requires its alert destination settings before setup. For a development
+installation, explicitly record `OB_ALERTS=placeholder` in its `.env` to permit
+degraded alert delivery. The installer does not choose that exception automatically.
+
 Fresh Backplane uses its owning full default with gateway ingress; pass
 `--backplane-mode minimal` for filesystem Files without Functions. Recorded native
 files, profiles, backend, project and volume prefix remain authoritative on rerun.
