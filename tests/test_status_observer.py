@@ -120,7 +120,12 @@ class ObserverTests(unittest.TestCase):
         self.assertFalse((self.root / 'data/console/status.json').exists())
 
     def test_unrelated_publication_lock_storage_failure_is_not_suppressed(self):
-        with patch.object(observer.os, 'open', side_effect=BlockingIOError):
+        original = observer.os.open
+        def fail_lock(path, *args, **kwargs):
+            if path == '.status.lock':
+                raise BlockingIOError()
+            return original(path, *args, **kwargs)
+        with patch.object(observer.os, 'open', side_effect=fail_lock):
             with self.assertRaises(BlockingIOError):
                 observer.observe(self.root, self.env, self.runner, lambda: AT)
 

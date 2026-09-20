@@ -138,6 +138,7 @@ def collect(root, env_file, runner=run, clock=now):
 
 
 def observe(root, env_file, runner=run, clock=now):
+    """Return the published document, or None when another publisher owns the lock."""
     with directory(root / 'data/console') as fd:
         regular(fd, '.status.lock')
         lock = os.open('.status.lock', os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=fd)
