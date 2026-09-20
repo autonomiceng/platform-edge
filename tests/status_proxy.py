@@ -23,6 +23,8 @@ def request(stack, method='GET', mode='', host='localhost'):
         body = response.read(65537)
         assert response.headers['Cache-Control'] == 'no-store'
         assert response.headers.get_content_type() == 'application/json'
+        if response.status == 405:
+            assert response.headers['Allow'] == 'GET, HEAD'
         checks += 1
         return response.status, body
 
