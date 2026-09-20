@@ -81,6 +81,8 @@ def install(root, env_file, unit_dir, runner=run):
             for name in written:
                 os.unlink(name, dir_fd=fd)
             raise
+    # Retain units once activation starts: enable --now can fail after creating links
+    # or starting the timer, so deletion here could hide a still-active service.
     runner(['systemctl', '--user', 'daemon-reload'], timeout=10)
     runner(['systemctl', '--user', 'enable', '--now', NAME + '.timer'], timeout=10)
 
@@ -98,8 +100,9 @@ def main():
     unit_dir = config / 'systemd/user'
     try:
         install(args.checkout, args.env_file, unit_dir)
-    except (OSError, Unavailable):
-        print('status timer installation failed; inspect the user units before retrying', file=sys.stderr)
+    except (OSError, UnicodeError, Unavailable):
+        print('status timer installation failed; generated units may remain; disable the timer '
+              'and inspect the user units before retrying', file=sys.stderr)
         return 1
     print('Status timer enabled. An active user manager with Docker access is required; '
           'enable lingering separately for observation after logout.')

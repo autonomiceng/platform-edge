@@ -92,8 +92,11 @@ class PublicationTests(unittest.TestCase):
             self.assertEqual(str(raised.exception), '')
             self.assertLess(time.monotonic() - started, 2)
         self.assertEqual(io.run([sys.executable, '-c', 'print("ok")']), 'ok\n')
+        for code in (125, 126, 127):
+            with self.subTest(code=code), self.assertRaises(io.Unsupported):
+                io.run([sys.executable, '-c', f'raise SystemExit({code})'])
         with self.assertRaises(io.Unsupported):
-            io.run([sys.executable, '-c', 'raise SystemExit(127)'])
+            io.run([str(self.root / 'missing-executable')])
 
     def test_task_records_are_private_and_malformed_records_do_not_break_siblings(self):
         env = self.root / '.env'
@@ -150,6 +153,32 @@ class PublicationTests(unittest.TestCase):
             installer.install(self.root, env, unit_dir, lambda *args, **kwargs: calls.append(args))
         self.assertEqual(list(unit_dir.iterdir()), [])
         self.assertEqual(calls, [])
+
+    def test_activation_failure_retains_units_for_disable_first_recovery(self):
+        (self.root / 'scripts').mkdir()
+        (self.root / 'scripts/status_observer.py').touch()
+        (self.root / 'compose.yaml').touch()
+        env = self.root / '.env'
+        env.touch()
+        unit_dir = self.root / 'units'
+
+        def fail_enable(argv, **_):
+            if 'enable' in argv:
+                raise io.Unavailable()
+
+        with self.assertRaises(io.Unavailable):
+            installer.install(self.root, env, unit_dir, fail_enable)
+        self.assertEqual(sorted(path.name for path in unit_dir.iterdir()), [
+            'platform-edge-status.service', 'platform-edge-status.timer'])
+        with self.assertRaises(io.Unavailable):
+            installer.install(self.root, env, unit_dir, lambda *_args, **_kwargs: None)
+
+    def test_installer_reports_unicode_failures_without_traceback(self):
+        argv = ['installer', '--checkout', str(self.root), '--env-file', str(self.root / '.env'), '--install']
+        with patch.object(sys, 'argv', argv), patch.object(installer, 'install', side_effect=UnicodeError()), \
+                patch('builtins.print') as printed:
+            self.assertEqual(installer.main(), 1)
+        self.assertIn('generated units may remain', printed.call_args.args[0])
 
     def test_xdg_relative_and_empty_values_use_home_config(self):
         argv = ['installer', '--checkout', str(self.root), '--env-file', str(self.root / '.env'), '--install']

@@ -52,7 +52,7 @@ def run(argv, *, timeout=4, limit=65536, cwd=None, env=None):
                             if key.fileobj is process.stdout:
                                 output.extend(chunk)
                 code = process.wait(timeout=max(0.001, deadline - time.monotonic()))
-                if code in (126, 127):
+                if code in (125, 126, 127):
                     raise Unsupported()
                 if code:
                     raise Unavailable()
@@ -62,7 +62,7 @@ def run(argv, *, timeout=4, limit=65536, cwd=None, env=None):
                     process.kill()  # Only the child captured at spawn.
                 process.wait()
     except (OSError, UnicodeError, subprocess.SubprocessError) as error:
-        raise Unavailable() from error
+        raise Unsupported() from error
 
 
 def read_json(text, limit=65536):
