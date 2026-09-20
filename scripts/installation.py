@@ -154,6 +154,10 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
             if recorded.get("COMPOSE_ENV_FILES") or recorded.get("COMPOSE_PATH_SEPARATOR", ":") != ":":
                 raise ValueError("Alternate Compose env files or separators require owning configuration repair.")
             values = read_settings(template if name == "edge" else directory / ".env.example") | recorded
+            if name == "observability" and not (values.get("OB_ALERT_WEBHOOK_URL")
+                    or values.get("OB_ALERT_EMAIL") and values.get("OB_SMTP_URL")
+                    or values.get("OB_ALERTS") == "placeholder"):
+                raise ValueError("Configure Observability alert delivery, or explicitly record OB_ALERTS=placeholder for degraded delivery, before selected setup.")
             project = (recorded if env.exists() else values).get("COMPOSE_PROJECT_NAME") or project_default
             volume_prefix = values.get(prefix + "_VOLUME_PREFIX") or project_default
             if not all(re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", item) for item in (project, volume_prefix)):
