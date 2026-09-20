@@ -92,7 +92,7 @@ const state = (s) =>
         stopped: "Stopped",
       }[s.state] || s.state;
 const badge = (s) =>
-  `<span class="badge ${s.state.replaceAll(" ", "-")}"><i class="dot"></i>${state(s)}</span>`;
+  `<span class="badge ${s.state.replaceAll(" ", "-")}"><i class="dot"></i>${esc(state(s))}</span>`;
 function endpoints(s) {
   return Object.entries(s.links)
     .filter(([k]) => k !== "Console")
@@ -128,7 +128,7 @@ function detail() {
           })
           .join("")
       : "<p>No downstream connections shown.</p>"
-  }${s.kind !== "storage" && s.kind !== "setup" ? "<hr><h3>Logs</h3><p>stdout / stderr → host journal<br>With Observability: Alloy → Loki</p>" : ""}${s.id === "edge" ? "<p>Edge routes through each project’s Caddy.</p>" : ""}<hr>${github({ name: s.name, repo: serviceRepos[s.name] || p.repo })}</aside>`;
+  }${s.kind !== "storage" && s.kind !== "capability" && s.kind !== "setup" ? "<hr><h3>Logs</h3><p>stdout / stderr → host journal<br>With Observability: Alloy → Loki</p>" : ""}${s.id === "edge" ? "<p>Edge routes through each project’s Caddy.</p>" : ""}<hr>${github({ name: s.name, repo: serviceRepos[s.name] || p.repo })}</aside>`;
 }
 function ProjectCards() {
   return `<div class="projects">${
@@ -148,18 +148,19 @@ function ProjectCards() {
           active = all.filter(
             (s) => s.kind !== "setup" && s.state === "healthy",
           ).length;
-        return `<section class="project"><div class="project-top">${icon(p)}<div class="grow"><h2>${esc(p.name)}</h2><p>${esc(p.description)}</p><span class="meta">${active} healthy · Telemetry ${StackStatus.view(statusDocuments[p.id], "", Date.now(), statusFailures[p.id]).telemetry} · ${all.length - jobs.length} ${all.length - jobs.length === 1 ? "service" : "services"}</span></div>${github(p)}</div><div class="apps">${apps.map(appCard).join("")}</div>${
+        return `<section class="project"><div class="project-top">${icon(p)}<div class="grow"><h2>${esc(p.name)}</h2><p>${esc(p.description)}</p><span class="meta">${active} healthy · Telemetry ${esc(StackStatus.telemetry(statusDocuments[p.id], Date.now(), statusFailures[p.id]))} · ${all.length - jobs.length} ${all.length - jobs.length === 1 ? "service" : "services"}</span></div>${github(p)}</div><div class="apps">${apps.map(appCard).join("")}</div>${
           rest.length
             ? `<details data-key="${p.id}-services" ${query || overview !== "all" ? "open" : ""}><summary>All services<small>${rest.length} supporting components</small></summary><div class="inventory">${[
                 "infra",
                 "backend",
                 "storage",
+                "capability",
                 "worker",
               ]
                 .map((k) => {
                   const group = rest.filter((s) => s.kind === k);
                   return group.length
-                    ? `<div class="section-label">${{ backend: "Data", storage: "Files", worker: "Workers & collection", infra: "Routing", setup: "One-time setup jobs" }[k]}</div>${group.map(row).join("")}`
+                    ? `<div class="section-label">${{ backend: "Data", storage: "Files", capability: "Capabilities", worker: "Workers & collection", infra: "Routing", setup: "One-time setup jobs" }[k]}</div>${group.map(row).join("")}`
                     : "";
                 })
                 .join("")}</div></details>`
@@ -270,7 +271,7 @@ function AllProjectsMap() {
         !(s.id === "alloy" && id === "loki")
       )
         links.push({ from: s.id, to: id, type: "app" });
-    if (showLogging && s.kind !== "storage" && s.id !== "alloy" && !s.optional)
+    if (showLogging && s.kind !== "storage" && s.kind !== "capability" && s.id !== "alloy" && !s.optional)
       links.push({ from: s.id, to: "alloy", type: "logs" });
   }
   if (showLogging && positions.alloy && positions.loki)
@@ -299,7 +300,7 @@ function AllProjectsMap() {
   return `<nav class="tabs" aria-label="Projects"><button data-project="all" class="${project === "all" ? "active" : ""}">All projects</button>${DATA.projects.map((p) => `<button data-project="${p.id}" class="${project === p.id ? "active" : ""}">${esc(p.name)}</button>`).join("")}</nav><div class="connection-toggles"><label><input type="checkbox" id="application-connections" ${showApplications ? "checked" : ""}> Application connections</label><label><input type="checkbox" id="logging-connections" ${showLogging ? "checked" : ""}> Log collection (when configured)</label><button class="text-button meta" id="clear-map">Clear selection</button></div><div class="map-layout"><div><div class="map-wrap"><svg class="map all-map" viewBox="0 0 ${width} ${height}" role="group" aria-label="All project connections"><defs><marker id="all-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="4" markerHeight="4" orient="auto"><path d="M0 0 L10 5 L0 10" fill="#9faad7"/></marker></defs>${groups.map((p, i) => `<rect class="lane" x="${12 + i * 298}" y="8" width="276" height="${height - 20}" rx="12"/><text class="project-label" x="${25 + i * 298}" y="38">${esc(p.name)}</text>`).join("")}${edges}${list
     .map((s) => {
       const { x, y } = positions[s.id];
-      return `<g class="node ${selected === s.id ? "selected" : ""} ${selected && !connected.has(s.id) ? "dim" : ""} ${s.optional ? "optional" : ""}" tabindex="0" role="button" aria-label="Inspect ${esc(qualified(s))}" data-select="${s.id}"><rect x="${x}" y="${y}" width="252" height="68" rx="9"/><image href="${DATA.icons[s.icon] || DATA.icons.gateway}" x="${x + 12}" y="${y + 16}" width="22" height="22"/><text x="${x + 44}" y="${y + 27}">${esc(s.name)}</text><text class="state-label" x="${x + 44}" y="${y + 48}">${state(s)}</text></g>`;
+      return `<g class="node ${selected === s.id ? "selected" : ""} ${selected && !connected.has(s.id) ? "dim" : ""} ${s.optional ? "optional" : ""}" tabindex="0" role="button" aria-label="Inspect ${esc(qualified(s))}" data-select="${s.id}"><rect x="${x}" y="${y}" width="252" height="68" rx="9"/><image href="${DATA.icons[s.icon] || DATA.icons.gateway}" x="${x + 12}" y="${y + 16}" width="22" height="22"/><text x="${x + 44}" y="${y + 27}">${esc(s.name)}</text><text class="state-label" x="${x + 44}" y="${y + 48}">${esc(state(s))}</text></g>`;
     })
     .join("")}</svg></div></div>${detail()}</div>`;
 }
@@ -344,10 +345,11 @@ const statusIds = {
   "o-rust": "rustfs",
   "o-init": "rustfs-init",
 };
+const statusKey = (s) => s.statusId || statusIds[s.id] || s.id;
 function observation(s) {
   return StackStatus.view(
     statusDocuments[s.project],
-    s.statusId || statusIds[s.id] || s.id,
+    statusKey(s),
     Date.now(),
     statusFailures[s.project],
   );
@@ -454,11 +456,13 @@ function serviceVersion(s) {
   else if (
     s.project === "gateway" &&
     (!v.configFresh ||
-      !statusDocuments[s.project]?.components[statusIds[s.id] || s.id])
+      !statusDocuments[s.project]?.components[statusKey(s)])
   ) {
     const fallback = StackStatus.legacy(legacyVersions, versionKeys[s.id]);
     if (fallback) labels.push(fallback);
   }
+  if (s.id === "edge" && !v.configuredVersion && /^[A-Za-z0-9._+-]{1,128}$/.test(config?.edgeVersion || ""))
+    labels.push(`Configured ${config.edgeVersion} · undated`);
   if (v.observedVersion) labels.push(`Observed version ${v.observedVersion}`);
   if (v.configuredDigest)
     labels.push(`Configured digest ${v.configuredDigest}`);
@@ -566,7 +570,7 @@ async function check() {
       jobs.push(async () => {
         try {
           const response = await fetch("/health" + (id ? "/" + id : ""), {
-            method: "HEAD",
+            method: "GET",
             cache: "no-store",
             credentials: "omit",
             redirect: "error",

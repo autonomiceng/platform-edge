@@ -142,3 +142,10 @@ test("status URLs and text cannot become trusted navigation or HTML", () => {
   );
   assert.equal(run(`esc('<script>')`), "&lt;script&gt;");
 });
+
+test("capabilities never claim their own process log stream", () => {
+  const run = ui();
+  for (const id of ["files", "backplane-functions"]) {
+    assert.equal(run(`DATA.services.find(s => s.id === '${id}').kind`), "capability");
+  }
+});

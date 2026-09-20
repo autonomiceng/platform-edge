@@ -209,7 +209,7 @@ const DATA = {
       project: "backplane",
       name: "Files",
       description: "Provides file access through the selected storage backend.",
-      kind: "storage",
+      kind: "capability",
       icon: "files",
       links: {},
       uses: [],
@@ -420,7 +420,7 @@ for (const [project, statusId, name, kind] of [
   ["backplane", "bootstrap", "Prepare installation", "setup"],
   ["backplane", "migrate", "Apply database migrations", "setup"],
   ["backplane", "data-init", "Prepare file permissions", "setup"],
-  ["backplane", "functions", "Functions", "worker"],
+  ["backplane", "functions", "Functions", "capability"],
 ])
   DATA.services.push({
     id: `${project}-${statusId}`,

@@ -95,8 +95,8 @@ const assert = require("node:assert/strict");
     await settled();
     assert.equal(
       await page.locator(".version").first().textContent(),
-      "Version unavailable",
-      "No Edge observation is invented from access configuration",
+      "Configured v9.8.7 · undated",
+      "Image metadata remains configured-only until runtime observation",
     );
     assert.equal(
       await page.locator(".project h2").first().textContent(),
