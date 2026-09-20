@@ -170,6 +170,7 @@ Replace `192.0.2.2/32` with Edge’s actual address on the shared Docker network
 In the backplane `.env`:
 
 ```sh
+BP_ACCESS_MODE=proxy
 BP_PUBLIC_URL=https://backplane.example.com
 BP_BIND_HOST=127.0.0.1
 BP_PORT=3000

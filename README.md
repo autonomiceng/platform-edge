@@ -30,12 +30,16 @@ conflicts, starts Caddy and verifies both local listeners, including HTTPS certi
 
 Local Mode serves HTTP on 80 and self-signed HTTPS on 443, without redirecting HTTP or telling browsers to require HTTPS. Sibling ingresses use HTTP internally. A missing stack returns 502 on its hostnames while other stacks continue working. The root serves a fallback console when the gateway is absent.
 
+The shared setup below uses HTTPS application URLs for browser login. Install Edge’s
+public root certificate on clients once; HTTP remains available for health checks and
+transport access. A standalone stack can still start with its own HTTP defaults.
+
 Edge `.env`:
 
 ```sh
 PE_ACCESS_MODE=local
 PE_PUBLIC_DOMAIN=localhost
-PE_SCHEME=http
+PE_SCHEME=https
 PE_BIND_HOST=127.0.0.1
 PE_HTTP_PORT=80
 PE_HTTPS_PORT=443
@@ -50,7 +54,7 @@ Gateway `.env`:
 ```sh
 LG_ACCESS_MODE=proxy
 LG_PUBLIC_DOMAIN=localhost
-LG_SCHEME=http
+LG_SCHEME=https
 LG_BIND_HOST=127.0.0.1
 LG_HTTP_PORT=18080
 LG_PUBLIC_PORT_SUFFIX=
@@ -63,15 +67,15 @@ Observability `.env`:
 ```sh
 OB_ACCESS_MODE=proxy
 OB_PUBLIC_DOMAIN=localhost
-OB_SCHEME=http
+OB_SCHEME=https
 OB_BIND_HOST=127.0.0.1
 OB_HTTP_PORT=18180
 OB_PUBLIC_PORT_SUFFIX=
 OB_PLATFORM_NETWORK=platform
 OB_TRUSTED_PROXIES=192.0.2.2/32
 OB_GATEWAY_HEALTH_HOST=localhost
-OB_GATEWAY_URL=http://localhost
-OB_BACKPLANE_URL=http://backplane.localhost
+OB_GATEWAY_URL=https://localhost
+OB_BACKPLANE_URL=https://backplane.localhost
 ```
 
 Replace `192.0.2.2/32` above with Edge’s reserved address on the shared Docker network, as described in the [ingress guide](docs/operations/ingress.md).
@@ -79,7 +83,8 @@ Replace `192.0.2.2/32` above with Edge’s reserved address on the shared Docker
 Backplane `.env` (start core services without its optional `edge` profile):
 
 ```sh
-BP_PUBLIC_URL=http://backplane.localhost
+BP_ACCESS_MODE=proxy
+BP_PUBLIC_URL=https://backplane.localhost
 BP_BIND_HOST=127.0.0.1
 BP_PORT=3000
 ```
@@ -153,6 +158,7 @@ Replace `192.0.2.2/32` above with Edge’s reserved address on the shared Docker
 Backplane `.env` (start core services without its optional `edge` profile):
 
 ```sh
+BP_ACCESS_MODE=proxy
 BP_PUBLIC_URL=https://backplane.example.com
 BP_BIND_HOST=127.0.0.1
 BP_PORT=3000
