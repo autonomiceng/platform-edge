@@ -112,6 +112,13 @@ class FakeRunner:
                 return subprocess.CompletedProcess(argv, 1, "private capability", "private error")
             self.container(root, installation.read_settings(env))
             return subprocess.CompletedProcess(argv, 0, "private capability", "private warning")
+        if argv[:2] == ["tailscale", "status"]:
+            return subprocess.CompletedProcess(argv, 1 if self.fail == "tailscale" else 0,
+                json.dumps({"BackendState": "Running", "Self": {"DNSName": "machine.tailnet.ts.net.", "TailscaleIPs": ["100.64.0.2"]}}), "")
+        if argv[:3] == ["tailscale", "serve", "status"]:
+            return subprocess.CompletedProcess(argv, 0, "{}", "")
+        if len(argv) > 1 and argv[1].endswith("scripts/install_status_timer.py"):
+            return subprocess.CompletedProcess(argv, 1, "", "unsupported owning --check")
         if argv == ["ss", "-H", "-ltn"]:
             output = self.listeners
         elif argv[:3] == ["docker", "context", "inspect"]:
@@ -195,9 +202,9 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual((self.root / ".env").read_bytes(), (self.root / ".env.example").read_bytes())
         (self.root / ".env").unlink()
         before = self.snapshot()
-        with self.assertRaises(bootstrap.Refused) as caught:
-            self.invoke("--stack", "edge", "--tailscale")
-        self.assertEqual(caught.exception.code, "installation_connection_pending")
+        code, report = self.invoke("--stack", "edge", "--tailscale", runner=FakeRunner(fail="tailscale"))
+        self.assertEqual(code, 1)
+        self.assertIn("tailscale_preflight", {item["code"] for item in report["conflicts"]})
         self.assertEqual(self.snapshot(), before)
 
     def test_exact_subset_does_not_read_other_sibling_configuration(self):
@@ -281,12 +288,12 @@ class InstallationTests(unittest.TestCase):
         (self.root / ".env").chmod(0o600)
         before = self.snapshot()
         code, plan = self.invoke("--stack", "observability", "--tailscale", "--status-timers", "--dry-run")
-        self.assertEqual(code, 0)  # Env-only Edge can resume; connection actions remain deferred.
+        self.assertEqual(code, 1)  # Old owners refuse the read-only timer contract before mutation.
         self.assertEqual(plan["selected"], ["edge", "observability"])
         self.assertEqual(plan["actions"][1]["origin"], "https://machine.tailnet.ts.net:8447")
         self.assertIn("preserve existing PE_TAILSCALE_APPS", plan["actions"][2]["action"])
         self.assertEqual(plan["actions"][3]["depends_on"], plan["selected"])
-        self.assertFalse(plan["execution_supported"])
+        self.assertTrue(plan["execution_supported"])
         self.assertEqual(self.snapshot(), before)
 
     def test_operator_identity_and_capability_parent_cannot_come_from_unsafe_defaults(self):

@@ -7,6 +7,7 @@ import fcntl
 import ipaddress
 import os
 import re
+import shlex
 import tempfile
 import json
 import subprocess
@@ -22,30 +23,60 @@ import bootstrap
 def checked(argv: list[str]) -> str:
     result = subprocess.run(argv, capture_output=True, text=True, timeout=300)
     if result.returncode:
-        raise ValueError(f"Command failed: {' '.join(argv)}. Inspect that service locally. For Tailscale permission errors, rerun with sudo.")
+        raise ValueError(f"Command failed: {' '.join(argv)}. Inspect that service locally.")
     return result.stdout
 
 
 def plan(status: dict, serve: dict, port: int, local_port: int, replace: bool = False) -> dict:
+    if not isinstance(status, dict) or not isinstance(serve, dict):
+        raise ValueError("Malformed Tailscale status")
+    if not isinstance(status.get("Self"), dict):
+        raise ValueError("Tailscale machine identity is unavailable")
+    for section in ("TCP", "Web", "AllowFunnel", "Foreground"):
+        if not isinstance(serve.get(section, {}), dict):
+            raise ValueError("Malformed Serve configuration")
+    for foreground in serve.get("Foreground", {}).values():
+        if not isinstance(foreground, dict) or str(port) in foreground.get("TCP", {}):
+            raise ValueError("Selected port has a foreground listener")
     if not 1 <= port <= 65535:
         raise ValueError("HTTPS port must be between 1 and 65535")
-    name = (status.get("Self") or {}).get("DNSName", "").rstrip(".")
+    name = status["Self"].get("DNSName", "")
+    if not isinstance(name, str):
+        raise ValueError("Malformed Tailscale machine identity")
+    name = name.rstrip(".")
     if status.get("BackendState") != "Running" or not name.endswith(".ts.net"):
         raise ValueError("Tailscale must be running with a machine DNS name")
     target = f"http://127.0.0.1:{local_port}"
     tcp = serve.get("TCP", {}).get(str(port))
-    web = serve.get("Web", {}).get(f"{name}:{port}", {}).get("Handlers", {})
+    site = serve.get("Web", {}).get(f"{name}:{port}", {})
+    if not isinstance(site, dict) or set(site) - {"Handlers"} or (tcp is not None and not isinstance(tcp, dict)):
+        raise ValueError("Selected listener has custom or malformed configuration")
+    web = site.get("Handlers", {})
+    if not isinstance(web, dict) or not isinstance(web.get("/", {}), dict):
+        raise ValueError("Malformed selected handlers")
     existing = web.get("/", {}).get("Proxy")
+    if existing is not None and not isinstance(existing, str):
+        raise ValueError("Malformed proxy target")
+    if any(authority != f"{name}:{port}" and authority.endswith(f":{port}") for authority in serve.get("Web", {})):
+        raise ValueError("selected port has a foreign hostname handler")
+    if tcp and set(tcp) != {"HTTPS"}:
+        raise ValueError("selected port has a foreign listener")
+    if "/" in web and set(web["/"]) != {"Proxy"} and not replace:
+        raise ValueError("selected root has custom handlers")
     if any(path != "/" for path in web):
         raise ValueError("selected port has custom path handlers; choose another port")
-    funnel = serve.get("AllowFunnel", {}).get(f"{name}:{port}", False)
+    funnel = any(enabled for authority, enabled in serve.get("AllowFunnel", {}).items() if authority.endswith(f":{port}"))
     if funnel:
         raise ValueError("selected port is used by Funnel; choose another HTTPS port")
-    if tcp and not tcp.get("HTTPS"):
+    if tcp and tcp.get("HTTPS") is not True:
         raise ValueError("selected port has a non-HTTPS listener; choose another port")
     if ((existing and existing not in {target, f"http://localhost:{local_port}"}) or ("/" in web and not existing)) and not replace:
         raise ValueError("selected root endpoint already exists; use another port or --replace")
+    matching = tcp == {"HTTPS": True} and web == {"/": {"Proxy": existing}} and existing in {target, f"http://localhost:{local_port}"}
+    if (tcp is not None or site) and not matching and not replace:
+        raise ValueError("Selected port has an incomplete or foreign Serve configuration")
     return {
+        "matching": matching,
         "url": f"https://{name}" + (f":{port}" if port != 443 else "") + "/",
         "command": ["tailscale", "serve", "--bg", f"--https={port}", "--yes", target],
         "undo": ["tailscale", "serve", f"--https={port}", "--set-path=/", "off"],
@@ -55,6 +86,105 @@ def plan(status: dict, serve: dict, port: int, local_port: int, replace: bool = 
 APPS = {"litellm": 8443, "langfuse": 8444, "s3": 8445, "gateway": 8446,
         "grafana": 8447, "backplane": 8448, "rustfs": 8449,
         "backplane_rustfs": 8450, "observability_rustfs": 8451}
+
+
+STACK_APPS = {"gateway": ("LG", ["litellm", "langfuse", "s3", "gateway"]),
+              "backplane": ("BP", ["backplane"]), "observability": ("OB", ["grafana"])}
+
+
+def selected_plan(settings, selected, status, serve):
+    """Derive public settings from the qualified selection, without opening siblings."""
+    host = (status.get("Self") or {}).get("DNSName", "").rstrip(".")
+    endpoints = {"Platform Edge": plan(status, serve, int(settings["PE_TAILSCALE_PORT"]), int(settings["PE_HTTP_PORT"]))}
+    if settings["PE_ACCESS_MODE"] == "public" or settings["PE_BIND_HOST"] != "127.0.0.1":
+        raise ValueError("Tailscale requires local/proxy access on loopback")
+    if settings["PE_TAILSCALE_HOST"] and settings["PE_TAILSCALE_HOST"] != host:
+        raise ValueError("The recorded Tailscale machine name differs; preserve omitted routes.")
+    changes = {"edge": {"PE_TAILSCALE_HOST": host, "PE_ACCESS_MODE": "local", "PE_SCHEME": "http"}}
+    retained = [name for name in settings["PE_TAILSCALE_APPS"].split(",") if name]
+    for stack, current in selected.items():
+        if stack == "edge":
+            continue
+        prefix, names = STACK_APPS[stack]
+        names = list(names)
+        console = "rustfs" if stack == "gateway" else stack + "_rustfs"
+        retained = [name for name in retained if name not in {*names, console}]
+        enabled = current.get(prefix + "_RUSTFS_CONSOLE", "on" if stack == "gateway" else "false")
+        if enabled == ("on" if stack == "gateway" else "true"):
+            names.append(console)
+        update = {prefix + "_ACCESS_MODE": "proxy"}
+        if stack != "backplane":
+            update.update({prefix + "_SCHEME": "https", prefix + "_PUBLIC_PORT_SUFFIX": ""})
+        for name in names:
+            endpoint = plan(status, serve, int(settings["PE_TAILSCALE_" + name.upper() + "_PORT"]), int(settings["PE_HTTP_PORT"]))
+            endpoints[name] = endpoint
+            label = {"gateway": "CONSOLE", "backplane": "PUBLIC", "backplane_rustfs": "RUSTFS",
+                     "observability_rustfs": "RUSTFS"}.get(name, name.upper())
+            update[prefix + "_" + label + "_URL"] = endpoint["url"].rstrip("/")
+            if stack == "observability" or name == "backplane_rustfs":
+                update[prefix + "_" + label + "_URL_HOST"] = host
+                update[prefix + "_" + label + "_AUTHORITY"] = urllib.parse.urlsplit(endpoint["url"]).netloc
+        changes[stack] = update
+        retained.extend(names)
+    changes["edge"]["PE_TAILSCALE_APPS"] = ",".join(dict.fromkeys(retained))
+    return {"endpoints": endpoints, "changes": changes}
+
+
+def bridge_gateway(network):
+    gateways = [str(ipaddress.IPv4Address(entry["Gateway"])) for entry in network.get("IPAM", {}).get("Config", [])
+                if entry.get("Gateway") and ipaddress.ip_address(entry["Gateway"]).version == 4]
+    if len(gateways) != 1:
+        raise ValueError("Tailscale requires one exact IPv4 host bridge gateway")
+    return gateways[0]
+
+
+def check_listeners(endpoints, status, listeners, edge_ports=()):
+    addresses = set((status.get("Self") or {}).get("TailscaleIPs", []))
+    for endpoint in endpoints.values():
+        port = urllib.parse.urlsplit(endpoint["url"]).port or 443
+        for address, occupied in listeners:
+            # An exact Tailnet address with the matching Serve entry is owned.
+            # Edge's loopback HTTP/HTTPS sockets can share its numeric port.
+            if occupied == port and (address, occupied) not in edge_ports:
+                if address not in addresses or not endpoint["matching"]:
+                    raise ValueError("Selected Tailscale port has a foreign host listener")
+
+
+def connect(endpoints, inspect):
+    """Reinspect all endpoints before the first Serve write; matching entries are read-only."""
+    status = json.loads(inspect(["tailscale", "status", "--json"]))
+    serve = json.loads(inspect(["tailscale", "serve", "status", "--json"])) or {}
+    pending = []
+    for endpoint in endpoints.values():
+        port = urllib.parse.urlsplit(endpoint["url"]).port or 443
+        local_port = urllib.parse.urlsplit(endpoint["command"][-1]).port
+        actual = plan(status, serve, port, local_port)
+        if actual["url"] != endpoint["url"]:
+            raise ValueError("Tailscale machine changed; rerun preflight")
+        if not actual["matching"]:
+            pending.append(actual["command"])
+    for command in pending:
+        try:
+            inspect(command)
+        except (OSError, ValueError, subprocess.TimeoutExpired, bootstrap.Refused):
+            return {"state": "administrator_action", "command": shlex.join(["sudo", *command]),
+                    "serve_changes_completed": pending.index(command), "remaining": len(pending) - pending.index(command),
+                    "next": "Run only this Serve command as administrator, then rerun the same installation selection."}
+    access = {}
+    for name, endpoint in endpoints.items():
+        if name == "Platform Edge":
+            verify_application(name, {"url": endpoint["url"] + "health"})
+        else:
+            access[name] = verify_application(name, endpoint, allowed_denials=(401, 403, 404) if name.endswith("_rustfs") else ())
+            protected = {"backplane": "api/v1/workspaces", "grafana": "api/user", "litellm": "v1/models",
+                         "langfuse": "api/public/projects", "s3": "", "rustfs": "rustfs/admin/v3/info",
+                         "backplane_rustfs": "rustfs/admin/v3/info", "observability_rustfs": "rustfs/admin/v3/info"}
+            if name in protected and access[name] != "access_denied":
+                denial = verify_application("protected", {"url": endpoint["url"] + protected[name]}, allowed_denials=(401, 403))
+                if denial != "access_denied":
+                    raise ValueError(name + " anonymous API access was not refused")
+    return {"state": "verified", "links": links(endpoints), "access": access,
+            "authentication": "Native login remains required; authenticated acceptance is a separate operator check."}
 
 
 def links(endpoints: dict) -> dict[str, str]:
@@ -308,7 +438,14 @@ def main(argv: list[str] | None = None) -> int:
         bootstrap.wait_ready(bootstrap.settings_for(bootstrap.read_env(args.env_file)),
                              root, args.env_file, bootstrap.run)
         for endpoint in endpoints.values():
-            checked(endpoint["command"])
+            if not endpoint["matching"]:
+                try:
+                    checked(endpoint["command"])
+                except (OSError, ValueError, subprocess.TimeoutExpired):
+                    print(json.dumps({"applied": False, "state": "administrator_action",
+                                      "command": shlex.join(["sudo", *endpoint["command"]]),
+                                      "next": "Run only this Serve command as administrator, then rerun setup to verify HTTPS."}))
+                    return 1
         with urllib.request.urlopen(landing["url"] + "health", timeout=15) as response:
             if response.status != 200:
                 raise ValueError("Tailscale Edge health check failed")

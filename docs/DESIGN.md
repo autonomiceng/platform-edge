@@ -25,7 +25,7 @@ owning env state atomically, and invokes each owning bootstrap after all selecte
 checks pass. Edge's exact peer is pinned before sibling trust is written. No lifecycle
 logic or secret generation moves out of the owning stacks. The
 [installation contract](operations/ingress.md#selected-installation) describes recovery,
-owner-interface limits, and the separate H-CONNECT work. Aggregate completion does
+owner-interface limits, selected private Tailscale connection, and owning status-timer opt-in. Aggregate completion does
 not claim host acceptance or enrollment.
 
 ## Shape

@@ -266,6 +266,9 @@ def execute(prepared: list[dict], runner, inspect, refused=bootstrap.Refused) ->
                     trust = changes.get(item["prefix"] + "_TRUSTED_PROXIES", peer)
                     if {str(ipaddress.ip_interface(value).ip) for value in trust.split()} != {peer}:
                         raise ValueError("The pinned peer differs from the qualified proxy trust.")
+                if name == "gateway" and prepared[0].get("connection"):
+                    allowed = item["recorded"].get("LG_OPERATOR_ALLOW", "127.0.0.0/8 ::1").split()
+                    changes["LG_OPERATOR_ALLOW"] = " ".join(dict.fromkeys(allowed + [peer]))
                 publish(item, changes)
                 lock.close()
                 response = runner(item["command"], timeout=1800, quiet=True, cwd=str(item["root"]))
@@ -280,6 +283,10 @@ def execute(prepared: list[dict], runner, inspect, refused=bootstrap.Refused) ->
                     if pin not in [str((item["root"] / file).resolve()) for file in files]:
                         files.append(pin)
                     pin_settings = {"PE_TAILSCALE_EDGE_IP": peer, "COMPOSE_FILE": ":".join(files)}
+                    if item.get("connection"):
+                        network = json.loads(inspect(["docker", "network", "inspect", item["action"]["network"]]))[0]
+                        from tailscale_serve import bridge_gateway
+                        pin_settings["PE_TRUSTED_PROXIES"] = bridge_gateway(network)
                     if amended(source, pin_settings) != source:
                         with owner_lock(item):
                             publish(item, pin_settings)

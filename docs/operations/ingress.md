@@ -60,7 +60,7 @@ Fresh siblings use proxy mode on the shared Platform Network and loopback ports
 18080 (Gateway), 18180 (Observability), and 3000 (Backplane). Local Backplane uses
 HTTPS through Edge; install the public Edge CA root in client trust stores. Existing
 public origins and already connected Tailnet application origins are preserved.
-A newly added application uses direct Edge access until H-CONNECT connects it.
+A newly added application uses direct Edge access unless `--tailscale` is selected.
 Native console enable flags, login requirements, and client allowlists are preserved.
 
 Preflight requires trusted local Docker, Compose 2.24.4+, selected configuration
@@ -113,10 +113,36 @@ confirmed stale preparation lock, then rerun the same selection. Preserve env,
 capability files and enrollment checkpoints. A dead-looking PID is not authorization
 to unlink a lock; interruption recovery is not automatic across this boundary.
 
-Selected execution with `--tailscale` or `--status-timers` refuses before mutation.
-Their selected-only connection and timer recovery belong to H-CONNECT; dry-run can
-still show these deferred actions with `executable=false`. Root must run fresh/rerun
-host acceptance. Merge remains gated by H-PROOF, BDEFAULT, and HSELECT.
+Add `--tailscale` to derive private HTTPS origins before publishing any selected
+configuration or invoking an owning bootstrap. Preflight reads only selected sibling
+envs/checkouts and checks their application ports plus Edge. Missing omitted siblings
+are irrelevant. Existing omitted application entries, port settings, Route Files, and
+Serve listeners remain intact. Selected RustFS consoles are included only when enabled
+by the owning stack and its native storage selection. The saved Edge machine name
+cannot change during a selected connection. Existing exact proxy trust and complete
+Host forwarding remain required.
+
+The connection reuses this installation plan, custody checks, native Compose selection,
+and owning bootstraps. Existing Platform Network bridge details are checked before
+execution; a fresh network's exact bridge peer is discovered after Edge creates it and
+before any sibling starts. Edge retains loopback HTTP and HTTPS. The helper refuses
+selected custom handlers, foreign host listeners, and Funnel before execution. Matching
+Serve endpoints are read-only, including port 8450. A new endpoint can still need
+administrator permission: exit 3 reports completed stacks, `stopped_at=tailscale`,
+and the exact `sudo tailscale serve ...` command. Run only that command as administrator,
+then repeat the original selection as the installation user. No Docker privilege
+workaround or automatic rollback is used. The retry reads actual Serve state and checks
+HTTPS origins, application reachability, and anonymous protected API denial. A console
+blocked by its client allowlist is reported as `access_denied`; this does not establish
+successful native login. Authenticated acceptance and enrollment remain operator checks.
+
+Add `--status-timers` to check each selected owning timer before installation and invoke
+its installer after the requested bootstraps and connection succeed. Edge is implicit.
+The owner must implement the read-only `--check` and exact-pair recovery contract in
+[status observation](status-observer.md#selected-timer-owner-followups). Current sibling
+helpers lack that contract, so selecting their timers refuses before any mutation.
+No timer for an omitted stack is inspected or changed. Root must run fresh/rerun host
+acceptance. Merge remains gated by H-PROOF, BDEFAULT, and HSELECT.
 
 ## Image overrides
 
@@ -179,12 +205,17 @@ python3 scripts/tailscale_serve.py --dry-run
 python3 scripts/tailscale_serve.py
 ```
 
-Run with `sudo` if Tailscale requires it. Log in to Tailscale and enable its HTTPS
-certificates first. The helper connects existing installations; it does not install
+Log in to Tailscale and enable its HTTPS certificates first. Run the helper as the
+installation user. If a Serve change needs administrator permission, it prints the
+exact `sudo tailscale serve ...` command. Run that command, then rerun the helper to
+verify the actual HTTPS endpoints. Matching Serve endpoints require no rewrite. The helper connects existing installations; it does not install
 missing stacks or create credentials. By default it looks for `.env` in the sibling
 `llm-gateway-stack`, `observability-stack`, and `agent-backplane` checkouts. Use
 `--gateway-dir`, `--observability-dir`, or `--backplane-dir` for other locations.
-Use `--env-file` for a different Edge environment file.
+Use `--env-file` for a different Edge environment file. This standalone helper keeps
+its original **all installed siblings** behavior: every sibling with an env is considered,
+and missing envs are skipped. Use bootstrap's `--stack ... --tailscale` for selected-only
+installation and connection; the standalone helper does not accept a stack selection.
 
 You get private HTTPS links on one machine name, without editing DNS or installing a
 certificate on your computer:
@@ -204,8 +235,9 @@ Open the printed Platform Edge link to launch applications. S3 is an API endpoin
 use an S3 client and your existing credentials. RustFS has a separate browser admin console, enabled by default in the gateway. Set `LG_RUSTFS_CONSOLE=off` to disable it; the helper only connects it when enabled. Each application keeps its own login.
 The LiteLLM operator pages become reachable through the private Edge connection;
 application authentication remains required. Your tailnet access rules must permit the
-chosen ports. Use `--https-port` for the landing page and `--port-base` to move the seven
-consecutive application ports together.
+chosen ports. Use `--https-port` for the landing page and `--port-base` to move the nine
+consecutive application ports together. Selected installation uses the recorded
+`PE_TAILSCALE_*_PORT` settings instead of resetting ports.
 
 Each Tailscale listener created by this setup forwards to the configured Edge loopback
 HTTP endpoint at `http://127.0.0.1:<PE_HTTP_PORT>` (port 80 by default);
