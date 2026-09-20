@@ -6,7 +6,7 @@
 	# The operator token unlocks readiness details only on the backplane's loopback port.
 	@ready path_regexp (?i)^/+health/+ready\.*(/|$)
 	request_header @ready -Authorization
-	reverse_proxy bp-server:3000 {
+	reverse_proxy bp-gateway:80 {
 		header_up Host {host}
 		import forwarded-proto-{$PE_ACCESS_MODE:local}
 	}

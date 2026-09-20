@@ -30,7 +30,7 @@ def main():
             for container in containers:
                 if container["State"]["Running"] and container["Config"]["Labels"].get("com.docker.compose.project"):
                     aliases.update(container["NetworkSettings"]["Networks"][network].get("Aliases") or [])
-        missing = {"lg-gateway", "ob-gateway", "bp-server"} - aliases
+        missing = {"lg-gateway", "ob-gateway", "bp-gateway"} - aliases
         if missing:
             print(f"SKIP shared-host acceptance: missing sibling aliases {', '.join(sorted(missing))} "
                   f"on {network} (0 routes checked)")

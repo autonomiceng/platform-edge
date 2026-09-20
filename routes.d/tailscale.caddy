@@ -57,7 +57,7 @@
 			respond @operator 404
 			@ready path_regexp (?i)^/+health/+ready\.*(/|$)
 			request_header @ready -Authorization
-			reverse_proxy bp-server:3000 {
+			reverse_proxy bp-gateway:80 {
 				# Preserve Host including its port for login origins and S3 signatures.
 				header_up X-Forwarded-Proto https
 			}
