@@ -7,78 +7,107 @@
   <title>Platform Edge</title>
   <link rel="icon" href="data:,">
   <style>
-    :root { font-family: system-ui, sans-serif; color: #1e293b; background: #f8fafc; line-height: 1.5; }
-    body { max-width: 48rem; margin: 3rem auto; padding: 0 1.5rem; }
-    h1 { font-size: 1.5rem; } p { color: #64748b; }
-    ul { list-style: none; padding: 0; }
-    li { padding: .75rem 0; border-bottom: 1px solid #cbd5e1; display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
-    a { color: #1d4ed8; overflow-wrap: anywhere; }
-    span { color: #64748b; } [data-state="ok"] { color: #15803d; } [data-state="down"] { color: #b91c1c; }
-    button { font: inherit; padding: .4rem .8rem; cursor: pointer; }
+    :root { font-family: system-ui, sans-serif; color: #172033; background: #f8fafc; line-height: 1.5; }
+    body { max-width: 64rem; margin: 3rem auto; padding: 0 1.5rem; }
+    h1 { font-size: 2rem; margin: .6rem 0; } h2 { font-size: 1.1rem; margin: 0; }
+    p { color: #526176; } .eyebrow { font-size: .85rem; font-weight: 650; color: #15803d; }
+    #apps { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+    article, #setup { border: 1px solid #cbd5e1; border-radius: .65rem; padding: 1.25rem; background: #fff; }
+    article { display: flex; flex-direction: column; gap: .65rem; } article p { margin: 0; }
+    .state { font-size: .85rem; color: #64748b; } [data-state="ok"] { color: #15803d; }
+    .address { font-size: .8rem; overflow-wrap: anywhere; }
+    a { color: #1d4ed8; } .open { margin-top: auto; padding-top: .4rem; font-weight: 600; }
+    a:not([href]) { color: #64748b; text-decoration: none; }
+    button { font: inherit; border: 1px solid #94a3b8; background: transparent; color: inherit; border-radius: .35rem; padding: .4rem .8rem; cursor: pointer; }
+    footer { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; font-size: .85rem; }
+    code { overflow-wrap: anywhere; } [hidden] { display: none !important; }
     @media (prefers-color-scheme: dark) {
-      :root { color: #e2e8f0; background: #0f172a; }
-      p, span { color: #94a3b8; } li { border-color: #334155; } a { color: #93c5fd; }
-      [data-state="ok"] { color: #bbf7d0; } [data-state="down"] { color: #fecaca; }
+      :root { color: #e2e8f0; background: #0f172a; } article, #setup { background: #162033; border-color: #334155; }
+      p, .state { color: #a6b4c8; } a { color: #93c5fd; } .eyebrow, [data-state="ok"] { color: #86efac; }
     }
   </style>
 </head>
 <body>
-  <h1>Platform Edge</h1>
-  <p>The gateway console is unavailable. The edge is running; each stack can join independently.</p>
-  <ul id="routes" aria-label="Configured hostnames"></ul>
-  <p>Checks show whether each stack ingress answers. Application login and readiness remain with each stack.</p>
-  <button id="refresh" type="button">Check again</button>
-  <p id="checked" role="status">Checking upstreams…</p>
-  <noscript>Enable JavaScript to list hostnames and check the gateway, backplane and observability stack.</noscript>
-  <script type="application/json" id="edge-config">{"domain": {{env "PE_PUBLIC_DOMAIN" | toJson}}, "mode": {{env "PE_ACCESS_MODE" | toJson}}, "scheme": {{env "PE_SCHEME" | toJson}}}</script>
+  <div class="eyebrow">Platform Edge · connected</div>
+  <h1>Your platform</h1>
+  <p id="intro">Edge is running. Checking which applications are reachable…</p>
+  <section id="setup" hidden aria-label="Finish access setup">
+    <h2>Set up application access from this address</h2>
+    <p id="setup-note"></p>
+    <p>For Tailscale access, run this from the Platform Edge checkout on the server:</p>
+    <code>python3 scripts/tailscale_serve.py</code>
+    <p>The setup command connects installed stacks and prints their private HTTPS links. It tells you if Tailscale needs sudo.</p>
+  </section>
+  <main id="apps" aria-label="Applications"></main>
+  <footer><button id="refresh" type="button">Check again</button><span id="checked" role="status">Checking applications…</span></footer>
+  <p><small>Checks run every 30 seconds while this page is visible. Each application keeps its own login. An application that is not reachable may not be installed, may be stopped, or may need configuration. After installing another stack, rerun <code>python3 scripts/tailscale_serve.py</code> on the server to connect it.</small></p>
+  <noscript>Edge is running. Enable JavaScript to check applications and show their links. To configure remote access, run python3 scripts/tailscale_serve.py on the server.</noscript>
+  <script type="application/json" id="edge-config">{"domain": {{env "PE_PUBLIC_DOMAIN" | toJson}}, "mode": {{env "PE_ACCESS_MODE" | toJson}}, "scheme": {{env "PE_SCHEME" | toJson}}, "tailscale": {{env "PE_TAILSCALE_HOST" | toJson}}, "connected": {{env "PE_TAILSCALE_APPS" | toJson}}, "ports": {"gateway": {{env "PE_TAILSCALE_GATEWAY_PORT" | toJson}}, "litellm": {{env "PE_TAILSCALE_LITELLM_PORT" | toJson}}, "langfuse": {{env "PE_TAILSCALE_LANGFUSE_PORT" | toJson}}, "s3": {{env "PE_TAILSCALE_S3_PORT" | toJson}}, "observability": {{env "PE_TAILSCALE_GRAFANA_PORT" | toJson}}, "backplane": {{env "PE_TAILSCALE_BACKPLANE_PORT" | toJson}}}}</script>
   <script>
     const config = JSON.parse(document.querySelector('#edge-config').textContent);
-    const configuredDomain = config.domain;
-    const configuredScheme = config.mode === 'public' ? 'https' : config.scheme;
-    const alias = location.hostname !== configuredDomain;
-    const routes = [
-      ['', 'gateway'], ['litellm', 'gateway'], ['langfuse', 'gateway'],
-      ['s3', 'gateway'], ['backplane', 'backplane'], ['grafana', 'observability']
+    const tail = Boolean(config.tailscale) && location.hostname === config.tailscale;
+    const configured = tail || location.hostname === config.domain || (config.domain === "localhost" && location.hostname === "127.0.0.1");
+    document.querySelector('#intro').textContent = tail
+      ? 'Connected through Tailscale. Open an application below using its private HTTPS address.'
+      : configured ? 'Edge is running. Open a reachable application below.'
+      : 'Edge is running. Application access from this address has not been configured yet.';
+    if (!configured) {
+      document.querySelector('#setup').hidden = false;
+      document.querySelector('#setup-note').textContent = config.domain === 'localhost'
+        ? 'The applications are configured for use on the server itself. Localhost addresses would point at your own computer, so they are not shown as remote links.'
+        : 'Applications currently use ' + config.domain + '. Use that configured address, or set up Tailscale access below.';
+    }
+    const apps = [
+      ['gateway', '', 'LLM Gateway', 'Overview of the gateway and its services.', '/'],
+      ['litellm', 'litellm', 'LiteLLM', 'Manage model access, API keys and budgets.', '/ui/'],
+      ['langfuse', 'langfuse', 'Langfuse', 'Explore traces, prompts and evaluations.', '/'],
+      ['s3', 's3', 'Object storage', 'S3 endpoint for Langfuse uploads and downloads. Use it with an S3 client and your credentials.', null],
+      ['observability', 'grafana', 'Grafana', 'Explore logs, metrics and dashboards.', '/'],
+      ['backplane', 'backplane', 'Agent Backplane', 'Shared state, queues and approvals for your agents.', '/dashboard']
     ];
-    if (alias) {
-      const note = document.createElement('p');
-      note.textContent = 'This address opens the Edge console. Application links use the configured domain and require its DNS and network access.';
-      document.querySelector('#routes').before(note);
-    }
-    const badges = new Map();
-    for (const [prefix, stack] of routes) {
-      const host = (prefix ? prefix + '.' : '') + configuredDomain;
-      const row = document.createElement('li');
-      const link = document.createElement('a');
-      link.href = (alias ? configuredScheme + ':' : location.protocol) + '//' + host + (alias ? '' : (location.port ? ':' + location.port : '')) + '/';
-      link.textContent = host;
-      if (alias) link.removeAttribute('href');
-      const badge = document.createElement('span');
-      badge.textContent = alias ? 'use configured address' : 'checking';
-      if (!badges.has(stack)) badges.set(stack, []);
-      badges.get(stack).push(badge);
-      row.append(link, badge);
-      document.querySelector('#routes').append(row);
-    }
+    const connected = new Set((config.connected || "").split(","));
+    const cards = apps.map(([id, prefix, name, description, path]) => {
+      const canOpen = configured && (!tail || connected.has(id === "observability" ? "grafana" : id));
+      const origin = tail ? 'https://' + config.tailscale + ':' + config.ports[id]
+        : (config.scheme || location.protocol.slice(0, -1)) + '://' + (prefix ? prefix + '.' : '') + config.domain + (location.port ? ':' + location.port : '');
+      const card = document.createElement('article');
+      const heading = document.createElement('h2'); heading.textContent = name;
+      const state = document.createElement('span'); state.className = 'state'; state.textContent = 'Checking…';
+      const detail = document.createElement('p'); detail.textContent = description;
+      const address = document.createElement('p'); address.className = 'address'; address.textContent = canOpen ? origin : 'Remote address not configured';
+      const open = document.createElement('a'); open.className = 'open'; open.textContent = path === null ? 'S3 endpoint' : 'Open ' + name;
+      const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = 'Copy endpoint'; copy.hidden = path !== null || !canOpen;
+      copy.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(origin); copy.textContent = 'Copied'; } catch (_) { copy.textContent = 'Select the address above to copy'; }
+      });
+      if (path === null) open.hidden = true;
+      card.append(heading, state, detail, address, open, copy); document.querySelector('#apps').append(card);
+      return { id, state, open, copy, configured: canOpen, url: origin + (path || '/') };
+    });
+    let checking = false;
     async function check() {
-      if (alias) return;
-      document.querySelector('#refresh').disabled = true;
-      await Promise.all([...badges].map(async ([stack, entries]) => {
-        let answers = false;
-        try {
-          const response = await fetch('/health/' + stack, {cache: 'no-store', signal: AbortSignal.timeout(8000)});
-          answers = response.status < 500;
-        } catch (_) {}
-        for (const badge of entries) {
-          badge.textContent = answers ? 'answers' : 'unavailable';
-          badge.dataset.state = answers ? 'ok' : 'down';
-        }
-      }));
-      document.querySelector('#checked').textContent = 'Checked ' + new Date().toLocaleTimeString();
-      document.querySelector('#refresh').disabled = false;
+      if (checking) return;
+      checking = true;
+      const refresh = document.querySelector('#refresh'); refresh.disabled = true;
+      try {
+        await Promise.all(cards.map(async card => {
+          let ready = false;
+          try {
+            const response = await fetch('/health/' + card.id, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+            ready = response.status === 200;
+          } catch (_) {}
+          card.state.textContent = ready ? (card.configured ? 'Reachable' : 'Running · remote access needs setup') : 'Not reachable';
+          card.state.dataset.state = ready ? 'ok' : 'down';
+          if (ready && card.configured) { card.open.href = card.url; card.open.removeAttribute('aria-disabled'); }
+          else { card.open.removeAttribute('href'); card.open.setAttribute('aria-disabled', 'true'); }
+          card.copy.disabled = !ready;
+        }));
+        document.querySelector('#checked').textContent = 'Last checked ' + new Date().toLocaleTimeString();
+      } finally { checking = false; refresh.disabled = false; }
     }
-    document.querySelector('#refresh').disabled = alias;
     document.querySelector('#refresh').addEventListener('click', check);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+    setInterval(() => { if (!document.hidden) check(); }, 30000);
     check();
   </script>
 </body>

@@ -1,0 +1,6 @@
+# Keep the peer trusted by sibling gateways stable across recreations.
+services:
+  caddy:
+    networks:
+      platform:
+        ipv4_address: ${PE_TAILSCALE_EDGE_IP:?run scripts/tailscale_serve.py first}

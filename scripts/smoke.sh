@@ -16,7 +16,7 @@ if [ "$integration" = 1 ]; then
 else
   export PE_PUBLIC_DOMAIN=localhost PE_PLATFORM_NETWORK="$COMPOSE_PROJECT_NAME-platform"
 fi
-export PE_ACCESS_MODE=local PE_SCHEME=http PE_ACME_EMAIL='' PE_BACKUP_KEEP=7
+export PE_ACCESS_MODE=local PE_SCHEME=http PE_ACME_EMAIL='' PE_BACKUP_KEEP=7 PE_TAILSCALE_HOST=''
 export PE_METRICS_ALLOW="127.0.0.0/8 ::1"
 export PE_VOLUME_PREFIX="$COMPOSE_PROJECT_NAME" PE_BACKUP_DIR=/tmp/unused-edge-smoke-backups
 export PE_BIND_HOST=127.0.0.1 PE_HTTP_PORT="${SMOKE_HTTP_PORT:-18280}" PE_HTTPS_PORT="${SMOKE_HTTPS_PORT:-18643}"
@@ -88,6 +88,7 @@ cat > "$work/stub.caddy" <<'CADDY'
 		header Authorization *
 	}
 	respond @probe_credentials 401
+	respond /authority "{$STUB_ALIAS}|{http.request.hostport}|{http.request.header.X-Forwarded-Proto}"
 	respond "{$STUB_ALIAS}|{host}|{http.request.header.X-Forwarded-Proto}"
 }
 CADDY
@@ -307,4 +308,22 @@ service = json.loads(open(sys.argv[1]).read())
 assert [p['TargetPort'] for p in service['Publishers'] if p.get('PublishedPort')] == [80], service
 PYCODE
 ok 'proxy preserves public HTTPS and publishes HTTP only'
+# One machine hostname must dispatch by port without losing signed S3 authorities.
+export PE_TAILSCALE_HOST=example.tail123.ts.net PE_ACCESS_MODE=local PE_SCHEME=http
+export COMPOSE_FILE="$root/compose.yaml"
+python3 scripts/bootstrap.py --env-file "$env_file" >/dev/null
+curl --noproxy '*' --max-time 10 -fsS "http://127.0.0.1:$PE_HTTP_PORT/health" >/dev/null
+curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -fsS "https://127.0.0.1:$PE_HTTPS_PORT/health" >/dev/null
+ok 'Tailscale routes coexist with local HTTP and verified self-signed HTTPS'
+docker start "$lg_stub" "$ob_stub" >/dev/null
+for item in '8443 lg-gateway' '8444 lg-gateway' '8445 lg-gateway' '8446 lg-gateway' '8447 ob-gateway' '8448 bp-server'; do
+  # shellcheck disable=SC2086
+  set -- $item
+  body=$(curl --noproxy '*' --retry 5 --retry-all-errors --retry-delay 1 --max-time 10 -fsS -H "Host: $PE_TAILSCALE_HOST:$1" -H 'X-Forwarded-Proto: forged' "http://127.0.0.1:$PE_HTTP_PORT/authority")
+  [ "$body" = "$2|$PE_TAILSCALE_HOST:$1|https" ] || fail "Tailscale application $1 lost route, Host or scheme: $body"
+  ok "Tailscale $1 reaches $2 with exact authority and HTTPS scheme"
+done
+code=$(curl --noproxy '*' --max-time 10 -sS -H "Host: $PE_TAILSCALE_HOST:8448" -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PE_HTTP_PORT/metrics")
+[ "$code" = 404 ] || fail 'Tailscale backplane leaked operator endpoint'
+ok 'Tailscale backplane retains operator endpoint restrictions'
 echo "SMOKE CONTRACT PASSED ($pass checks)"

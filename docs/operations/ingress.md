@@ -48,36 +48,66 @@ with authentication or generated links still need one configured application URL
 accepts both HTTP and HTTPS. Give sibling Caddys spare loopback HTTP ports. Keep the
 backplane's optional standalone edge profile off and set its explicit `BP_PUBLIC_URL`.
 
-## Tailscale console sharing
+## Access everything through Tailscale
 
-Tailscale Serve is optional and owns browser-facing HTTPS; it forwards to Edge's local
-HTTP listener. It does not require clients to trust Caddy's internal CA. After starting Edge
-in `local` mode, review and apply the helper:
+Start Edge and the stacks you want to use, then run from the Edge checkout:
 
 ```sh
-python3 scripts/tailscale_serve.py --https-port 8443 --dry-run
-sudo python3 scripts/tailscale_serve.py --https-port 8443
+python3 scripts/tailscale_serve.py --dry-run
+python3 scripts/tailscale_serve.py
 ```
 
-Use `--env-file /absolute/path/.env` for another installation. `sudo` is only needed if
-Tailscale permissions require it. Login, MagicDNS and tailnet HTTPS approval must be
-completed first; the Tailscale CLI provides the approval link when necessary. The helper
-checks readiness, preserves other endpoints, refuses collisions unless `--replace` is
-explicit, verifies the resulting HTTPS health URL, and prints the URL and undo command.
-It never enables Funnel or modifies the host's trust stores. A failed verification can leave
-the requested Serve mapping applied; inspect `tailscale serve status` before retrying.
+Run with `sudo` if Tailscale requires it. Log in to Tailscale and enable its HTTPS
+certificates first. The helper connects existing installations; it does not install
+missing stacks or create credentials. By default it looks for `.env` in the sibling
+`llm-gateway-stack`, `observability-stack`, and `agent-backplane` checkouts. Use
+`--gateway-dir`, `--observability-dir`, or `--backplane-dir` for other locations.
+Use `--env-file` for a different Edge environment file.
 
-For the default external HTTPS port, the underlying command is:
+You get private HTTPS links on one machine name, without editing DNS or installing a
+certificate on your computer:
 
-```sh
-sudo tailscale serve --bg --https=443 http://127.0.0.1:80
-```
+| Application | Default HTTPS port |
+| --- | --- |
+| Platform Edge | 443 |
+| LiteLLM | 8443 |
+| Langfuse | 8444 |
+| S3 object storage | 8445 |
+| LLM Gateway overview | 8446 |
+| Grafana | 8447 |
+| Agent Backplane | 8448 |
 
-Select another free external port if 443 is already in use. Never target local HTTP port 443,
-or accidentally configure HTTPS on external port 80 while expecting plain HTTP clients.
-A Serve URL provides console access, not automatic application subdomains. Full-stack
-access retains configured domains and origins. A public deployment can use those same
-names over Tailscale with appropriate private DNS, routing and certificate reachability.
+Open the printed Platform Edge link to launch applications. S3 is an API endpoint;
+use an S3 client and your existing credentials. Each application keeps its own login.
+The LiteLLM operator pages become reachable through the private Edge connection;
+application authentication remains required. Your tailnet access rules must permit the
+chosen ports. Use `--https-port` for the landing page and `--port-base` to move the six
+consecutive application ports together.
+
+Every Tailscale listener forwards to the same Edge Caddy on `127.0.0.1:80`;
+Edge chooses the application by hostname and port. Services are not exposed directly.
+Edge retains localhost HTTP and self-signed HTTPS on its configured ports (80 and 443
+by default), using its existing certificate state. Tailscale adds trusted HTTPS for remote
+clients. Application login and generated links use the selected Tailscale URLs; keeping
+local listeners does not give an application two separate canonical login URLs.
+
+The helper updates application URLs, keeps Edge in local mode, configures sibling
+gateways for HTTP behind Edge, pins Edge's current network address for proxy trust, and recreates the
+services that need those settings. It preserves credentials, storage volumes and unrelated
+Compose overlays. It checks every Compose configuration before writing settings. It never
+enables Funnel and preserves unrelated Serve endpoints. Conflicting root handlers require
+`--replace`; non-HTTPS listeners and Funnel endpoints are always refused. Ports with custom path handlers are also refused, since those paths could bypass the
+selected application's root handler.
+
+If setup fails partway, correct the reported error and rerun. Inspect `tailscale serve
+status` and the affected service's logs; partial setup is not reported as success. Rerun
+after installing another stack to connect it. Keep the generated `COMPOSE_FILE` setting
+when recreating Edge so its pinned address stays consistent with sibling proxy trust.
+
+All Serve endpoints forward to Edge's **HTTP** port, usually `http://127.0.0.1:80`.
+Do not forward HTTP to local port 443, and do not use an HTTPS listener on port 80 when
+expecting ordinary HTTP clients. Tailscale access is optional; each stack retains its
+standalone local and public-domain setup.
 
 For `PE_ACCESS_MODE=proxy`, bootstrap automatically selects `compose.proxy.yaml` to
 publish only HTTP. Direct Compose commands must use both files:
