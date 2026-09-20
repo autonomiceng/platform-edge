@@ -47,6 +47,7 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./routes.d:/etc/caddy/routes.d:ro
       - ./docker/console:/srv/console:ro
+      - ./data/console:/srv/state:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
       interval: 10s

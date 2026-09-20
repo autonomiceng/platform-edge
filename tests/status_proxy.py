@@ -6,6 +6,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 base = sys.argv[1]
 absent = '--absent-observability' in sys.argv
+edge_present = '--edge-status' in sys.argv
 opener = build_opener(ProxyHandler({}))
 checks = 0
 
@@ -16,8 +17,10 @@ def request(stack, method='GET', mode='', host='localhost'):
                'Cookie': 'session=smoke-private', 'X-Smoke-Status': mode}
     headers.update({'Range': 'bytes=0-2', 'If-Range': '"smoke-range"',
                     'If-Match': '"not-current"', 'If-Unmodified-Since': 'Thu, 01 Jan 1970 00:00:00 GMT',
-                    'If-None-Match': '*', 'If-Modified-Since': 'Wed, 31 Dec 2099 23:59:59 GMT'})
-    req = Request(f'{base}/stack-status/{stack}', headers=headers, method=method)
+                    'If-None-Match': '*',
+                    'If-Modified-Since': 'Wed, 31 Dec 2099 23:59:59 GMT'})
+    path = '/status.json' if stack == 'direct-edge' else f'/stack-status/{stack}'
+    req = Request(f'{base}{path}', headers=headers, method=method)
     try:
         response = opener.open(req, timeout=6)
     except HTTPError as error:
@@ -48,6 +51,14 @@ for host in ('localhost', 'private.test.ts.net'):
         assert request(stack, method='POST', host=host) == (405, b'')
         for mode, expected in [('missing', 404), ('failure', 503), ('html', 502)]:
             assert request(stack, mode=mode, host=host) == (expected, b'')
-    assert request('edge', host=host) == (404, b'')
-    assert request('edge', method='POST', host=host) == (405, b'')
+    for edge in ('edge', 'direct-edge'):
+        status, body = request(edge, host=host)
+        if edge_present:
+            assert status == 200
+            assert json.loads(body)['stack'] == 'edge'
+            assert json.loads(body)['generatedAt'] == '2026-09-20T00:00:00Z'
+        else:
+            assert (status, body) == (404, b'')
+        assert request(edge, method='HEAD', host=host) == (200 if edge_present else 404, b'')
+        assert request(edge, method='POST', host=host) == (405, b'')
 print(f'PASS: {checks} status proxy requests')

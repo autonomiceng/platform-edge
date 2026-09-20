@@ -8,6 +8,9 @@ certificate-volume names require a migration when changed.
 For bootstrap and environment changes, preserve existing secrets and unmanaged
 environment lines. Unit tests use the fake runner and never call Docker.
 
+For status producer, proxy or consumer changes, read `docs/operations/status-contract.md`.
+For Edge observer or timer changes, also read `docs/operations/status-observer.md`.
+
 For backup/restore changes, preserve external certificate volumes and verify the
 existing restore drill in a disposable project before claiming recovery works.
 

@@ -8,6 +8,7 @@ Multiple standalone stacks each ship an ingress, but only one ingress can own a 
 
 ## Guarantees, stated exactly
 
+- `/status.json` and `/stack-status/edge` are unauthenticated in every access mode, including public internet access, and expose allowlisted version and image digest metadata.
 - Caddy is the only service and publisher in this project. Defaults bind HTTP and HTTPS ports to loopback.
 - All seven hostnames are configured even when some stacks are absent. An unavailable alias produces a request failure, independent of other aliases.
 - `/health` returns 200 independently of upstream readiness. It is available on the root site and over HTTP in every access mode.
@@ -42,6 +43,10 @@ The certificate contact email is used only for public certificates. Its empty va
 The [public stack status contract](operations/status-contract.md) defines a versioned
 interface for independent status producers and console consumers. Its fixtures describe
 compatibility and freshness requirements; they do not attest deployed producer support.
+
+The [Edge host observer](operations/status-observer.md) publishes bounded Caddy
+readiness and version observations through a read-only public file mount. Bootstrap
+attempts an initial observation; periodic publication is an explicit user-timer opt-in.
 
 The ingress runbook contains exact per-stack settings and rollout order. Only move ports or restart services as an authorized installation action. Port conflict checks include overlapping TCP bindings and port ranges, and ignore this project's existing Caddy for idempotent reruns. Host-process conflicts and races after preflight remain Compose startup errors.
 

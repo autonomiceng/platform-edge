@@ -27,6 +27,18 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
+from status_io import Unavailable, directory, now, task_record
+
+
+def record_bootstrap(root, env_file, started, state):
+    try:
+        # Create the read-only mount source before Compose can create it as root.
+        with directory(root / "data/console"):
+            pass
+        task_record(root, env_file, started, state)
+    except (OSError, Unavailable):
+        print("Status execution record unavailable; check data directory ownership and permissions.", file=sys.stderr)
+
 PROJECT = "platform-edge"
 NETWORK = "platform"
 RESTORE_MARKER = ".pe-restore-incomplete"
@@ -386,24 +398,40 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             return 0
         if not args.probe_only:
             check_ports(runner, settings, project)
-            ensure_network(runner, settings["PE_PLATFORM_NETWORK"])
-            ensure_volumes(runner, settings)
-            # The read-only state check must not contend for the running Edge's pinned IP.
-            with tempfile.NamedTemporaryFile("w", suffix=".yaml") as isolated:
-                isolated.write("services:\n  caddy:\n    networks: !reset []\n    network_mode: none\n")
-                isolated.flush()
-                result = runner(compose_command(root, env_file) + ["-f", isolated.name,
-                    "run", "--rm", "--no-deps", "--entrypoint", "sh", "caddy", "-ec",
-                    f"if test -e /data/{RESTORE_MARKER} || test -e /config/{RESTORE_MARKER}; "
-                    "then echo marker; else ls /data /config >/dev/null && echo clean; fi",
-                ])
-            state = result.stdout.strip().splitlines()[-1:]
-            if result.returncode or state not in (["clean"], ["marker"]):
-                raise Refused("state_check_failed", (result.stderr or result.stdout).strip()[-2000:])
-            if state == ["marker"]:
-                raise Refused("restore_incomplete", "restore markers present; preserve volumes and restore into a fresh prefix")
-            compose_up(root, env_file, runner)
-        certificate = wait_ready(settings, root, env_file, runner)
+            started = now()
+            record_bootstrap(root, env_file, started, "unknown")
+            try:
+                ensure_network(runner, settings["PE_PLATFORM_NETWORK"])
+                ensure_volumes(runner, settings)
+                # The read-only state check must not contend for the running Edge's pinned IP.
+                with tempfile.NamedTemporaryFile("w", suffix=".yaml") as isolated:
+                    isolated.write("services:\n  caddy:\n    networks: !reset []\n    network_mode: none\n")
+                    isolated.flush()
+                    result = runner(compose_command(root, env_file) + ["-f", isolated.name,
+                        "run", "--rm", "--no-deps", "--entrypoint", "sh", "caddy", "-ec",
+                        f"if test -e /data/{RESTORE_MARKER} || test -e /config/{RESTORE_MARKER}; "
+                        "then echo marker; else ls /data /config >/dev/null && echo clean; fi",
+                    ])
+                state = result.stdout.strip().splitlines()[-1:]
+                if result.returncode or state not in (["clean"], ["marker"]):
+                    raise Refused("state_check_failed", (result.stderr or result.stdout).strip()[-2000:])
+                if state == ["marker"]:
+                    raise Refused("restore_incomplete", "restore markers present; preserve volumes and restore into a fresh prefix")
+                compose_up(root, env_file, runner)
+                certificate = wait_ready(settings, root, env_file, runner)
+            except BaseException:
+                record_bootstrap(root, env_file, started, "unavailable")
+                raise
+            record_bootstrap(root, env_file, started, "healthy")
+        else:
+            certificate = wait_ready(settings, root, env_file, runner)
+        try:
+            observed = runner([sys.executable, str(root / "scripts/status_observer.py"),
+                               "--checkout", str(root), "--env-file", str(env_file)], timeout=120)
+            if observed.returncode:
+                raise subprocess.SubprocessError()
+        except (OSError, subprocess.SubprocessError, Refused):
+            print("Status observation failed; inspect publication permissions and retry the observer.", file=sys.stderr)
         print(json.dumps({
             "project": project,
             "access_mode": settings["PE_ACCESS_MODE"],
