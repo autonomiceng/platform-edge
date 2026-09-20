@@ -297,6 +297,33 @@ for c in containers:
 PY
 ok 'only the healthy edge publishes ports'
 
+docker compose --env-file "$env_file" config --format json > "$work/observer-config.json"
+python3 - "$work/observer-config.json" "$edge_id" <<'PYREAP'
+import json, sys, time
+sys.path.insert(0, 'scripts')
+from status_io import now, run
+from status_observer import inspect_caddy
+
+config = json.load(open(sys.argv[1]))
+for _ in range(20):
+    observed = inspect_caddy(config, run, now)
+    assert observed['state'] == 'healthy', observed
+    assert observed['observedVersion'] == observed['configuredVersion'], observed
+# BusyBox watchdogs outlive successful probes. Allow their three-second deadline
+# to expire, then read /proc directly: docker top omits zombie processes.
+time.sleep(4)
+zombies = run(['docker', 'exec', sys.argv[2], 'sh', '-c', '''
+for stat in /proc/[0-9]*/stat; do
+    { read -r pid comm state rest < "$stat"; } 2>/dev/null || continue
+    if [ "$comm" = '(timeout)' ] && [ "$state" = Z ]; then
+        printf '%s\\n' "$pid"
+    fi
+done
+''']).splitlines()
+assert not zombies, f'host status probes left {len(zombies)} timeout zombies'
+PYREAP
+ok '20 production observer cycles preserve readiness/version without timeout zombies'
+
 docker stop "$ob_stub" >/dev/null
 # Restart with an absent alias to prove lazy resolution does not block startup.
 docker compose --env-file "$env_file" up -d --force-recreate --wait --wait-timeout 120 >/dev/null
