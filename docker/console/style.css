@@ -86,9 +86,7 @@ header {
 .pill {
   font-weight: 450;
 }
-.source {
-  font-size: 13px;
-}
+
 main {
   max-width: 1440px;
   margin: auto;
@@ -111,13 +109,7 @@ p {
   margin: 6px 0 15px;
   color: var(--muted);
 }
-.intro {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 27px;
-  gap: 20px;
-}
+
 .meta {
   font-size: 12px;
   color: var(--muted);
@@ -278,35 +270,13 @@ summary small {
   padding: 0 24px 18px;
   font-size: 12px;
 }
-.explorer {
-  display: grid;
-  grid-template-columns: 190px minmax(0, 1fr) 310px;
-  gap: 24px;
-}
-.nav {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.nav button {
-  text-align: left;
-  background: transparent;
-  border-color: transparent;
-  font-size: 13px;
-}
-.nav button.active,
+
 .tabs button.active {
   background: #243b55;
   border-color: #477198;
   color: #b5ddff;
 }
-.nav .logo {
-  width: 19px;
-  height: 19px;
-  vertical-align: middle;
-  margin-right: 8px;
-}
-.list-panel,
+
 .detail {
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -318,30 +288,7 @@ summary small {
   width: 100%;
   margin-bottom: 18px;
 }
-.service-item {
-  width: 100%;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  text-align: left;
-  padding: 13px 10px;
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-.service-item:hover,
-.service-item.selected {
-  background: #23364c;
-}
-.service-item .grow {
-  flex: 1;
-  min-width: 0;
-}
-.service-item small {
-  color: var(--muted);
-  display: block;
-  font-size: 11px;
-}
+
 .detail {
   align-self: start;
   position: sticky;
@@ -476,13 +423,6 @@ summary small {
   display: none;
 }
 @media (max-width: 1100px) {
-  .explorer {
-    grid-template-columns: 150px minmax(0, 1fr);
-  }
-  .explorer .detail {
-    grid-column: 2;
-    position: static;
-  }
   .map-layout {
     grid-template-columns: 1fr;
   }
@@ -500,9 +440,7 @@ summary small {
   main {
     padding: 24px 16px 140px;
   }
-  .intro {
-    display: block;
-  }
+
   .projects {
     grid-template-columns: 1fr;
   }
@@ -512,25 +450,9 @@ summary small {
   .apps {
     padding: 0 18px 15px;
   }
-  .explorer {
-    display: block;
-  }
-  .nav {
-    flex-direction: row;
-    overflow: auto;
-    margin-bottom: 15px;
-  }
-  .nav button {
-    white-space: nowrap;
-  }
+
   .detail {
     margin-top: 18px;
-  }
-  .service-item .badge {
-    font-size: 10px;
-  }
-  .source {
-    font-size: 12px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

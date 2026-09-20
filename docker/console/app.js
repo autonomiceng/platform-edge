@@ -166,6 +166,8 @@ function render() {
   const focusIdentity = focused
     ? {
         id: focused.id,
+        view: focused.dataset.view,
+        project: focused.dataset.project,
         label: focused.getAttribute("aria-label"),
         select: focused.dataset.select,
         href: focused.getAttribute("href"),
@@ -202,6 +204,9 @@ function render() {
     ].find(
       (el) =>
         (focusIdentity.id && el.id === focusIdentity.id) ||
+        (focusIdentity.view && el.dataset.view === focusIdentity.view) ||
+        (focusIdentity.project &&
+          el.dataset.project === focusIdentity.project) ||
         (focusIdentity.label &&
           el.getAttribute("aria-label") === focusIdentity.label) ||
         (focusIdentity.select && el.dataset.select === focusIdentity.select) ||
