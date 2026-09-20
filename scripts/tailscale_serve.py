@@ -20,11 +20,54 @@ from pathlib import Path
 import bootstrap
 
 
+class ServeFailure(ValueError):
+    """Retain only an authored diagnostic and exit status, never child output."""
+    def __init__(self, result):
+        diagnostic = ((result.stderr or "")[:4096] + (result.stdout or "")[:4096]).lower()
+        self.permission = any(text in diagnostic for text in ("permission denied", "access denied"))
+        self.returncode = result.returncode
+        detail = "Serve command failed. Inspect Tailscale status and HTTPS configuration locally."
+        if self.permission:
+            detail = "Serve configuration permission was denied."
+        elif "https" in diagnostic and any(text in diagnostic for text in ("not enabled", "disabled", "enable https")):
+            detail = "Enable Tailscale HTTPS certificates for this tailnet, then retry."
+        elif any(text in diagnostic for text in ("failed to connect to local tailscaled", "tailscaled is not running", "connection refused")):
+            detail = "Restore the local Tailscale daemon connection, then retry."
+        super().__init__(detail)
+
+
+def serve_failure(command, error, completed, remaining):
+    permission = isinstance(error, ServeFailure) and error.permission
+    detail = str(error) if isinstance(error, ServeFailure) else "Serve command could not complete; inspect Tailscale locally before retrying."
+    if isinstance(error, subprocess.TimeoutExpired):
+        detail = "Serve command timed out; verify actual Serve state before retrying."
+    report = {"state": "administrator_action" if permission else "command_failed",
+              "command": shlex.join((["sudo"] if permission else []) + command),
+              "detail": detail, "serve_changes_completed": completed, "remaining": remaining,
+              "next": ("Run only this Serve command as administrator, then rerun the same selection to verify HTTPS."
+                       if permission else "Correct the reported command failure locally, then rerun the same selection to verify actual Serve state and HTTPS.")}
+    if isinstance(error, ServeFailure):
+        report["exit_code"] = error.returncode
+    return report
+
+
 def checked(argv: list[str]) -> str:
     result = subprocess.run(argv, capture_output=True, text=True, timeout=300)
     if result.returncode:
+        if argv[:2] == ["tailscale", "serve"] and "status" not in argv:
+            raise ServeFailure(result)
         raise ValueError(f"Command failed: {' '.join(argv)}. Inspect that service locally.")
     return result.stdout
+
+
+def serve_status(output):
+    # Preserve the helper's empty/null configuration support without accepting arrays or scalars.
+    configuration = json.loads(output)
+    if configuration is None:
+        return {}
+    if not isinstance(configuration, dict):
+        raise ValueError("Malformed Serve configuration")
+    return configuration
 
 
 def plan(status: dict, serve: dict, port: int, local_port: int, replace: bool = False) -> dict:
@@ -36,7 +79,8 @@ def plan(status: dict, serve: dict, port: int, local_port: int, replace: bool = 
         if not isinstance(serve.get(section, {}), dict):
             raise ValueError("Malformed Serve configuration")
     for foreground in serve.get("Foreground", {}).values():
-        if not isinstance(foreground, dict) or str(port) in foreground.get("TCP", {}):
+        if (not isinstance(foreground, dict) or not isinstance(foreground.get("TCP", {}), dict)
+                or str(port) in foreground.get("TCP", {})):
             raise ValueError("Selected port has a foreground listener")
     if not 1 <= port <= 65535:
         raise ValueError("HTTPS port must be between 1 and 65535")
@@ -44,8 +88,16 @@ def plan(status: dict, serve: dict, port: int, local_port: int, replace: bool = 
     if not isinstance(name, str):
         raise ValueError("Malformed Tailscale machine identity")
     name = name.rstrip(".")
-    if status.get("BackendState") != "Running" or not name.endswith(".ts.net"):
+    if status.get("BackendState") != "Running" or not re.fullmatch(r"[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.ts\.net", name) or len(name) > 253:
         raise ValueError("Tailscale must be running with a machine DNS name")
+    addresses = status["Self"].get("TailscaleIPs", [])
+    if not isinstance(addresses, list) or any(not isinstance(address, str) for address in addresses):
+        raise ValueError("Malformed Tailscale addresses")
+    try:
+        for address in addresses:
+            ipaddress.ip_address(address)
+    except ValueError:
+        raise ValueError("Malformed Tailscale addresses") from None
     target = f"http://127.0.0.1:{local_port}"
     tcp = serve.get("TCP", {}).get(str(port))
     site = serve.get("Web", {}).get(f"{name}:{port}", {})
@@ -94,8 +146,8 @@ STACK_APPS = {"gateway": ("LG", ["litellm", "langfuse", "s3", "gateway"]),
 
 def selected_plan(settings, selected, status, serve):
     """Derive public settings from the qualified selection, without opening siblings."""
-    host = (status.get("Self") or {}).get("DNSName", "").rstrip(".")
     endpoints = {"Platform Edge": plan(status, serve, int(settings["PE_TAILSCALE_PORT"]), int(settings["PE_HTTP_PORT"]))}
+    host = status["Self"]["DNSName"].rstrip(".")
     if settings["PE_ACCESS_MODE"] == "public" or settings["PE_BIND_HOST"] != "127.0.0.1":
         raise ValueError("Tailscale requires local/proxy access on loopback")
     if settings["PE_TAILSCALE_HOST"] and settings["PE_TAILSCALE_HOST"] != host:
@@ -153,7 +205,7 @@ def check_listeners(endpoints, status, listeners, edge_ports=()):
 def connect(endpoints, inspect):
     """Reinspect all endpoints before the first Serve write; matching entries are read-only."""
     status = json.loads(inspect(["tailscale", "status", "--json"]))
-    serve = json.loads(inspect(["tailscale", "serve", "status", "--json"])) or {}
+    serve = serve_status(inspect(["tailscale", "serve", "status", "--json"]))
     pending = []
     for endpoint in endpoints.values():
         port = urllib.parse.urlsplit(endpoint["url"]).port or 443
@@ -163,13 +215,11 @@ def connect(endpoints, inspect):
             raise ValueError("Tailscale machine changed; rerun preflight")
         if not actual["matching"]:
             pending.append(actual["command"])
-    for command in pending:
+    for index, command in enumerate(pending):
         try:
             inspect(command)
-        except (OSError, ValueError, subprocess.TimeoutExpired, bootstrap.Refused):
-            return {"state": "administrator_action", "command": shlex.join(["sudo", *command]),
-                    "serve_changes_completed": pending.index(command), "remaining": len(pending) - pending.index(command),
-                    "next": "Run only this Serve command as administrator, then rerun the same installation selection."}
+        except (OSError, ValueError, subprocess.TimeoutExpired, bootstrap.Refused) as error:
+            return serve_failure(command, error, index, len(pending) - index)
     access = {}
     for name, endpoint in endpoints.items():
         if name == "Platform Edge":
@@ -304,7 +354,7 @@ def main(argv: list[str] | None = None) -> int:
         if settings["PE_ACCESS_MODE"] == "public":
             raise ValueError("This helper adds Tailscale to local access. Keep public installations separate.")
         status = json.loads(checked(["tailscale", "status", "--json"]))
-        serve = json.loads(checked(["tailscale", "serve", "status", "--json"])) or {}
+        serve = serve_status(checked(["tailscale", "serve", "status", "--json"]))
         landing = plan(status, serve, args.https_port, int(settings["PE_HTTP_PORT"]), args.replace)
         host = status["Self"]["DNSName"].rstrip(".")
         ports = {name: args.port_base + offset for offset, name in enumerate(APPS)}
@@ -437,15 +487,13 @@ def main(argv: list[str] | None = None) -> int:
                     ["up", "-d", "--no-deps", "--wait", "--wait-timeout", "180"] + config["services"])
         bootstrap.wait_ready(bootstrap.settings_for(bootstrap.read_env(args.env_file)),
                              root, args.env_file, bootstrap.run)
-        for endpoint in endpoints.values():
-            if not endpoint["matching"]:
-                try:
-                    checked(endpoint["command"])
-                except (OSError, ValueError, subprocess.TimeoutExpired):
-                    print(json.dumps({"applied": False, "state": "administrator_action",
-                                      "command": shlex.join(["sudo", *endpoint["command"]]),
-                                      "next": "Run only this Serve command as administrator, then rerun setup to verify HTTPS."}))
-                    return 1
+        pending = [endpoint["command"] for endpoint in endpoints.values() if not endpoint["matching"]]
+        for index, command in enumerate(pending):
+            try:
+                checked(command)
+            except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+                print(json.dumps({"applied": False, **serve_failure(command, error, index, len(pending) - index)}))
+                return 1
         with urllib.request.urlopen(landing["url"] + "health", timeout=15) as response:
             if response.status != 200:
                 raise ValueError("Tailscale Edge health check failed")

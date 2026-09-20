@@ -61,6 +61,9 @@ Fresh siblings use proxy mode on the shared Platform Network and loopback ports
 HTTPS through Edge; install the public Edge CA root in client trust stores. Existing
 public origins and already connected Tailnet application origins are preserved.
 A newly added application uses direct Edge access unless `--tailscale` is selected.
+Selected Tailscale setup refuses recorded public access settings or origins that differ
+from both the original Edge origins and the requested Tailnet origins. Use the owning
+reconfiguration procedure for an intentional public-to-tailnet migration.
 Native console enable flags, login requirements, and client allowlists are preserved.
 
 Preflight requires trusted local Docker, Compose 2.24.4+, selected configuration
@@ -132,7 +135,12 @@ before any sibling starts. Edge retains loopback HTTP and HTTPS. The helper refu
 selected custom handlers, foreign host listeners, and Funnel before execution. Matching
 Serve endpoints are read-only, including port 8450. A new endpoint can still need
 administrator permission: exit 3 reports completed stacks, `stopped_at=tailscale`,
-and the exact `sudo tailscale serve ...` command. Run only that command as administrator,
+and the exact `sudo tailscale serve ...` command for a recognized permission denial.
+Other Serve failures report `command_failed`, the unprivileged command, an exit code
+when available, and a bounded diagnostic for HTTPS configuration, daemon connectivity,
+or an unknown failure. Raw command output is never included. Both reports count completed
+Serve changes and remaining commands; a failed command may still have changed state.
+Run a reported `sudo` command as administrator,
 then repeat the original selection as the installation user. No Docker privilege
 workaround or automatic rollback is used. The retry reads actual Serve state and checks
 HTTPS origins, application reachability, and anonymous protected API denial. A console

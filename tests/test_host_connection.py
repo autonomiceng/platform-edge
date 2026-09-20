@@ -20,12 +20,17 @@ class ConnectionRunner(fixtures.FakeRunner):
         self.serve = {}
         self.calls = []
         self.deny_serve = False
+        self.serve_error = None
 
     def __call__(self, argv, **options):
         self.calls.append(argv)
         if argv[:3] == ['tailscale', 'serve', 'status']:
             return subprocess.CompletedProcess(argv, 0, json.dumps(self.serve), '')
         if argv[:2] == ['tailscale', 'serve']:
+            if self.serve_error and '--https=8447' in argv:
+                if isinstance(self.serve_error, Exception):
+                    raise self.serve_error
+                return subprocess.CompletedProcess(argv, 1, 'private-key' * 1000, self.serve_error)
             if self.deny_serve:
                 return subprocess.CompletedProcess(argv, 1, '', 'permission denied')
             port = next(arg.split('=', 1)[1] for arg in argv if arg.startswith('--https='))
@@ -34,7 +39,14 @@ class ConnectionRunner(fixtures.FakeRunner):
             return subprocess.CompletedProcess(argv, 0, '', '')
         if argv[:3] == ['docker', 'network', 'inspect']:
             return subprocess.CompletedProcess(argv, 0, json.dumps([{'IPAM': {'Config': [{'Gateway': '172.30.0.1'}]}}]), '')
-        return super().__call__(argv, **options)
+        result = super().__call__(argv, **options)
+        if argv[:2] == ['docker', 'compose'] and 'config' in argv:
+            root = Path(argv[argv.index('--project-directory') + 1])
+            if root.name == 'platform-edge' and str(root / 'compose.proxy.yaml') in argv:
+                rendered = json.loads(result.stdout)
+                rendered['services']['caddy']['ports'] = [port for port in rendered['services']['caddy']['ports'] if port['target'] == 80]
+                result.stdout = json.dumps(rendered)
+        return result
 
 
 def verified(name, endpoint, **options):
@@ -139,6 +151,131 @@ class HostConnectionTests(unittest.TestCase):
                 self.assertEqual(runner.started, [])
                 self.assertEqual(self.snapshot(), before)
                 self.assertFalse(any(argv[:2] == ['tailscale', 'serve'] and 'status' not in argv for argv in runner.calls))
+
+    def test_proxy_to_local_qualifies_https_before_writes(self):
+        env = self.root / '.env'
+        env.write_text('PE_ACCESS_MODE=proxy\nCOMPOSE_FILE=compose.yaml:compose.proxy.yaml\n')
+        env.chmod(0o600)
+        runner = ConnectionRunner()
+        runner.listeners = 'LISTEN 0 128 127.0.0.1:443 0.0.0.0:*'
+        before = self.snapshot()
+        code, report = self.invoke('--stack', 'edge', '--tailscale', runner=runner)
+        self.assertEqual(code, 1, report)
+        self.assertIn('port_conflict', {item['code'] for item in report['conflicts']})
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(runner.started, [])
+        renders = [argv for argv in runner.calls if argv[:2] == ['docker', 'compose'] and 'config' in argv]
+        self.assertTrue(renders)
+        self.assertTrue(all(str(self.root / 'compose.proxy.yaml') not in argv for argv in renders))
+        runner.listeners = ''
+        with patch.object(tailscale, 'verify_application', side_effect=verified):
+            code, report = self.invoke('--stack', 'edge', '--tailscale', runner=runner)
+        self.assertEqual(code, 0, report)
+        self.assertEqual(installation.read_settings(env)['PE_ACCESS_MODE'], 'local')
+        self.assertNotIn('compose.proxy.yaml', installation.read_settings(env)['COMPOSE_FILE'])
+
+    def test_public_origins_refuse_but_recorded_local_and_tailnet_origins_retry(self):
+        env = self.host / 'observability-stack/.env'
+        for settings in ('OB_ACCESS_MODE=public\nOB_GRAFANA_URL=https://grafana.company.test\n',
+                         'OB_ACCESS_MODE=proxy\nOB_GRAFANA_URL=https://grafana.company.test\n',
+                         'OB_SCHEME=https\nOB_PUBLIC_PORT_SUFFIX=:9443\n'):
+            with self.subTest(settings=settings):
+                env.write_text(settings)
+                env.chmod(0o600)
+                before = self.snapshot()
+                runner = ConnectionRunner()
+                code, report = self.invoke('--stack', 'observability', '--tailscale', runner=runner)
+                self.assertEqual(code, 1, report)
+                self.assertIn('origin_conflict', {item['code'] for item in report['conflicts']})
+                self.assertEqual(self.snapshot(), before)
+                self.assertEqual(runner.started, [])
+        env.unlink()
+        runner = ConnectionRunner()
+        code, report = self.invoke('--stack', 'observability', runner=runner)
+        self.assertEqual(code, 0, report)
+        self.assertEqual(installation.read_settings(env)['OB_GRAFANA_URL'], 'http://grafana.localhost')
+        with patch.object(tailscale, 'verify_application', side_effect=verified):
+            for _ in range(2):
+                code, report = self.invoke('--stack', 'observability', '--tailscale', runner=runner)
+                self.assertEqual(code, 0, report)
+                self.assertEqual(installation.read_settings(env)['OB_GRAFANA_URL'], 'https://machine.tailnet.ts.net:8447')
+
+    def test_effective_backplane_console_requires_exact_peer_and_native_storage(self):
+        root = self.host / 'agent-backplane'
+        (root / '.env.example').write_text('BP_RUSTFS_CONSOLE=true\n')
+        env = root / '.env'
+        args = ('--stack', 'backplane', '--tailscale', '--backplane-backup-dir', str(self.backup),
+                '--capability-file', str(self.capability))
+        for settings, extra in (('BP_TRUSTED_PROXIES=172.30.0.0/16\n', ()), ('', ('--backplane-mode', 'minimal'))):
+            env.write_text(settings)
+            env.chmod(0o600)
+            before = self.snapshot()
+            runner = ConnectionRunner()
+            code, report = self.invoke(*args, *extra, runner=runner)
+            self.assertEqual(code, 1, report)
+            self.assertEqual(runner.started, [])
+            self.assertEqual(self.snapshot(), before)
+        env.write_text('')
+        runner = ConnectionRunner()
+        with patch.object(tailscale, 'verify_application', side_effect=verified):
+            code, report = self.invoke(*args, runner=runner)
+        self.assertEqual(code, 0, report)
+        self.assertIn('backplane_rustfs', report['connection']['links'])
+        self.assertEqual(installation.read_settings(env)['BP_TRUSTED_PROXIES'], '172.30.0.2/32')
+
+    def test_malformed_tailscale_json_refuses_without_mutation_or_raw_diagnostics(self):
+        status = {'BackendState': 'Running', 'Self': {'DNSName': 'machine.tailnet.ts.net.'}}
+        cases = [(value, {}) for value in ([], None, {'Self': []}, {'Self': {'DNSName': []}},
+                 dict(status, Self=dict(status['Self'], TailscaleIPs=[{}])),
+                 dict(status, Self=dict(status['Self'], DNSName='private-key\n.ts.net')))]
+        cases += [(status, value) for value in ([], False, 0, {'Foreground': {'other': {'TCP': None}}},
+                  {'TCP': []}, {'Web': {'machine.tailnet.ts.net:443': {'Handlers': []}}})]
+        self.assertEqual(tailscale.serve_status("null"), {})
+        self.assertEqual(tailscale.serve_status("{}"), {})
+        before = self.snapshot()
+        for state, serve in cases:
+            with self.subTest(status=state, serve=serve):
+                runner = ConnectionRunner()
+                def malformed(argv, **options):
+                    if argv[:2] == ['tailscale', 'status']:
+                        return subprocess.CompletedProcess(argv, 0, json.dumps(state), '')
+                    if argv[:3] == ['tailscale', 'serve', 'status']:
+                        return subprocess.CompletedProcess(argv, 0, json.dumps(serve), '')
+                    return runner(argv, **options)
+                code, report = self.invoke('--stack', 'edge', '--tailscale', runner=malformed)
+                self.assertEqual(code, 1, report)
+                self.assertEqual(runner.started, [])
+                self.assertEqual(self.snapshot(), before)
+                self.assertNotIn('private-key', json.dumps(report))
+
+    def test_serve_failures_report_safe_cause_command_and_partial_completion(self):
+        cases = [('permission denied private-key', 'administrator_action', 'permission'),
+                 ('HTTPS is not enabled private-key', 'command_failed', 'certificates'),
+                 ('failed to connect to local tailscaled private-key', 'command_failed', 'daemon'),
+                 ('unknown private-key' * 1000, 'command_failed', 'failed'),
+                 (subprocess.TimeoutExpired(['private-key'], 1, output='private-key'), 'command_failed', 'timed out'),
+                 (OSError('private-key'), 'command_failed', 'could not complete')]
+        for error, state, detail in cases:
+            with self.subTest(error=type(error), state=state, detail=detail):
+                runner = ConnectionRunner()
+                runner.serve_error = error
+                with patch.object(tailscale, 'verify_application') as probe:
+                    code, report = self.invoke('--stack', 'observability', '--tailscale', runner=runner)
+                self.assertEqual((code, report['stopped_at']), (3, 'tailscale'))
+                result = report['connection']
+                self.assertEqual((result['state'], result['serve_changes_completed'], result['remaining']), (state, 1, 1))
+                self.assertIn(detail, result['detail'])
+                self.assertEqual(result['command'], ('sudo ' if state == 'administrator_action' else '') +
+                                 'tailscale serve --bg --https=8447 --yes http://127.0.0.1:80')
+                self.assertNotIn('private-key', json.dumps(report))
+                self.assertLess(len(json.dumps(result)), 800)
+                probe.assert_not_called()
+                if isinstance(error, str):
+                    with patch.object(tailscale.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', error)):
+                        with self.assertRaises(tailscale.ServeFailure) as caught:
+                            tailscale.checked(['tailscale', 'serve', '--bg', '--https=8447', '--yes', 'http://127.0.0.1:80'])
+                    self.assertEqual(caught.exception.permission, state == 'administrator_action')
+                    self.assertNotIn('private-key', str(caught.exception))
 
     def test_exact_timer_pair_retry_recovers_partial_activation_without_rewriting(self):
         root, unit_dir = self.root, self.host / 'units'

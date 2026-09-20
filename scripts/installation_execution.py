@@ -130,7 +130,7 @@ def compose(item: dict) -> list[str]:
     command = ["docker", "compose", "--project-name", item["action"]["project"], "--project-directory", str(item["root"]),
                "--env-file", str(item["env"] if item["env"].exists() else Path("/dev/null"))]
     files = list(item["files"])
-    mode = item["values"].get("PE_ACCESS_MODE", "local")
+    mode = item["changes"].get("PE_ACCESS_MODE", item["values"].get("PE_ACCESS_MODE", "local"))
     if item["name"] == "edge" and mode in {"public", "proxy"}:
         override = item["root"] / ("compose." + mode + ".yaml")
         files = [file for file in files if (item["root"] / file).resolve() != override] + [str(override)]
@@ -286,7 +286,7 @@ def execute(prepared: list[dict], runner, inspect, refused=bootstrap.Refused) ->
                 if name != "edge" and name != "backplane":
                     trust_key = item["prefix"] + "_TRUSTED_PROXIES"
                     changes[trust_key] = item["recorded"].get(trust_key, peer + "/32")
-                if name == "backplane" and item["recorded"].get("BP_RUSTFS_CONSOLE") == "true":
+                if name == "backplane" and item["values"].get("BP_RUSTFS_CONSOLE") == "true":
                     changes["BP_TRUSTED_PROXIES"] = item["recorded"].get("BP_TRUSTED_PROXIES", peer + "/32")
                 if name != "edge":
                     trust = changes.get(item["prefix"] + "_TRUSTED_PROXIES", peer)

@@ -118,11 +118,12 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
     if args.tailscale and (edge["PE_ACCESS_MODE"] == "public" or edge["PE_BIND_HOST"] != "127.0.0.1"):
         conflict("edge", "tailscale_access", "Tailscale requires local/proxy access with the loopback listener.")
         return result
+    origin_settings = dict(edge)
     connection = None
     if args.tailscale:
         try:
             tail_status = json.loads(inspect(["tailscale", "status", "--json"]))
-            tail_serve = json.loads(inspect(["tailscale", "serve", "status", "--json"])) or {}
+            tail_serve = tailscale_serve.serve_status(inspect(["tailscale", "serve", "status", "--json"]))
             connection = tailscale_serve.selected_plan(edge, {}, tail_status, tail_serve)
             edge = bootstrap.settings_for(edge | connection["changes"]["edge"])
             result["connection"] = {"links": tailscale_serve.links(connection["endpoints"]), "state": "planned"}
@@ -211,24 +212,25 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                 named = inspect(["docker", "volume", "ls", "--filter", "name=^" + re.escape(volume_prefix) + ("-" if name == "gateway" else "_"), "--format", "{{.Name}}"])
                 existing = existing or bool(containers or volumes or named)
             action["installation"] = "existing" if existing else ("fresh" if docker else "unknown")
-            scheme = "https" if name == "backplane" or args.tailscale or edge["PE_TAILSCALE_HOST"] else edge["PE_SCHEME"]
-            port = edge["PE_HTTPS_PORT" if scheme == "https" else "PE_HTTP_PORT"]
+            scheme = "https" if name == "backplane" or origin_settings["PE_TAILSCALE_HOST"] else origin_settings["PE_SCHEME"]
+            port = origin_settings["PE_HTTPS_PORT" if scheme == "https" else "PE_HTTP_PORT"]
             suffix = "" if port == ("443" if scheme == "https" else "80") else ":" + port
-            if edge["PE_ACCESS_MODE"] in {"public", "proxy"}:
+            if origin_settings["PE_ACCESS_MODE"] in {"public", "proxy"}:
                 suffix = ""
             host = {"edge": "", "gateway": "", "backplane": "backplane.", "observability": "grafana."}[name]
-            origin = scheme + "://" + host + edge["PE_PUBLIC_DOMAIN"] + suffix
+            origin = scheme + "://" + host + origin_settings["PE_PUBLIC_DOMAIN"] + suffix
             tail_app = {"edge": "", "gateway": "gateway", "backplane": "backplane", "observability": "grafana"}[name]
-            connected = edge["PE_TAILSCALE_APPS"].split(",")
-            if args.tailscale or edge["PE_TAILSCALE_HOST"] and (not tail_app or tail_app in connected):
-                tail_port = edge["PE_TAILSCALE_" + {"edge": "PORT", "gateway": "GATEWAY_PORT", "backplane": "BACKPLANE_PORT", "observability": "GRAFANA_PORT"}[name]]
-                origin = "https://" + edge["PE_TAILSCALE_HOST"] + ":" + tail_port if edge["PE_TAILSCALE_HOST"] else "planned: authenticated Tailscale machine HTTPS origin"
+            connected = origin_settings["PE_TAILSCALE_APPS"].split(",")
+            if origin_settings["PE_TAILSCALE_HOST"] and (not tail_app or tail_app in connected):
+                tail_port = origin_settings["PE_TAILSCALE_" + {"edge": "PORT", "gateway": "GATEWAY_PORT", "backplane": "BACKPLANE_PORT", "observability": "GRAFANA_PORT"}[name]]
+                origin = "https://" + origin_settings["PE_TAILSCALE_HOST"] + ":" + tail_port
             action["origin"] = origin
             connection_changes = {}
             if args.tailscale:
                 selected_connection = tailscale_serve.selected_plan(edge, {name: values}, tail_status, tail_serve)
                 connection["endpoints"].update(selected_connection["endpoints"])
                 connection_changes = selected_connection["changes"][name]
+                action["origin"] = selected_connection["endpoints"][tail_app or "Platform Edge"]["url"].rstrip("/")
             changes = dict(connection_changes) if name == "edge" else {}
             if name == "edge":
                 ports = [edge["PE_HTTP_PORT"]] + ([edge["PE_HTTPS_PORT"]] if edge["PE_ACCESS_MODE"] != "proxy" else [])
@@ -243,20 +245,20 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                 if name == "backplane":
                     expected["BP_PUBLIC_URL"] = origin
                 else:
-                    expected.update({prefix + "_PUBLIC_DOMAIN": edge["PE_PUBLIC_DOMAIN"], prefix + "_SCHEME": scheme,
+                    expected.update({prefix + "_PUBLIC_DOMAIN": origin_settings["PE_PUBLIC_DOMAIN"], prefix + "_SCHEME": scheme,
                                      prefix + "_PUBLIC_PORT_SUFFIX": suffix})
                 if name == "observability":
                     expected["OB_GRAFANA_URL"] = origin
                 if name == "gateway":
                     for app, label in (("gateway", "CONSOLE"), ("litellm", "LITELLM"), ("langfuse", "LANGFUSE"), ("s3", "S3"), ("rustfs", "RUSTFS")):
                         app_host = "" if app == "gateway" else app + "."
-                        url = scheme + "://" + app_host + edge["PE_PUBLIC_DOMAIN"] + suffix
-                        if edge["PE_TAILSCALE_HOST"] and app in connected:
-                            url = "https://" + edge["PE_TAILSCALE_HOST"] + ":" + edge["PE_TAILSCALE_" + app.upper() + "_PORT"]
+                        url = scheme + "://" + app_host + origin_settings["PE_PUBLIC_DOMAIN"] + suffix
+                        if origin_settings["PE_TAILSCALE_HOST"] and app in connected:
+                            url = "https://" + origin_settings["PE_TAILSCALE_HOST"] + ":" + origin_settings["PE_TAILSCALE_" + app.upper() + "_PORT"]
                         expected["LG_" + label + "_URL"] = url
                 expected[prefix + "_PLATFORM_NETWORK"] = network
                 expected[key] = ports[0]
-                if name != "backplane" or recorded.get("BP_RUSTFS_CONSOLE") == "true":
+                if name != "backplane" or values.get("BP_RUSTFS_CONSOLE") == "true":
                     proxies = [ipaddress.ip_interface(value) for value in recorded.get(prefix + "_TRUSTED_PROXIES", "").split()]
                     if any(proxy.network.prefixlen != proxy.max_prefixlen for proxy in proxies):
                         raise ValueError("Proxy trust must contain only the exact Edge address, never a network range.")
@@ -266,10 +268,12 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                     if recorded.get(prefix + "_TRUSTED_PROXIES") and peer:
                         if {str(ipaddress.ip_interface(v).ip) for v in recorded[prefix + "_TRUSTED_PROXIES"].split()} == {peer}:
                             expected[prefix + "_TRUSTED_PROXIES"] = recorded[prefix + "_TRUSTED_PROXIES"]
+                # Accept the original Edge origins or the requested Tailnet origins, never arbitrary public settings.
+                prior = dict(expected)
                 expected.update(connection_changes)
                 changes.update(expected)
-                if any(key in recorded and recorded[key] != value for key, value in expected.items()
-                       if not args.tailscale or key not in connection_changes):
+                if any(key in recorded and recorded[key] != value and (not args.tailscale or recorded[key] != prior.get(key))
+                       for key, value in expected.items()):
                     conflict(name, "origin_conflict", "Recorded access settings differ; use the owning ingress/reconfiguration procedure.")
             for port in ports:
                 if not port.isdigit() or not 1 <= int(port) <= 65535:
@@ -435,6 +439,8 @@ def install(root, env_file, template, args, runner, refused=bootstrap.Refused):
     def inspect(argv, **options):
         result = runner(argv, **options)
         if result.returncode:
+            if argv[:2] == ["tailscale", "serve"] and "status" not in argv:
+                raise tailscale_serve.ServeFailure(result)
             raise ValueError("Inspection failed.")
         return result.stdout.strip()
     report = execute(prepared, runner, inspect, refused)
