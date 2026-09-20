@@ -235,7 +235,7 @@ class PublicationTests(unittest.TestCase):
             expected = Path(value) if Path(value).is_absolute() else Path.home() / '.config'
             self.assertEqual(install.call_args.args[2], expected / 'systemd/user')
 
-    def test_absent_unit_enumeration_falls_back_to_show_without_writes(self):
+    def test_absent_units_are_established_by_show_without_writes(self):
         (self.root / 'scripts').mkdir()
         (self.root / 'scripts/status_observer.py').touch()
         (self.root / 'compose.yaml').touch()
@@ -251,9 +251,6 @@ class PublicationTests(unittest.TestCase):
                 if failure == 'manager':
                     raise io.Unavailable()
                 return 'Version=255\n'
-            if argv[2] == 'list-unit-files':
-                # A zero-exit empty enumeration must never hide the loaded unit.
-                return ''
             if argv[2] == 'show':
                 if failure == 'unit-show':
                     raise io.Unavailable()

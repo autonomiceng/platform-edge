@@ -49,13 +49,13 @@ An unavailable manager or inconclusive response still refuses before writing.
 
 Activation reloads systemd, verifies the loaded service and timer fragment paths with
 `LoadState=loaded` and no drop-ins, enables the timer, then checks enabled and active
-state. A failure after activation starts retains the pair. Repeat the same installation command to recover;
-a matching pair is not rewritten. A partial pair or foreign selection requires owning
+state. A failure after activation starts retains the pair. Repeat the same installation
+command to recover; a matching pair is not rewritten. A partial pair or foreign selection requires owning
 recovery after inspection. The installer never disables or removes an installed pair.
 No stack restart is performed by the observer or timer. Merely fetching status does
 not run an observation.
 
-## Selected timer owner followups
+## Selected timer owner contract
 
 Selected bootstrap invokes `scripts/install_status_timer.py` in each selected checkout
 with `--checkout`, `--env-file`, and first `--check`, then `--install` after bootstrap.
@@ -64,18 +64,17 @@ Backplane also receives its qualified `--compose-project`, ordered absolute
 renderer or second installation configuration. An owner rejecting `--check` stops the
 whole selection before env publication or service startup.
 
-These focused owner changes remain required in separate repository changes:
+Each owning repository implements this contract:
 
-| Owner | Required change |
+| Owner | Contract |
 | --- | --- |
-| LLM Gateway, Observability | In `scripts/install_status_timer.py`, add mutually exclusive `--check`/`--install`. Check absent or exact generated pairs without creating directories; verify manager availability and foreign unit fragments/drop-ins. Permit exact-pair activation retry without rewriting. Preserve private files, symlink refusal, systemd quoting and file/directory fsync. Reverify enabled/active state. |
-| Backplane | Add the same contract in `scripts/install_status_timer.py`, retaining `installation()` and `units()` as the authorities for Docker endpoint, state mount, checkout/env, project, ordered files and profiles. In `scripts/status_config.py` selection, omitted profiles must inherit validated recorded `COMPOSE_PROFILES`; distinguish omission from an explicit selection. Explicit arguments must agree with the original native selection. Older explicit matching units must still reproduce identical bytes and remain retryable. A read-only check for a fresh install must not require status directories that its owning bootstrap has yet to create. |
+| LLM Gateway, Observability | In `scripts/install_status_timer.py`, provide mutually exclusive `--check`/`--install`. Check absent or exact generated pairs without creating directories; verify manager availability and foreign unit fragments/drop-ins. Permit exact-pair activation retry without rewriting. Preserve private files, symlink refusal, systemd quoting and file/directory fsync. Reverify enabled/active state. |
+| Backplane | Provide the same contract in `scripts/install_status_timer.py`, retaining `installation()` and `units()` as the authorities for Docker endpoint, state mount, checkout/env, project, ordered files and profiles. In `scripts/status_config.py` selection, omitted profiles must inherit validated recorded `COMPOSE_PROFILES`; distinguish omission from an explicit selection. Explicit arguments must agree with the original native selection. Older explicit matching units must still reproduce identical bytes and remain retryable. A read-only check for a fresh install must not require status directories that its owning bootstrap has yet to create. |
 
 Each owner needs focused tests for exact-pair retry after partial activation and refusal
 of foreign, malformed, unsafe or incomplete pairs before writes. Backplane also needs
-recorded-profile inheritance and older explicit matching-unit coverage. Until these
-owner changes land, selected sibling timer installation is intentionally unavailable;
-Edge's timer supports the contract here. No sibling files are changed by this slice.
+recorded-profile inheritance and older explicit matching-unit coverage. Selecting an
+owner without this contract refuses before any mutation.
 
 | Component | Evidence and limits |
 | --- | --- |

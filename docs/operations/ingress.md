@@ -159,10 +159,9 @@ successful native login. Authenticated acceptance and enrollment remain operator
 Add `--status-timers` to check each selected owning timer before installation and invoke
 its installer after the requested bootstraps and connection succeed. Edge is implicit.
 The owner must implement the read-only `--check` and exact-pair recovery contract in
-[status observation](status-observer.md#selected-timer-owner-followups). Current sibling
-helpers lack that contract, so selecting their timers refuses before any mutation.
-No timer for an omitted stack is inspected or changed. Root must run fresh/rerun host
-acceptance. Merge remains gated by H-PROOF, BDEFAULT, and HSELECT.
+[status observation](status-observer.md#selected-timer-owner-contract). An owner without
+that contract refuses before any mutation. No timer for an omitted stack is inspected
+or changed.
 
 ## Image overrides
 
