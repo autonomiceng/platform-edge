@@ -16,5 +16,11 @@ assert.equal(await link.getAttribute('href'),null,'Automatic refresh must remove
 config.connected+=',backplane';await page.clock.fastForward(30000);
 await page.waitForFunction(()=>!document.querySelector('#refresh').disabled);
 assert.equal(await link.getAttribute('href'),'https://test.ts.net:8448/dashboard','Automatic refresh must add newly connected links');
+const previous = config.domain; config.domain = null;
+await page.getByRole('button',{name:'Check again',exact:true}).click();
+await page.waitForFunction(()=>!document.querySelector('#refresh').disabled);
+assert.equal(await link.getAttribute('href'),'https://test.ts.net:8448/dashboard','Malformed settings must preserve working links');
+assert.match(await page.locator('#checked').textContent(),/Could not refresh application addresses/);
+config.domain = previous;
 console.log('PASS: manual refresh discovers new app; automatic refresh removes and restores its link');
 }finally{await browser.close();}})().catch(e=>{console.error(e.message);process.exitCode=1});
