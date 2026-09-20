@@ -23,8 +23,8 @@ while visible, and bounds concurrent requests. One failed or incompatible produc
 must not prevent other cards or the console itself from rendering.
 
 Fresh configuration fields from a supported status document take precedence over legacy
-`/versions.json` values for the same ID. Legacy values may be shown as explicitly dated
-configuration when status is absent, unsupported or its configuration observation expires;
+`/versions.json` values for the same ID. Legacy values may be shown as configuration dated by their valid producer timestamp
+(`configuredAt`, or legacy `pinnedAt` for the pin date), and labelled undated when absent, when status is absent, unsupported or its configuration observation expires;
 they never establish current health. The legacy gateway `langfuse` version maps to both
 `langfuse-web` and `langfuse-worker`.
 
@@ -56,7 +56,7 @@ execution. Their `observedAt` is when the execution record was inspected. A task
 record has `lastExecutionAt: null` and `state: unknown`; an explicitly disabled task may
 have no execution. Execution time does not age out, but the record inspection does.
 
-Optional version fields are nullable strings. Omission means unknown:
+Optional version fields are nullable strings. Explicit null and omission both mean unknown:
 
 | Field | Evidence and presentation |
 | --- | --- |
@@ -89,14 +89,16 @@ The `files` capability covers the selected filesystem or S3 backend through the 
 installation preparation task; `migrate` applies Backplane database migrations; `data-init`
 prepares Backplane filesystem permissions; `blob-bootstrap` prepares the Backplane S3
 bucket and scoped credentials. Gateway and observability call their equivalent S3 preparation
-task `rustfs-init`. Task IDs preserve each owning stack's Compose service names.
+task `rustfs-init`. Task IDs preserve each owning stack's Compose service names where applicable;
+`bootstrap` names the host installation preparation step.
 
 Components can be omitted by older producers. Omission is unknown, not disabled or absent.
 Consumers ignore unknown component IDs and additive fields. Malformed JSON, unsupported
 schema versions, a stack mismatch, invalid required envelope fields, duplicate IDs, or size
 and count limit violations reject the whole document. Invalid required component fields,
 wrong kinds for known IDs and malformed component timestamps discard that component,
-which renders unknown. They never turn malformed data into healthy state. New IDs or optional fields are additive changes.
+which renders unknown. They never turn malformed data into healthy state.
+New IDs or optional fields are additive changes.
 A changed field meaning or removal requires a new schema version.
 
 ## States and freshness
@@ -123,13 +125,15 @@ when the producer cannot be reached, preserving any previous observation only wi
 original timestamp and an explicit stale label. They must not extend freshness on a
 failed refresh or reuse an old healthy result as the current answer.
 
-Age is measured against the consumer's current UTC clock. Consumers require a synchronized
-clock; when clock agreement cannot be established, report unknown rather than relax age
-checks. An observation older than `validForSeconds` is stale, regardless of `generatedAt`.
+Age is measured against the consumer's current UTC clock. On every response, compare that
+clock with a valid HTTP `Date` header, or `generatedAt` when the header is absent. Agreement
+requires an absolute difference of at most five seconds, in either direction. Otherwise
+report unknown with a clock-disagreement label; never relax age checks. An observation older than `validForSeconds` is stale, regardless of `generatedAt`.
 Re-fetching an unchanged document must never reset its age. Missing observation time is
 unknown. Timestamps over five seconds in the future relative to the consumer are invalid;
 observation and execution timestamps also cannot exceed `generatedAt` by over five seconds.
-Consumers may advance a validated age with a monotonic clock between refreshes. Stale and invalid observations cannot produce a current healthy indicator.
+Consumers may advance a validated age with a monotonic clock between refreshes.
+Stale and invalid observations cannot produce a current healthy indicator.
 `configuredVersion`, `configuredDigest`, `configured` and `telemetry` use
 `configurationObservedAt` and `configurationValidForSeconds`. Missing or expired
 configuration time makes those facts unknown or explicitly stale. `observedVersion`

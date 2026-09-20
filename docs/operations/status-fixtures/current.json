@@ -83,6 +83,15 @@
       "state": "healthy",
       "observedAt": "2026-09-20T11:59:58Z",
       "validForSeconds": 30
+    },
+    {
+      "id": "data-init",
+      "kind": "task",
+      "configured": null,
+      "state": "unknown",
+      "observedAt": null,
+      "validForSeconds": 60,
+      "lastExecutionAt": null
     }
   ]
 }
