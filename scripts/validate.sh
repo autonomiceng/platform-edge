@@ -52,6 +52,8 @@ import os, subprocess, sys
 from pathlib import Path
 env = dict(os.environ)
 env.pop('PE_CADDY_IMAGE', None)
+assert ('    image: ${PE_CADDY_IMAGE:-' + sys.argv[1] + '}') in Path('compose.yaml').read_text().splitlines(), \
+    'keep the full image reference in one Renovate-extractable default'
 path = Path(sys.argv[2]) / 'image.env'
 for value in ('local/edge:experiment', 'registry.example:5000/team/caddy:test', '', None):
     path.write_text('' if value is None else 'PE_CADDY_IMAGE=' + value + '\n')

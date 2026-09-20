@@ -78,6 +78,11 @@ effective digest reference. Restore requires the same reference in the target co
 so existing digest-pinned Checkpoints remain compatible. An unavailable configured image
 fails preflight without stopping Caddy.
 
+Capture requires exactly one existing Caddy container to attest its image and mounts;
+use `stop`, not `down`, before an offline capture. Restore also requires the configured
+image locally before creating volumes. To restore an older Checkpoint after an image
+bump, set `PE_CADDY_IMAGE` to its `manifest.json` Caddy reference and pull that image first.
+
 Backup stops Caddy, verifies neither volume has a running consumer, and streams a tar
 of each volume. Before the outage it checks both volumes for restore markers and
 refuses an incomplete restore or a failed state check. There is a brief ingress outage.

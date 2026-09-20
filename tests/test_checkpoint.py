@@ -243,6 +243,15 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(self.document["images"], stack.images)
         stack.require_image_pin()
 
+    def test_restore_refuses_unavailable_image_before_creating_volumes(self):
+        with patch.object(checkpoint, "checked", side_effect=RuntimeError("image unavailable")) as checked:
+            with self.assertRaisesRegex(RuntimeError, "image unavailable"):
+                checkpoint.restore(self.stack, self.source)
+        checked.assert_called_once_with(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", self.stack.images["caddy"]],
+            self.stack.diagnostics)
+        self.stack.stream.assert_not_called()
+
     def test_restore_refuses_either_nonempty_volume_before_any_write(self):
         for occupied in self.stack.volumes:
             calls = []

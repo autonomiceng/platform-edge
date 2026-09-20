@@ -79,7 +79,7 @@ def archive_fingerprint(directory: Path) -> str | None:
 
 
 def manifest(directory: Path, images: dict, commit: str, dirty: bool = False) -> dict:
-    # Deliberately accept no env values: only public identifiers and artifact hashes.
+    # Record the effective image reference needed for recovery, never other env values.
     return {"version": 1, "created_at": datetime.now(timezone.utc).isoformat(),
             "git_commit": commit, "git_dirty": dirty, "images": images, "caddy_stopped": True,
             "ca_sha256": archive_fingerprint(directory), "artifacts": inventory(directory)}
@@ -292,11 +292,13 @@ def restore(stack: Stack, directory: Path) -> None:
     if document.get("version") != 1 or document.get("caddy_stopped") is not True:
         raise ValueError("unsupported or incomplete Checkpoint")
     if document["images"] != stack.images:
-        raise ValueError("restore requires the Checkpoint image pins")
+        raise ValueError("restore requires the Checkpoint image pins; set PE_CADDY_IMAGE "
+                         "to the caddy reference in manifest.json")
     if inventory(directory) != document["artifacts"]:
         raise ValueError("Checkpoint checksum mismatch")
     if archive_fingerprint(directory) != document["ca_sha256"]:
         raise ValueError("Checkpoint CA fingerprint mismatch")
+    checked(["docker", "image", "inspect", "--format", "{{.Id}}", stack.images["caddy"]], stack.diagnostics)
     if checked(stack.dc + ["ps", "--status", "running", "-q"], stack.diagnostics):
         raise ValueError("restore requires the project stopped")
     stack.require_stopped()
