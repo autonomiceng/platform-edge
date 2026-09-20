@@ -96,7 +96,7 @@ cat > "$work/stub.caddy" <<'CADDY'
 CADDY
 lg_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias lg-gateway -e STUB_ALIAS=lg-gateway \
   -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" "$caddy_image")
-bp_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias bp-server -e STUB_ALIAS=bp-server \
+bp_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias bp-gateway -e STUB_ALIAS=bp-gateway \
   -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" "$caddy_image")
 ob_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias ob-gateway -e STUB_ALIAS=ob-gateway \
   -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" "$caddy_image")
@@ -136,7 +136,7 @@ for scheme in http https; do
   fi
   for host in localhost litellm.localhost langfuse.localhost s3.localhost backplane.localhost grafana.localhost; do
     case "$host" in
-      backplane.*) upstream=bp-server ;;
+      backplane.*) upstream=bp-gateway ;;
       grafana.*) upstream=ob-gateway ;;
       *) upstream=lg-gateway ;;
     esac
@@ -178,7 +178,7 @@ PY
         --resolve "backplane.localhost:$PE_HTTPS_PORT:127.0.0.1" -H 'Host: backplane.localhost' \
         -H 'Authorization: Bearer smoke-operator-token' "https://backplane.localhost:$PE_HTTPS_PORT$path")
     fi
-    [ "$body" = "bp-server|backplane.localhost|$scheme" ] || fail "readiness variant $path did not reach backplane"
+    [ "$body" = "bp-gateway|backplane.localhost|$scheme" ] || fail "readiness variant $path did not reach backplane"
     if grep -iq 'smoke-operator-token' "$work/headers"; then fail "readiness variant $path retained Authorization"; fi
   done
   ok "$scheme readiness variants strip Authorization"
@@ -281,7 +281,7 @@ ok 'console settings remain available and uncached when the gateway is absent'
 
 body=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -fsS --resolve "backplane.localhost:$PE_HTTPS_PORT:127.0.0.1" \
   -H 'Host: backplane.localhost' "https://backplane.localhost:$PE_HTTPS_PORT/")
-[ "$body" = 'bp-server|backplane.localhost|https' ] || fail 'backplane failed with other stacks absent'
+[ "$body" = 'bp-gateway|backplane.localhost|https' ] || fail 'backplane failed with other stacks absent'
 for path in /metrics /health/operations /METRICS/ //health//operations; do
   code=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -s -o /dev/null -w '%{http_code}' --resolve "backplane.localhost:$PE_HTTPS_PORT:127.0.0.1" \
     -H 'Host: backplane.localhost' "https://backplane.localhost:$PE_HTTPS_PORT$path")
@@ -330,7 +330,7 @@ export PE_ACCESS_MODE=proxy PE_SCHEME=https
 export COMPOSE_FILE="$root/compose.yaml:$root/compose.proxy.yaml"
 python3 scripts/bootstrap.py --env-file "$env_file" >/dev/null
 body=$(curl --noproxy '*' --max-time 10 -fsS -H 'Host: backplane.localhost' -H 'X-Forwarded-Proto: forged' "http://127.0.0.1:$PE_HTTP_PORT/")
-[ "$body" = 'bp-server|backplane.localhost|https' ] || fail 'proxy lost configured public scheme'
+[ "$body" = 'bp-gateway|backplane.localhost|https' ] || fail 'proxy lost configured public scheme'
 docker compose --env-file "$env_file" ps --format json > "$work/proxy-ports.json"
 python3 - "$work/proxy-ports.json" <<'PYCODE'
 import json, sys
@@ -346,7 +346,7 @@ curl --noproxy '*' --max-time 10 -fsS "http://127.0.0.1:$PE_HTTP_PORT/health" >/
 curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -fsS "https://127.0.0.1:$PE_HTTPS_PORT/health" >/dev/null
 ok 'Tailscale routes coexist with local HTTP and verified self-signed HTTPS'
 docker start "$lg_stub" "$ob_stub" >/dev/null
-for item in '8443 lg-gateway' '8444 lg-gateway' '8445 lg-gateway' '8446 lg-gateway' '8447 ob-gateway' '8448 bp-server' '8449 lg-gateway'; do
+for item in '8443 lg-gateway' '8444 lg-gateway' '8445 lg-gateway' '8446 lg-gateway' '8447 ob-gateway' '8448 bp-gateway' '8449 lg-gateway'; do
   # shellcheck disable=SC2086
   set -- $item
   body=$(curl --noproxy '*' --retry 5 --retry-all-errors --retry-delay 1 --max-time 10 -fsS -H "Host: $PE_TAILSCALE_HOST:$1" -H 'X-Forwarded-Proto: forged' "http://127.0.0.1:$PE_HTTP_PORT/authority")

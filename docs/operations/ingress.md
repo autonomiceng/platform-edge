@@ -9,7 +9,7 @@ Edge owns host ports 80 and 443. Its default loopback binding makes them accessi
 | `langfuse.example.com` | `lg-gateway:80` |
 | `s3.example.com` | `lg-gateway:80` |
 | `rustfs.example.com` | `lg-gateway:80` (admin console) |
-| `backplane.example.com` | `bp-server:3000` |
+| `backplane.example.com` | `bp-gateway:80` |
 | `grafana.example.com` | `ob-gateway:80` |
 
 ## Access modes
@@ -46,8 +46,7 @@ fallback if that gateway is missing. Bootstrap does not require any sibling stac
 For local sibling stacks behind Edge, choose their proxy access mode, keep internal HTTP,
 and configure the configured browser URL for the address customers will use. Applications
 with authentication or generated links still need one configured application URL even though Edge
-accepts both HTTP and HTTPS. Give sibling Caddys spare loopback HTTP ports. Keep the
-backplane's optional standalone edge profile off and set its explicit `BP_PUBLIC_URL`.
+accepts both HTTP and HTTPS. Give sibling Caddys spare loopback HTTP ports. Use Backplane’s internal gateway overlay and set its explicit `BP_PUBLIC_URL`.
 
 ## Access everything through Tailscale
 
@@ -211,7 +210,18 @@ BP_BIND_HOST=127.0.0.1
 BP_PORT=3000
 ```
 
-Start its core deployment without enabling its optional `edge` profile. The backplane server must join the external `platform` network as `bp-server` (and keep its default network for datastore access). **The backplane ignores forwarded headers by design: `BP_PUBLIC_URL` must be `https://backplane.<domain>`.** The Edge forwards to `bp-server:3000`; keep the backplane `edge` profile off.
+Start Backplane with its internal gateway overlay (Compose 2.24.4+):
+
+```sh
+docker compose -f compose.yaml -f compose.gateway.yaml --profile gateway up -d --wait
+```
+
+This runs Caddy as `bp-gateway:80` without publishing host ports. Keep the standalone
+`edge` profile off. The gateway joins Backplane’s private network and the shared
+Platform Network. Backplane ignores forwarded headers by design; `BP_PUBLIC_URL`
+remains the explicit browser origin. Existing direct `bp-server` access remains
+available for internal telemetry; Edge routes application requests through `bp-gateway`.
+For an existing installation, start and verify the gateway before updating Edge’s routes.
 
 Do not attach a datastore to the Platform Network. All members of this network are trusted infrastructure.
 
@@ -254,7 +264,7 @@ After all sibling bootstraps pass locally, run:
 SMOKE_INTEGRATION=1 SMOKE_DOMAIN=example.com PE_PLATFORM_NETWORK=platform scripts/smoke.sh
 ```
 
-This requires running Compose siblings with `lg-gateway`, `ob-gateway` and `bp-server`
+This requires running Compose siblings with `lg-gateway`, `ob-gateway` and `bp-gateway`
 on that network. It prints `SKIP` with the missing aliases/network and zero checked
 routes when a sibling is absent; a skip is **not acceptance**. The test starts its own
 edge on spare loopback ports, uses its project name as its disposable volume prefix,

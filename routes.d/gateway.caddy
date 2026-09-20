@@ -34,7 +34,7 @@
 	handle /health/backplane {
 		header Cache-Control "no-store"
 		rewrite * /health/ready
-		reverse_proxy bp-server:3000 {
+		reverse_proxy bp-gateway:80 {
 			import probe-response
 			header_up -Authorization
 			header_up Host backplane.{$PE_PUBLIC_DOMAIN}
