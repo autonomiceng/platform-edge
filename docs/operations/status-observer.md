@@ -47,6 +47,15 @@ The installer always queries each unit with `show`; enumeration can omit loaded
 units. Absence requires `LoadState=not-found` with empty fragment and drop-in paths.
 An unavailable manager or inconclusive response still refuses before writing.
 
+The timer repeatedly executes the selected checkout's Python code, the installing
+interpreter, Docker CLI, and Compose configuration as the installation user with
+its Docker access. Anyone who can modify those files or replace a directory on
+their paths gains that authority, as with bootstrap and Compose themselves. Keep
+these inputs writable only by the installation user or root; shared checkouts
+writable by other users are unsupported. The installer protects its generated
+unit destination; it does not verify the entire code and configuration chain.
+Use a checkout path without symlink components so the observer can publish status.
+
 Unit-directory ancestors must be owned by root or the installation user and must
 not be group- or other-writable, except trusted sticky directories with existing
 trusted children. Every new component requires a parent owned by the installation
