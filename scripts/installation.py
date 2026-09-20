@@ -154,7 +154,7 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
             if recorded.get("COMPOSE_ENV_FILES") or recorded.get("COMPOSE_PATH_SEPARATOR", ":") != ":":
                 raise ValueError("Alternate Compose env files or separators require owning configuration repair.")
             values = read_settings(template if name == "edge" else directory / ".env.example") | recorded
-            project = values.get("COMPOSE_PROJECT_NAME") or project_default
+            project = (recorded if env.exists() else values).get("COMPOSE_PROJECT_NAME") or project_default
             volume_prefix = values.get(prefix + "_VOLUME_PREFIX") or project_default
             if not all(re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", item) for item in (project, volume_prefix)):
                 raise ValueError("Repair the recorded project identity or volume prefix.")
@@ -295,14 +295,17 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                 default_files = ["compose.yaml"] + ["compose." + p + ".yaml" for p in profiles]
             elif name == "observability":
                 default_files = ["compose.yaml"] + (["compose.s3.yaml"] if "s3" in profiles else []) + ["compose.proxy.yaml"]
-                if "COMPOSE_FILE" in recorded and recorded["COMPOSE_FILE"] != ":".join(default_files):
-                    raise ValueError("Observability's owner would replace native overlays; reconcile selection through its owning bootstrap.")
             else:
                 default_files = ["compose.yaml"] + (["compose.proxy.yaml"] if name == "gateway" else [])
             configured_files = recorded.get("COMPOSE_FILE", values.get("COMPOSE_FILE", ":".join(default_files)) if name in {"edge", "gateway"} else ":".join(default_files))
             files = configured_files.replace("${LG_ACCESS_MODE:-local}", "proxy" if name == "gateway" else "local").split(":")
             if (directory / files[0]).resolve() != directory / "compose.yaml" or any(not (directory / f).is_file() for f in files):
                 raise ValueError("Native Compose selection must retain its base file first and all ordered overlays.")
+            if name == "observability":
+                resolved = [(directory / filename).resolve() for filename in files]
+                if (len(set(resolved)) != len(resolved) or directory / "compose.proxy.yaml" not in resolved
+                        or (directory / "compose.s3.yaml" in resolved) != ("s3" in profiles)):
+                    raise ValueError("Observability overlays must retain the selected storage and proxy access modes without duplicate files.")
             if name == "edge" and edge["PE_ACCESS_MODE"] in {"public", "proxy"}:
                 mode_file = "compose." + edge["PE_ACCESS_MODE"] + ".yaml"
                 if str(directory / mode_file) not in [str((directory / f).resolve()) for f in files]:
