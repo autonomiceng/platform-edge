@@ -4,7 +4,7 @@ Edge owns host ports 80 and 443. Its default loopback binding makes them accessi
 
 | Hostname | Upstream Alias |
 | --- | --- |
-| `example.com` | `lg-gateway:80`, with local `/health` and a fallback page |
+| `example.com` | Edge console at `/`; other Gateway paths use `lg-gateway:80` |
 | `litellm.example.com` | `lg-gateway:80` |
 | `langfuse.example.com` | `lg-gateway:80` |
 | `s3.example.com` | `lg-gateway:80` |
@@ -40,8 +40,9 @@ The HTTP console accepts arbitrary hostnames, including a Tailscale machine name
 Unknown-host `/health` is 200; other unknown paths remain 404, including `/metrics`.
 Application routes still require their configured hostnames. Console links use the
 configured application domain instead of inventing subdomains under an IP or Tailscale name.
-The configured root hostname still proxies to the gateway and retains the intentional 502
-fallback if that gateway is missing. Bootstrap does not require any sibling stack.
+The configured root hostname serves the Edge console independently of Gateway. Other
+Gateway paths still proxy to the Gateway and report upstream failures. Bootstrap does
+not require any sibling stack.
 
 For local sibling stacks behind Edge, choose their proxy access mode, keep internal HTTP,
 and configure the configured browser URL for the address customers will use. Applications
@@ -369,3 +370,22 @@ inspect them with `journalctl -u tailscaled` or configure a separate journal pip
 Caddy removes request and response headers and query strings from access logs and
 request-bearing error diagnostics. Do not put credentials in URL paths. URLs and request
 IDs remain log fields, not Loki index labels.
+
+## Project console
+
+The Edge console groups applications and supporting services by project. Search filters
+service names and descriptions. Project overview links narrow the same interface; Map
+shows application and log-collection paths with independent toggles. Component details
+link to the component’s upstream repository; project headers link to the stack repository.
+
+Refresh and automatic checks every 30 seconds update application addresses and health
+without reloading the page. Checks pause while the page is hidden. Backend services
+without a public probe show **Not checked**; optional components show **Optional**.
+The catalog describes the supported architecture, not a Docker inventory. Connections
+show expected dependencies, not live traffic; the logging layer applies when Alloy
+collection is configured. Installation task outcomes are **Not recorded** until a stack
+provides that metadata. Missing stacks do not block other projects.
+
+The console reads only same-origin, uncached access settings, application probes and
+optional Gateway version metadata. It has no Docker socket, credentials or installation
+privileges. Version metadata describes pinned images; it does not prove container health.

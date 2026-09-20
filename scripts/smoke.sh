@@ -140,17 +140,19 @@ for scheme in http https; do
       grafana.*) upstream=ob-gateway ;;
       *) upstream=lg-gateway ;;
     esac
+    probe_path=/
+    [ "$host" != localhost ] || probe_path=/authority
     if [ "$scheme" = http ]; then
       body=$(curl -D "$work/headers" --noproxy '*' --max-time 10 --retry 10 --retry-delay 1 -fsS \
         -H "Host: $host" -H 'X-Forwarded-Proto: forged' -H 'X-Forwarded-For: 198.51.100.9' \
-        -H 'X-Forwarded-Host: forged.invalid' -H 'Authorization: Bearer smoke-operator-token' "http://127.0.0.1:$PE_HTTP_PORT/")
+        -H 'X-Forwarded-Host: forged.invalid' -H 'Authorization: Bearer smoke-operator-token' "http://127.0.0.1:$PE_HTTP_PORT$probe_path")
     else
       # SNI needs the hostname; --resolve avoids relying on *.localhost DNS.
       body=$(curl -D "$work/headers" --noproxy '*' --max-time 10 --retry 10 --retry-delay 1 --cacert "$work/root.crt" -fsS \
         --resolve "$host:$PE_HTTPS_PORT:127.0.0.1" -H "Host: $host" -H 'X-Forwarded-Proto: forged' \
         -H 'X-Forwarded-For: 198.51.100.9' -H 'X-Forwarded-Host: forged.invalid' \
         -H 'Authorization: Bearer smoke-operator-token' \
-        "https://$host:$PE_HTTPS_PORT/")
+        "https://$host:$PE_HTTPS_PORT$probe_path")
     fi
     [ "$body" = "$upstream|$host|$scheme" ] || fail "$host forwarded '$body'"
     python3 - "$work/headers" "$host" <<'PY'
@@ -264,10 +266,16 @@ ok 'gateway still answers with observability absent'
 
 docker stop "$lg_stub" >/dev/null
 code=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -sS --resolve "localhost:$PE_HTTPS_PORT:127.0.0.1" \
-  -H 'Host: localhost' -o "$work/console.html" -w '%{http_code}' "https://localhost:$PE_HTTPS_PORT/")
-[ "$code" = 502 ] || fail "fallback hid upstream failure: $code"
-grep -q 'Platform Edge' "$work/console.html" || fail 'fallback console missing'
-ok 'absent gateway serves the fallback page with status 502'
+  -H 'Host: localhost' -D "$work/console.headers" -o "$work/console.html" -w '%{http_code}' "https://localhost:$PE_HTTPS_PORT/")
+[ "$code" = 200 ] || fail "Edge console depends on absent gateway: $code"
+grep -q 'Platform Edge' "$work/console.html" || fail 'console missing'
+grep -qi 'Cache-Control: no-cache' "$work/console.headers" || fail 'console HTML must revalidate'
+ok 'Edge console remains available when Gateway is absent'
+for asset in app.js style.css icons/caddy.svg; do
+  curl --noproxy '*' --max-time 10 -fsS -H 'Host: localhost' "http://127.0.0.1:$PE_HTTP_PORT/console/$asset" > "$work/asset"
+  [ -s "$work/asset" ] || fail "empty console asset: $asset"
+  ok "console asset $asset remains available without Gateway"
+done
 curl --noproxy '*' --max-time 10 -fsS -D "$work/config.headers" -H 'Host: localhost' \
   "http://127.0.0.1:$PE_HTTP_PORT/edge-config.json" > "$work/edge-config.json"
 python3 - "$work/edge-config.json" <<'PYCONFIG'
