@@ -109,6 +109,7 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual({issue["stack"] for issue in plan["conflicts"]}, {"edge", "gateway", "backplane"})
         self.assertEqual(plan["infrastructure"], "unverified")
+        self.assertEqual(plan["actions"][1]["installation"], "unknown")
         self.assertEqual(plan["enrollment"], "unverified")
         self.assertNotIn("private diagnostic", json.dumps(plan))
         self.assertEqual(self.snapshot(), before)
@@ -172,3 +173,51 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(plan["actions"][3]["depends_on"], plan["selected"])
         self.assertFalse(plan["execution_supported"])
         self.assertEqual(self.snapshot(), before)
+
+    def test_operator_identity_and_capability_parent_cannot_come_from_unsafe_defaults(self):
+        gateway = self.host / "llm-gateway-stack"
+        (gateway / ".env.example").write_text("LG_BACKUP_DIR=" + str(self.backup) + "\nLG_ALLOW_SAME_FILESYSTEM_BACKUP=true\nLANGFUSE_INIT_USER_EMAIL=template@company.test\n")
+        _, plan = self.invoke("--stack", "gateway", "--dry-run")
+        self.assertTrue(any("Supply an existing" in item["detail"] for item in plan["conflicts"]))
+        _, plan = self.invoke("--stack", "gateway", "--gateway-backup-dir", str(self.backup), "--dry-run")
+        self.assertTrue(any("separate filesystem" in item["detail"] for item in plan["conflicts"]))
+        (gateway / ".env").write_text("LG_ALLOW_SAME_FILESYSTEM_BACKUP=true\n")
+        _, plan = self.invoke("--stack", "gateway", "--gateway-backup-dir", str(self.backup), "--dry-run")
+        self.assertTrue(any("operator's Langfuse" in item["detail"] for item in plan["conflicts"]))
+        shared = self.host / "shared"
+        shared.mkdir(mode=0o1777)
+        shared.chmod(0o1777)
+        original_stat = Path.stat
+        def root_owned(path, *args, **kwargs):
+            info = original_stat(path, *args, **kwargs)
+            if path == shared:
+                fields = list(info)
+                fields[4] = 0  # Model the root-owned sticky /tmp parent, without changing host ownership.
+                return os.stat_result(fields)
+            return info
+        with patch.object(Path, "stat", root_owned):
+            _, plan = self.invoke("--stack", "backplane", "--backplane-backup-dir", str(self.backup), "--capability-file", str(shared / "enrollment"), "--dry-run")
+        self.assertTrue(any("private-directory" in item["detail"] for item in plan["conflicts"]))
+        self.assertFalse((shared / "enrollment").exists())
+
+    def test_selection_usage_and_literal_env_rules(self):
+        with patch.dict(os.environ, {"COMPOSE_PROJECT_NAME": "foreign"}):
+            _, plan = self.invoke("--stack", "gateway", "--dry-run")
+        self.assertEqual([item["code"] for item in plan["conflicts"]], ["shell_settings"])
+        self.assertEqual(plan["actions"], [])
+        for args in [("--gateway-email", "operator@company.test"), ("--stack", "gateway", "--render-only"), ("--stack", "edge", "--gateway-dir", str(self.host))]:
+            with self.subTest(args=args), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                self.invoke(*args)
+            self.assertEqual(error.exception.code, 2)
+        env = self.host / "literal.env"
+        for value in ["/mnt/backup # daily", "/mnt/with spaces"]:
+            env.write_text("BP_BACKUP_DIR=" + value + "\n")
+            with self.assertRaisesRegex(ValueError, "Quote literal"):
+                installation.read_settings(env)
+        env.write_text("BP_BACKUP_DIR='/mnt/with spaces'\n")
+        self.assertEqual(installation.read_settings(env)["BP_BACKUP_DIR"], "/mnt/with spaces")
+        gateway = self.host / "llm-gateway-stack"
+        (gateway / "compose.local.yaml").write_text("")
+        (gateway / ".env").write_text("COMPOSE_FILE=compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml\nLG_BACKUP_DIR=" + str(self.backup) + "\nLG_ALLOW_SAME_FILESYSTEM_BACKUP=true\nLANGFUSE_INIT_USER_EMAIL=operator@company.test\n")
+        _, plan = self.invoke("--stack", "gateway", "--dry-run")
+        self.assertFalse(any(item["code"] == "prerequisite_failed" for item in plan["conflicts"]))

@@ -40,6 +40,8 @@ def read_settings(path: Path) -> dict[str, str]:
         if not match or match["key"] in result:
             raise ValueError("Repair ambiguous env assignments using the owning bootstrap contract.")
         value = match["value"].strip()
+        if not value.startswith(("'", '"')) and ("#" in value or any(char.isspace() for char in value)):
+            raise ValueError("Quote literal env values containing spaces or #; inline comments are unsupported.")
         if value.startswith(("'", '"')):
             if len(value) < 2 or value[-1] != value[0]:
                 raise ValueError("Repair unmatched quotes in the selected env file.")
@@ -157,6 +159,7 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused)
             for key, value in recorded.items():
                 if key.startswith((prefix + "_", "COMPOSE_")) and "$" in value and key != "COMPOSE_FILE":
                     raise ValueError("Resolve interpolated installation settings with the owning bootstrap before planning.")
+            # Resolve the owning Gateway template selection, not arbitrary shell expressions.
             files = recorded.get("COMPOSE_FILE", "compose.yaml").replace("${LG_ACCESS_MODE:-local}", values.get("LG_ACCESS_MODE", "local"))
             if "$" in files or any(not (directory / filename).is_file() for filename in files.split(os.pathsep)):
                 raise ValueError("Recorded Compose selection has unavailable or unresolved files; preserve and repair it.")
@@ -213,7 +216,8 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused)
                 key = prefix + "_BACKUP_DIR"
                 if backup and recorded.get(key) and backup.resolve() != (directory / recorded[key]).resolve():
                     conflict(name, "backup_conflict", "Preserve the recorded backup directory.")
-                backup = backup.resolve() if backup else (directory / values[key]).resolve() if values.get(key) else None
+                # Operator identities and custody exceptions must be explicitly recorded.
+                backup = backup.resolve() if backup else (directory / recorded[key]).resolve() if recorded.get(key) else None
                 if backup is None or not backup.is_dir() or not os.access(backup, os.W_OK | os.X_OK):
                     raise ValueError("Supply an existing writable mounted backup directory for the selected stack.")
                 if backup.is_relative_to(data) or data.is_relative_to(backup):
@@ -221,10 +225,10 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused)
                 parent = data
                 while not parent.exists():
                     parent = parent.parent
-                if name == "gateway" and values.get("LG_ALLOW_SAME_FILESYSTEM_BACKUP", "false") != "true" and backup.stat().st_dev == parent.stat().st_dev:
+                if name == "gateway" and recorded.get("LG_ALLOW_SAME_FILESYSTEM_BACKUP", "false") != "true" and backup.stat().st_dev == parent.stat().st_dev:
                     raise ValueError("Gateway backups require a separate filesystem from Postgres data.")
             if name == "gateway":
-                email = args.gateway_email or values.get("LANGFUSE_INIT_USER_EMAIL", "")
+                email = args.gateway_email or recorded.get("LANGFUSE_INIT_USER_EMAIL", "")
                 if not re.fullmatch(r"[^\s@]+@[^\s@]+", email) or email.lower().endswith("@example.com"):
                     raise ValueError("Supply --gateway-email with the operator's Langfuse login email.")
                 if args.gateway_email and recorded.get("LANGFUSE_INIT_USER_EMAIL", email) != email:
@@ -237,10 +241,10 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused)
                         conflict(name, "mode_conflict", "Requested capabilities differ from the recorded selection; use Backplane migration procedures.")
                     conflict(name, "backplane_mode_pending", "Mode selection requires B-PROMOTE's owning bootstrap interface; no default or overlay is inferred here.")
                 capability = args.capability_file
-                if capability is None or not capability.is_absolute() or capability.parent.resolve() != capability.parent:
+                if capability is None or not capability.is_absolute() or capability.parent.resolve() != capability.parent or not capability.parent.is_dir():
                     raise ValueError("Supply --capability-file as an absolute path with an existing private parent.")
                 parent_stat = capability.parent.stat()
-                if not stat.S_ISDIR(parent_stat.st_mode) or (parent_stat.st_uid != os.getuid() or parent_stat.st_mode & 0o022) and not (parent_stat.st_uid == 0 and parent_stat.st_mode & stat.S_ISVTX):
+                if not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != os.getuid() or parent_stat.st_mode & 0o077:
                     raise ValueError("Capability parent must satisfy Backplane's private-directory custody contract.")
                 if not os.access(capability.parent, os.W_OK | os.X_OK):
                     raise ValueError("Capability parent must be writable and searchable by the operator.")
@@ -257,7 +261,7 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused)
     for index, (name, bind, port) in enumerate(wanted):
         overlaps = lambda address: address == bind or address in {"*", "0.0.0.0", "::"} or bind in {"0.0.0.0", "::"}
         if any(port == other_port and overlaps(address) for address, other_port in listeners) or any(port == other_port and overlaps(address) for _, address, other_port in wanted[:index]):
-            conflict(name, "port_conflict", "Requested TCP listener is occupied or duplicated; preserve installed listeners and choose free ports.")
+            conflict(name, "port_conflict", "Requested TCP listener is occupied or duplicated; verify ownership before execution and preserve recorded ports.")
     if args.tailscale:
         result["actions"].append({"stack": "edge", "action": "connect selected Tailscale applications; preserve existing PE_TAILSCALE_APPS", "depends_on": selected})
         result["deferred"].append("H-EXEC: selected-only Tailscale helper, authenticated machine/HTTPS/Serve conflict checks")
