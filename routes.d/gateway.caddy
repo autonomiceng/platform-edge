@@ -1,23 +1,10 @@
-{$PE_SCHEME}://{$PE_PUBLIC_DOMAIN} {
-	import ca-{$PE_TLS_ISSUER}
-	import headers-{$PE_SCHEME}
+(gateway-root-routes) {
+	import access-log
+	import access-headers-{$PE_ACCESS_MODE:local}
 	handle /health {
 		respond /health 200
 	}
-	handle /metrics* {
-		@public not remote_ip {$PE_METRICS_ALLOW:127.0.0.0/8 ::1}
-		route {
-			respond @public 403
-			metrics /metrics/caddy {
-				disable_openmetrics
-			}
-			root * /config
-			header Content-Type "text/plain; version=0.0.4"
-			templates
-			respond /metrics `{{httpInclude "/metrics/caddy"}}{{if fileExists "pe-certificate.prom"}}{{include "pe-certificate.prom"}}{{end}}`
-			respond 404
-		}
-	}
+	import edge-metrics
 	# Same-origin probes for the fallback page. A missing alias becomes a 502.
 	handle /health/gateway {
 		header Cache-Control "no-store"
@@ -26,7 +13,7 @@
 			import probe-response
 			header_up -Authorization
 			header_up Host {host}
-			header_up X-Forwarded-Proto {scheme}
+			import forwarded-proto-{$PE_ACCESS_MODE:local}
 		}
 	}
 	handle /health/backplane {
@@ -36,7 +23,7 @@
 			import probe-response
 			header_up -Authorization
 			header_up Host backplane.{$PE_PUBLIC_DOMAIN}
-			header_up X-Forwarded-Proto {scheme}
+			import forwarded-proto-{$PE_ACCESS_MODE:local}
 		}
 	}
 	handle /health/observability {
@@ -46,17 +33,17 @@
 			import probe-response
 			header_up -Authorization
 			header_up Host {host}
-			header_up X-Forwarded-Proto {scheme}
+			import forwarded-proto-{$PE_ACCESS_MODE:local}
 		}
 	}
 	handle {
 		reverse_proxy lg-gateway:80 {
 			header_up Host {host}
-			header_up X-Forwarded-Proto {scheme}
+			import forwarded-proto-{$PE_ACCESS_MODE:local}
 		}
 	}
 	handle_errors {
-		import headers-{$PE_SCHEME}
+		import access-headers-{$PE_ACCESS_MODE:local}
 		@probe expression `{http.request.orig_uri.path} in ["/health/gateway", "/health/backplane", "/health/observability"]`
 		handle @probe {
 			header Cache-Control "no-store"
@@ -68,6 +55,7 @@
 		handle @console {
 			root * /srv/console
 			rewrite * /index.html
+			templates
 			file_server
 		}
 		handle {
@@ -75,30 +63,114 @@
 		}
 	}
 }
-
-{$PE_SCHEME}://litellm.{$PE_PUBLIC_DOMAIN} {
-	import ca-{$PE_TLS_ISSUER}
-	import headers-{$PE_SCHEME}
-	reverse_proxy lg-gateway:80 {
-		header_up Host {host}
-		header_up X-Forwarded-Proto {scheme}
+(gateway-root-local) {
+	http://{$PE_PUBLIC_DOMAIN} {
+		import gateway-root-routes
+	}
+	https://{$PE_PUBLIC_DOMAIN} {
+		tls internal
+		import gateway-root-routes
 	}
 }
-
-{$PE_SCHEME}://langfuse.{$PE_PUBLIC_DOMAIN} {
-	import ca-{$PE_TLS_ISSUER}
-	import headers-{$PE_SCHEME}
-	reverse_proxy lg-gateway:80 {
-		header_up Host {host}
-		header_up X-Forwarded-Proto {scheme}
+(gateway-root-public) {
+	https://{$PE_PUBLIC_DOMAIN} {
+		import ca-acme
+		import gateway-root-routes
 	}
 }
-
-{$PE_SCHEME}://s3.{$PE_PUBLIC_DOMAIN} {
-	import ca-{$PE_TLS_ISSUER}
-	import headers-{$PE_SCHEME}
-	reverse_proxy lg-gateway:80 {
-		header_up Host {host}
-		header_up X-Forwarded-Proto {scheme}
+(gateway-root-proxy) {
+	http://{$PE_PUBLIC_DOMAIN} {
+		import gateway-root-routes
 	}
 }
+import gateway-root-{$PE_ACCESS_MODE:local}
+
+(gateway-litellm-routes) {
+	import access-log
+	import access-headers-{$PE_ACCESS_MODE:local}
+	reverse_proxy lg-gateway:80 {
+		header_up Host {host}
+		import forwarded-proto-{$PE_ACCESS_MODE:local}
+	}
+}
+(gateway-litellm-local) {
+	http://litellm.{$PE_PUBLIC_DOMAIN} {
+		import gateway-litellm-routes
+	}
+	https://litellm.{$PE_PUBLIC_DOMAIN} {
+		tls internal
+		import gateway-litellm-routes
+	}
+}
+(gateway-litellm-public) {
+	https://litellm.{$PE_PUBLIC_DOMAIN} {
+		import ca-acme
+		import gateway-litellm-routes
+	}
+}
+(gateway-litellm-proxy) {
+	http://litellm.{$PE_PUBLIC_DOMAIN} {
+		import gateway-litellm-routes
+	}
+}
+import gateway-litellm-{$PE_ACCESS_MODE:local}
+
+(gateway-langfuse-routes) {
+	import access-log
+	import access-headers-{$PE_ACCESS_MODE:local}
+	reverse_proxy lg-gateway:80 {
+		header_up Host {host}
+		import forwarded-proto-{$PE_ACCESS_MODE:local}
+	}
+}
+(gateway-langfuse-local) {
+	http://langfuse.{$PE_PUBLIC_DOMAIN} {
+		import gateway-langfuse-routes
+	}
+	https://langfuse.{$PE_PUBLIC_DOMAIN} {
+		tls internal
+		import gateway-langfuse-routes
+	}
+}
+(gateway-langfuse-public) {
+	https://langfuse.{$PE_PUBLIC_DOMAIN} {
+		import ca-acme
+		import gateway-langfuse-routes
+	}
+}
+(gateway-langfuse-proxy) {
+	http://langfuse.{$PE_PUBLIC_DOMAIN} {
+		import gateway-langfuse-routes
+	}
+}
+import gateway-langfuse-{$PE_ACCESS_MODE:local}
+
+(gateway-s3-routes) {
+	import access-log
+	import access-headers-{$PE_ACCESS_MODE:local}
+	reverse_proxy lg-gateway:80 {
+		header_up Host {host}
+		import forwarded-proto-{$PE_ACCESS_MODE:local}
+	}
+}
+(gateway-s3-local) {
+	http://s3.{$PE_PUBLIC_DOMAIN} {
+		import gateway-s3-routes
+	}
+	https://s3.{$PE_PUBLIC_DOMAIN} {
+		tls internal
+		import gateway-s3-routes
+	}
+}
+(gateway-s3-public) {
+	https://s3.{$PE_PUBLIC_DOMAIN} {
+		import ca-acme
+		import gateway-s3-routes
+	}
+}
+(gateway-s3-proxy) {
+	http://s3.{$PE_PUBLIC_DOMAIN} {
+		import gateway-s3-routes
+	}
+}
+import gateway-s3-{$PE_ACCESS_MODE:local}

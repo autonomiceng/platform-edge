@@ -1,0 +1,7 @@
+# Use with compose.yaml for an HTTP ingress behind a TLS terminator (Compose 2.24.4+).
+services:
+  caddy:
+    environment:
+      PE_SCHEME: ${PE_SCHEME:-https}
+    ports: !override
+      - "${PE_BIND_HOST:-127.0.0.1}:${PE_HTTP_PORT:-80}:80"

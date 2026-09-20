@@ -509,6 +509,7 @@ class CheckpointTests(unittest.TestCase):
     def test_resume_readiness_children_detached_in_http_and_internal_tls(self):
         for issuer in ("none", "internal"):
             self.stack.settings = dict(bootstrap.DEFAULTS, PE_TLS_ISSUER=issuer,
+                                       PE_ACCESS_MODE="local" if issuer == "internal" else "proxy",
                                        PE_SCHEME="https" if issuer == "internal" else "http")
             children = []
             def runner(argv, **kwargs):

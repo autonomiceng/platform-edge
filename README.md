@@ -8,13 +8,13 @@ One Caddy for ports 80 and 443 when several stacks share a host. It gets the cer
 
 ## What it is
 
-The LLM gateway, the agent backplane and the observability stack each ship their own Caddy and each want port 80. On a host that runs more than one of them, this project takes the ports instead. It terminates TLS once and forwards each hostname over the shared `platform` Docker network to the stack that owns it, with the original Host and scheme.
+The LLM gateway, the agent backplane and the observability stack each ship their own Caddy and each want port 80. On a host that runs more than one of them, this project takes the ports instead. It handles HTTPS once and forwards each hostname over the shared `platform` Docker network to the stack that owns it, with the original Host and scheme.
 
 Every stack still works on its own without it. Add the edge when you add the second stack.
 
 ## Quick start
 
-You need Docker with the Compose plugin and Python 3.11 or newer.
+You need a Linux Docker host with journald, Compose 2.24.4 or newer, and Python 3.11 or newer.
 
 ```sh
 git clone https://github.com/autonomiceng/platform-edge.git
@@ -22,20 +22,20 @@ cd platform-edge
 python3 scripts/bootstrap.py --render-only
 ```
 
-Configure and start the sibling stacks using the Local or Public settings below and the [ingress guide](docs/operations/ingress.md), then run `python3 scripts/bootstrap.py` here.
+Choose the local or public Edge settings below, then run `python3 scripts/bootstrap.py` here. Add sibling stacks afterward using the [ingress guide](docs/operations/ingress.md). If an existing stack already owns ports 80 or 443, first move its gateway to spare loopback ports.
 Bootstrap creates the shared network and external certificate volumes, checks port
-conflicts, starts Caddy and verifies the selected HTTP or HTTPS listener.
+conflicts, starts Caddy and verifies both local listeners, including HTTPS certificate trust. No sibling stack is required for Edge readiness.
 
 ## Local integration
 
-Local Mode uses HTTP throughout. A missing stack returns 502 on its hostnames while other stacks continue working. The root serves a fallback console when the gateway is absent.
+Local Mode serves HTTP on 80 and self-signed HTTPS on 443, without redirecting HTTP or telling browsers to require HTTPS. Sibling ingresses use HTTP internally. A missing stack returns 502 on its hostnames while other stacks continue working. The root serves a fallback console when the gateway is absent.
 
 Edge `.env`:
 
 ```sh
+PE_ACCESS_MODE=local
 PE_PUBLIC_DOMAIN=localhost
 PE_SCHEME=http
-PE_TLS_ISSUER=none
 PE_BIND_HOST=127.0.0.1
 PE_HTTP_PORT=80
 PE_HTTPS_PORT=443
@@ -48,33 +48,33 @@ PE_BACKUP_DIR=./backups
 Gateway `.env`:
 
 ```sh
+LG_ACCESS_MODE=proxy
 LG_PUBLIC_DOMAIN=localhost
 LG_SCHEME=http
-LG_LISTEN_SCHEME=http
-LG_TLS_ISSUER=none
 LG_BIND_HOST=127.0.0.1
 LG_HTTP_PORT=18080
-LG_HTTPS_PORT=18443
 LG_PUBLIC_PORT_SUFFIX=
 LG_PLATFORM_NETWORK=platform
+LG_TRUSTED_PROXIES=192.0.2.2/32
 ```
 
 Observability `.env`:
 
 ```sh
+OB_ACCESS_MODE=proxy
 OB_PUBLIC_DOMAIN=localhost
 OB_SCHEME=http
-OB_LISTEN_SCHEME=http
-OB_TLS_ISSUER=none
 OB_BIND_HOST=127.0.0.1
 OB_HTTP_PORT=18180
-OB_HTTPS_PORT=18543
 OB_PUBLIC_PORT_SUFFIX=
 OB_PLATFORM_NETWORK=platform
+OB_TRUSTED_PROXIES=192.0.2.2/32
 OB_GATEWAY_HEALTH_HOST=localhost
 OB_GATEWAY_URL=http://localhost
 OB_BACKPLANE_URL=http://backplane.localhost
 ```
+
+Replace `192.0.2.2/32` above with Edge’s reserved address on the shared Docker network, as described in the [ingress guide](docs/operations/ingress.md).
 
 Backplane `.env` (start core services without its optional `edge` profile):
 
@@ -84,16 +84,32 @@ BP_BIND_HOST=127.0.0.1
 BP_PORT=3000
 ```
 
+The console also opens at `http://127.0.0.1`; verified direct HTTPS requires installing
+Edge's public CA root. Application links retain their configured hostnames. To share the
+console through Tailscale's trusted HTTPS, run the optional helper after startup:
+
+```sh
+sudo python3 scripts/tailscale_serve.py --https-port 8443
+```
+
+It prints the URL and does not modify unrelated Serve endpoints. See the
+[ingress guide](docs/operations/ingress.md) for prerequisites, collision handling,
+trusting self-signed certificates, and configuring names for application access.
+
+Runtime logs go to stdout/stderr and Docker journald, without Docker log files or cache.
+Alloy collection is optional; `docker compose logs -f caddy` works without observability.
+Host journal persistence remains the operator's choice. Fresh installs provide HTTP and self-signed HTTPS. Choose public mode for your own domain, or proxy mode when another gateway handles HTTPS.
+
 ## Public integration
 
-Point DNS for the root and five subdomains at the host and open TCP 80/443. ACME requires all six names reachable. For private DNS, change the Edge issuer to `internal` and distribute its public CA root.
+Point DNS for the root and five subdomains at the host and open TCP 80/443. Certificate issuance requires all six names to be reachable. For private DNS, select `PE_ACCESS_MODE=local` with the private domain and distribute its public CA root.
 
 Edge `.env`:
 
 ```sh
+PE_ACCESS_MODE=public
 PE_PUBLIC_DOMAIN=example.com
 PE_SCHEME=https
-PE_TLS_ISSUER=acme
 PE_BIND_HOST=0.0.0.0
 PE_HTTP_PORT=80
 PE_HTTPS_PORT=443
@@ -106,33 +122,33 @@ PE_BACKUP_DIR=./backups
 Gateway `.env`:
 
 ```sh
+LG_ACCESS_MODE=proxy
 LG_PUBLIC_DOMAIN=example.com
 LG_SCHEME=https
-LG_LISTEN_SCHEME=http
-LG_TLS_ISSUER=none
 LG_BIND_HOST=127.0.0.1
 LG_HTTP_PORT=18080
-LG_HTTPS_PORT=18443
 LG_PUBLIC_PORT_SUFFIX=
 LG_PLATFORM_NETWORK=platform
+LG_TRUSTED_PROXIES=192.0.2.2/32
 ```
 
 Observability `.env`:
 
 ```sh
+OB_ACCESS_MODE=proxy
 OB_PUBLIC_DOMAIN=example.com
 OB_SCHEME=https
-OB_LISTEN_SCHEME=http
-OB_TLS_ISSUER=none
 OB_BIND_HOST=127.0.0.1
 OB_HTTP_PORT=18180
-OB_HTTPS_PORT=18543
 OB_PUBLIC_PORT_SUFFIX=
 OB_PLATFORM_NETWORK=platform
+OB_TRUSTED_PROXIES=192.0.2.2/32
 OB_GATEWAY_HEALTH_HOST=example.com
 OB_GATEWAY_URL=https://example.com
 OB_BACKPLANE_URL=https://backplane.example.com
 ```
+
+Replace `192.0.2.2/32` above with Edge’s reserved address on the shared Docker network, as described in the [ingress guide](docs/operations/ingress.md).
 
 Backplane `.env` (start core services without its optional `edge` profile):
 
@@ -184,7 +200,7 @@ Run `scripts/backup.sh` for both Edge state volumes (`edge-data` and `edge-confi
 ```sh
 scripts/validate.sh                    # static checks, what CI runs on every push
 python3 -m unittest discover -s tests  # unit tests, no Docker
-scripts/smoke.sh                       # disposable edge: HTTP and verified internal TLS
+scripts/smoke.sh                       # disposable edge: HTTP and verified self-signed HTTPS
 scripts/backup-drill.sh                # prove CA and TLS survive restore; print RTO
 ```
 

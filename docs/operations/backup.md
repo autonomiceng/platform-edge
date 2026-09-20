@@ -1,6 +1,6 @@
 # Certificate state and Checkpoints
 
-`edge-data` holds ACME account/certificate keys and the internal CA. `edge-config`
+`edge-data` holds public certificate account keys, server certificate keys and the local certificate authority. `edge-config`
 holds Caddy configuration state and the certificate metric. Both are external Docker
 volumes named `${PE_VOLUME_PREFIX}_edge-data` and `${PE_VOLUME_PREFIX}_edge-config`.
 The prefix defaults to `platform-edge`, independently of the Compose project name.
@@ -176,7 +176,7 @@ SMOKE_PROJECT=platform-edge-drill-monthly SMOKE_HTTP_PORT=18380 SMOKE_HTTPS_PORT
 ```
 
 The drill refuses existing resources, owns its project, network and prefix, boots
-internal TLS, captures, destroys with the typed project name, restores into empty
+self-signed HTTPS, captures, destroys with the typed project name, restores into empty
 volumes, and verifies the CA fingerprint and HTTPS readiness. It removes its disposable
 resources. Run monthly and after backup, Compose or image-pin changes.
 

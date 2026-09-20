@@ -127,8 +127,41 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(bootstrap.routed_hostnames(ROOT / "routes.d", "example.test"), sorted(expected))
         with tempfile.TemporaryDirectory() as directory:
             routes = Path(directory)
-            (routes / "custom.caddy").write_text('{$PE_SCHEME}://custom.{$PE_PUBLIC_DOMAIN} {\n}\n')
+            (routes / "custom.caddy").write_text('http://custom.{$PE_PUBLIC_DOMAIN} {\n}\n')
             self.assertEqual(bootstrap.routed_hostnames(routes, "other.test"), ["custom.other.test"])
+
+
+class AccessModeTests(unittest.TestCase):
+    def test_modes_derive_issuers_and_schemes(self):
+        with patch.dict(os.environ, {}, clear=True):
+            for mode, scheme, issuer in [("local", "http", "internal"), ("public", "https", "acme"),
+                                         ("proxy", "https", "none")]:
+                settings = bootstrap.settings_for({"PE_ACCESS_MODE": mode, "PE_PUBLIC_DOMAIN": "example.com"})
+                self.assertEqual((settings["PE_SCHEME"], settings["PE_TLS_ISSUER"]), (scheme, issuer))
+            for invalid in ({"PE_ACCESS_MODE": "typo"}, {"PE_PUBLIC_DOMAIN": "pe-edge"}):
+                with self.assertRaises(bootstrap.Refused):
+                    bootstrap.settings_for(invalid)
+
+    def test_proxy_does_not_claim_https_port_and_selects_override(self):
+        settings = dict(bootstrap.DEFAULTS, PE_ACCESS_MODE="proxy")
+        runner = FakeRunner(containers=[{"Names": "other", "ID": "other", "Ports": "0.0.0.0:443->443/tcp"}])
+        bootstrap.check_ports(runner, settings, "platform-edge")
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            env = Path(directory) / ".env"
+            env.write_text("PE_ACCESS_MODE=proxy\n")
+            self.assertEqual(bootstrap.compose_command(ROOT, env)[-4:],
+                             ["-f", str(ROOT / "compose.yaml"), "-f", str(ROOT / "compose.proxy.yaml")])
+
+    def test_local_readiness_checks_both_protocols_before_ready(self):
+        settings = dict(bootstrap.DEFAULTS, PE_ACCESS_MODE="local", PE_TLS_ISSUER="internal")
+        def runner(argv):
+            return subprocess.CompletedProcess(argv, 0, "root", "")
+        certificate = {"not_after_seconds": 2000000000}
+        with patch.object(bootstrap, "probe", side_effect=[{}, certificate]) as probe, \
+                patch.object(bootstrap, "ca_fingerprint", return_value="fingerprint"):
+            result = bootstrap.wait_ready(settings, ROOT, ROOT / "absent-env", runner)
+        self.assertEqual([c.args[0]["PE_SCHEME"] for c in probe.call_args_list], ["http", "https"])
+        self.assertEqual(result["ca_sha256"], "fingerprint")
 
 
 if __name__ == "__main__":

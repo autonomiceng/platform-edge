@@ -30,26 +30,38 @@
   <button id="refresh" type="button">Check again</button>
   <p id="checked" role="status">Checking upstreams…</p>
   <noscript>Enable JavaScript to list hostnames and check the gateway, backplane and observability stack.</noscript>
+  <script type="application/json" id="edge-config">{"domain": {{env "PE_PUBLIC_DOMAIN" | toJson}}, "mode": {{env "PE_ACCESS_MODE" | toJson}}, "scheme": {{env "PE_SCHEME" | toJson}}}</script>
   <script>
+    const config = JSON.parse(document.querySelector('#edge-config').textContent);
+    const configuredDomain = config.domain;
+    const configuredScheme = config.mode === 'public' ? 'https' : config.scheme;
+    const alias = location.hostname !== configuredDomain;
     const routes = [
       ['', 'gateway'], ['litellm', 'gateway'], ['langfuse', 'gateway'],
       ['s3', 'gateway'], ['backplane', 'backplane'], ['grafana', 'observability']
     ];
+    if (alias) {
+      const note = document.createElement('p');
+      note.textContent = 'This address opens the Edge console. Application links use the configured domain and require its DNS and network access.';
+      document.querySelector('#routes').before(note);
+    }
     const badges = new Map();
     for (const [prefix, stack] of routes) {
-      const host = (prefix ? prefix + '.' : '') + location.hostname;
+      const host = (prefix ? prefix + '.' : '') + configuredDomain;
       const row = document.createElement('li');
       const link = document.createElement('a');
-      link.href = location.protocol + '//' + host + (location.port ? ':' + location.port : '') + '/';
+      link.href = (alias ? configuredScheme + ':' : location.protocol) + '//' + host + (alias ? '' : (location.port ? ':' + location.port : '')) + '/';
       link.textContent = host;
+      if (alias) link.removeAttribute('href');
       const badge = document.createElement('span');
-      badge.textContent = 'checking';
+      badge.textContent = alias ? 'use configured address' : 'checking';
       if (!badges.has(stack)) badges.set(stack, []);
       badges.get(stack).push(badge);
       row.append(link, badge);
       document.querySelector('#routes').append(row);
     }
     async function check() {
+      if (alias) return;
       document.querySelector('#refresh').disabled = true;
       await Promise.all([...badges].map(async ([stack, entries]) => {
         let answers = false;
@@ -65,6 +77,7 @@
       document.querySelector('#checked').textContent = 'Checked ' + new Date().toLocaleTimeString();
       document.querySelector('#refresh').disabled = false;
     }
+    document.querySelector('#refresh').disabled = alias;
     document.querySelector('#refresh').addEventListener('click', check);
     check();
   </script>
