@@ -187,15 +187,18 @@ def qualify(item: dict, inspect) -> None:
     item["resources"] = item["resources"] or bool(volumes)
     if item["resources"] and (missing or not recorded):
         raise ValueError("Restore the original complete env before adopting durable resources.")
+    unlabelled = set()
     for volume in sorted(volumes):
         project = json.loads(inspect(["docker", "volume", "inspect", "--format", '{{json (index .Labels "com.docker.compose.project")}}', volume]))
-        if project != item["action"]["project"]:
-            raise ValueError("Volume ownership is unlabelled or foreign; use the owning recovery runbook without adopting or replacing data.")
+        if project is None:
+            unlabelled.add(volume)
+        elif project != item["action"]["project"]:
+            raise ValueError("Volume ownership is foreign; use the owning recovery runbook without adopting or replacing data.")
     item["ports"] = [(port.get("host_ip", "0.0.0.0"), int(port["published"])) for service in services.values()
                      for port in service.get("ports", []) if port.get("protocol", "tcp") == "tcp" and "published" in port]
     containers = []
     for identity in item["ids"]:
-        projection = '{"Id":{{json .Id}},"Image":{{json .Image}},"Mounts":{{json .Mounts}},"Labels":{{json .Config.Labels}},"Ports":{{json .NetworkSettings.Ports}},"Networks":{{json .NetworkSettings.Networks}},"Running":{{json .State.Running}}}'
+        projection = '{"Id":{{json .Id}},"Image":{{json .Image}},"Mounts":{{json .Mounts}},"Labels":{{json .Config.Labels}},"Ports":{{json .NetworkSettings.Ports}},"Networks":{{json .NetworkSettings.Networks}},"Running":{{json .State.Running}},"Binds":{{json .HostConfig.Binds}},"ExplicitMounts":{{json .HostConfig.Mounts}}}'
         container = json.loads(inspect(["docker", "inspect", "--format", projection, identity]))
         service = container["Labels"].get("com.docker.compose.service")
         if service not in services or container["Labels"].get("com.docker.compose.project") != item["action"]["project"]:
@@ -212,11 +215,30 @@ def qualify(item: dict, inspect) -> None:
                 desired_mounts[mount["target"]] = ("bind", mount["source"])
         actual_mounts = {mount["Destination"]: (mount["Type"], mount.get("Name") if mount["Type"] == "volume" else mount["Source"])
                          for mount in container["Mounts"] if mount["Type"] in {"volume", "bind"}}
+        extra = actual_mounts.keys() - desired_mounts.keys()
+        if extra:
+            inherited = json.loads(inspect(["docker", "image", "inspect", "--format", "{{json .Config.Volumes}}", desired["image"]])) or {}
+            explicit = {mount["Target"] for mount in container.get("ExplicitMounts") or []}
+            explicit.update(bind.split(":")[-2] if ":" in bind else bind for bind in container.get("Binds") or [])
+            for target in extra:
+                kind, volume = actual_mounts[target]
+                labels = json.loads(inspect(["docker", "volume", "inspect", "--format", "{{json .Labels}}", volume])) if kind == "volume" else {}
+                if target not in inherited or target in explicit or "com.docker.volume.anonymous" not in (labels or {}):
+                    raise ValueError("Persistent mount or checkout differs; use the owning Checkpoint/upgrade procedure.")
+                # Docker creates image-declared anonymous volumes absent from Compose config.
+                unlabelled.add(volume)
+                del actual_mounts[target]
         if actual_mounts != desired_mounts:
             raise ValueError("Persistent mount or checkout differs; use the owning Checkpoint/upgrade procedure.")
         containers.append(container)
     if len(containers) != len({c["Labels"]["com.docker.compose.service"] for c in containers}):
         raise ValueError("Duplicate service containers require the owning recovery procedure.")
+    owned = {container["Id"] for container in containers}
+    for volume in sorted(unlabelled):
+        users = set(inspect(["docker", "ps", "-aq", "--filter", "volume=" + volume]).split())
+        mounted = any(mount.get("Name") == volume for container in containers for mount in container["Mounts"])
+        if not mounted or not users or not users <= owned:
+            raise ValueError("Volume ownership is unlabelled and cannot be established from qualified containers; use the owning recovery runbook.")
     if name == "observability":
         marker = root / item["values"].get("OB_STATE_DIR", "data") / "installation/storage-mode"
         expected = "s3" if "s3" in item["profiles"] else "filesystem"
@@ -286,7 +308,8 @@ def execute(prepared: list[dict], runner, inspect, refused=bootstrap.Refused) ->
                         if runner(item["command"], timeout=1800, quiet=True, cwd=str(item["root"])).returncode or edge_peer(item, inspect) != peer:
                             raise ValueError("Pinned Edge peer could not be verified.")
                 report["completed"].append(name)
-    except (OSError, ValueError, KeyError, TypeError, IndexError, KeyboardInterrupt, refused):
+    except (OSError, ValueError, KeyError, TypeError, IndexError, KeyboardInterrupt, refused) as error:
+        report["detail"] = str(error) if isinstance(error, ValueError) else "Selected installation stopped; inspect the owning status record privately."
         report.update(stopped_at=name, error="installation_stopped", recovery="infra/backup/README.md" if name == "backplane" else "docs/operations/backup.md", next="Correct the owning installation and rerun the same selection; completed stacks and all data are retained.")
     if "backplane" in report["completed"] and report["stopped_at"] is None:
         report["next"] = "Complete Backplane enrollment with bp bootstrap and the selected capability file."

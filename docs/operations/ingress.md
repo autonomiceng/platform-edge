@@ -71,9 +71,11 @@ missing saved secrets, foreign publications, or an upgrade stop all execution be
 env/container changes. Each action names the owning recovery runbook. Interrupted
 preparation resumes with complete private saved secrets and native selection, even
 after volume creation with no containers or only some services present. Every found
-or referenced existing volume must carry `com.docker.compose.project` equal to the
-selected project. Unlabelled or foreign-labelled volumes are refused, including
-unmounted prefix collisions. Each present container must still qualify; the owning
+or referenced existing volume must carry the selected `com.docker.compose.project`
+label, or be mounted only by containers that pass the image, service and mount checks.
+Unlabelled volumes without qualified containers and foreign-labelled volumes are refused,
+including unmounted prefix collisions. Image-declared anonymous volumes are accepted only
+when Docker created them implicitly and all their users are qualified containers. Each present container must still qualify; the owning
 bootstrap completes missing services and checks its database/storage binding.
 
 Execution rechecks qualification under owning locks, publishes only selected public
@@ -89,11 +91,9 @@ match its rendered reference's current local image ID; default builds and worker
 recipe verification remain the owning bootstrap's behavior.
 
 Edge labels newly created volumes with its selected Compose project. Existing
-unlabelled Edge volumes remain refused; this does not relabel or adopt them. Gateway's
-current owner creates unlabelled external volumes: a fresh launch can complete, but
-selected rerun/recovery refuses those volumes. Gateway needs an owning bootstrap
-change to label new volumes with the selected project and an explicit owning custody
-procedure for existing unlabelled data before this workflow supports its reuse.
+unlabelled Edge and Gateway volumes can be qualified through their matching containers,
+without relabelling or replacing data. Gateway's owning bootstrap must label new volumes
+so interruption before container creation also leaves verifiable ownership.
 Observability custom overlays remain refused because its bootstrap reconstructs its
 file list. Its owning followup must preserve the recorded ordered `COMPOSE_FILE` for
 both config validation and startup. No installer shadow selection is used.

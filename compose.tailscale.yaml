@@ -3,4 +3,4 @@ services:
   caddy:
     networks:
       platform:
-        ipv4_address: ${PE_TAILSCALE_EDGE_IP:?run scripts/tailscale_serve.py first}
+        ipv4_address: ${PE_TAILSCALE_EDGE_IP:?reserve the Edge peer with scripts/bootstrap.py --stack or scripts/tailscale_serve.py}
