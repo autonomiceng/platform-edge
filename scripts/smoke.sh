@@ -89,6 +89,26 @@ cat > "$work/stub.caddy" <<'CADDY'
 		header Authorization *
 	}
 	respond @probe_credentials 401
+	handle /status.json {
+		route {
+			@authorization header Authorization *
+			respond @authorization "credential leaked" 401
+			@cookie header Cookie *
+			respond @cookie "cookie leaked" 401
+			@missing header X-Smoke-Status missing
+			respond @missing "private diagnostic" 404
+			@failure header X-Smoke-Status failure
+			respond @failure "private diagnostic" 503
+			@html header X-Smoke-Status html
+			handle @html {
+				header Content-Type text/html
+				respond "<html>fallback</html>" 200
+			}
+			header Content-Type application/json
+			respond `{"producer":"{$STUB_ALIAS}","host":"{http.request.host}","scheme":"{http.request.header.X-Forwarded-Proto}"}`
+		}
+	}
+	header /versions.json Content-Type application/json
 	respond /versions.json `{"images":{"litellm":"1.2.3"}}`
 	respond /authority "{$STUB_ALIAS}|{http.request.hostport}|{http.request.header.X-Forwarded-Proto}"
 	respond "{$STUB_ALIAS}|{host}|{http.request.header.X-Forwarded-Proto}"
@@ -119,6 +139,8 @@ assert not headers.get("x-smoke-authorization", "").strip()
 assert not headers.get("x-smoke-cookie", "").strip()
 PYVERSIONS
   ok 'console version metadata is uncached and forwards no browser credentials'
+  python3 tests/status_proxy.py "http://127.0.0.1:$PE_HTTP_PORT"
+  ok 'status proxy methods, credential stripping, content type and body suppression'
 fi
 
 
@@ -259,6 +281,8 @@ code=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -sS \
 [ "$code" = 502 ] && [ ! -s "$work/body" ] || fail 'failed probe leaked a body or hid failure'
 grep -iq '^Cache-Control: no-store' "$work/headers" || fail 'failed probe can be cached'
 ok 'failed console probe is empty and uncached'
+python3 tests/status_proxy.py "http://127.0.0.1:$PE_HTTP_PORT" --absent-observability
+ok 'status producer connection failure is empty and independent'
 body=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -fsS --resolve "litellm.localhost:$PE_HTTPS_PORT:127.0.0.1" \
   -H 'Host: litellm.localhost' "https://litellm.localhost:$PE_HTTPS_PORT/")
 [ "$body" = 'lg-gateway|litellm.localhost|https' ] || fail 'gateway failed with observability absent'
@@ -271,7 +295,7 @@ code=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -sS --resolve 
 grep -q 'Platform Edge' "$work/console.html" || fail 'console missing'
 grep -qi 'Cache-Control: no-cache' "$work/console.headers" || fail 'console HTML must revalidate'
 ok 'Edge console remains available when Gateway is absent'
-for asset in app.js style.css icons/caddy.svg; do
+for asset in app.js catalog.js status.js style.css icons/caddy.svg; do
   curl --noproxy '*' --max-time 10 -fsS -H 'Host: localhost' "http://127.0.0.1:$PE_HTTP_PORT/console/$asset" > "$work/asset"
   [ -s "$work/asset" ] || fail "empty console asset: $asset"
   ok "console asset $asset remains available without Gateway"

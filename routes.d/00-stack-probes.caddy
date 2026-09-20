@@ -1,0 +1,153 @@
+# Public metadata routes belong to Edge; application sites remain stack-owned.
+(status-proxy) {
+	handle {args[0]} {
+		header {
+			>Cache-Control "no-store"
+			>Content-Type "application/json"
+		}
+		route {
+			@write not method GET HEAD
+			respond @write "" 405
+			rewrite * {args[1]}?
+			reverse_proxy {args[2]} {
+				header_up -Authorization
+				header_up -Cookie
+				header_up Host {args[3]}
+				import forwarded-proto-{$PE_ACCESS_MODE:local}
+				header_down -Set-Cookie
+				header_down -WWW-Authenticate
+				transport http {
+					dial_timeout 2s
+					response_header_timeout 4s
+					read_timeout 4s
+				}
+				@json {
+					status 200
+					header Content-Type application/json
+				}
+				# Producers own the closed public field allowlist. Never pass diagnostics.
+				handle_response @json {
+					copy_response
+				}
+				@jsonParams {
+					status 200
+					header Content-Type "application/json;*"
+				}
+				handle_response @jsonParams {
+					copy_response
+				}
+				@failure status 4xx 5xx
+				handle_response @failure {
+					respond "" {rp.status_code}
+				}
+				handle_response {
+					respond "" 502
+				}
+			}
+		}
+	}
+}
+(status-errors) {
+	@metadata expression `{http.request.orig_uri.path}.startsWith("/stack-status/") || {http.request.orig_uri.path} == "/stack-versions/gateway"`
+	handle @metadata {
+		header Cache-Control "no-store"
+		header Content-Type "application/json"
+		respond "" {err.status_code}
+	}
+}
+
+(stack-probes) {
+	import status-proxy /stack-status/gateway /status.json lg-gateway:80 {$PE_PUBLIC_DOMAIN}
+	import status-proxy /stack-status/backplane /status.json bp-gateway:80 backplane.{$PE_PUBLIC_DOMAIN}
+	import status-proxy /stack-status/observability /status.json ob-gateway:80 {$PE_PUBLIC_DOMAIN}
+	import status-proxy /stack-versions/gateway /versions.json lg-gateway:80 {$PE_PUBLIC_DOMAIN}
+	# Reserved for an honest host observer. Never fall through to Gateway's producer.
+	handle /stack-status/* {
+		header Cache-Control "no-store"
+		header Content-Type "application/json"
+		@write not method GET HEAD
+		respond @write "" 405
+		respond "" 404
+	}
+
+	handle /health/rustfs {
+		header Cache-Control "no-store"
+		rewrite * /health/rustfs-console
+		reverse_proxy lg-gateway:80 {
+			import probe-response
+			header_up -Authorization
+			header_up -Cookie
+			header_up Host {$PE_PUBLIC_DOMAIN}
+			import forwarded-proto-{$PE_ACCESS_MODE:local}
+		}
+	}
+	# Same-origin probes for the fallback page. A missing alias becomes a 502.
+	handle /health/gateway {
+		header Cache-Control "no-store"
+		rewrite * /
+		reverse_proxy lg-gateway:80 {
+			import probe-response
+			header_up -Authorization
+			header_up -Cookie
+			header_up Host {$PE_PUBLIC_DOMAIN}
+			import forwarded-proto-{$PE_ACCESS_MODE:local}
+		}
+	}
+	handle /health/backplane {
+		header Cache-Control "no-store"
+		rewrite * /health/ready
+		reverse_proxy bp-gateway:80 {
+			import probe-response
+			header_up -Authorization
+			header_up -Cookie
+			header_up Host backplane.{$PE_PUBLIC_DOMAIN}
+			import forwarded-proto-{$PE_ACCESS_MODE:local}
+		}
+	}
+	handle /health/observability {
+		header Cache-Control "no-store"
+		rewrite * /health/grafana
+		reverse_proxy ob-gateway:80 {
+			import probe-response
+			header_up -Authorization
+			header_up -Cookie
+			header_up Host {$PE_PUBLIC_DOMAIN}
+			import forwarded-proto-{$PE_ACCESS_MODE:local}
+		}
+	}
+	handle /health/litellm {
+		header Cache-Control "no-store"
+		rewrite * /health/litellm
+		reverse_proxy lg-gateway:80 {
+			import probe-response
+			header_up -Authorization
+			header_up -Cookie
+			header_up Host {$PE_PUBLIC_DOMAIN}
+			import forwarded-proto-{$PE_ACCESS_MODE:local}
+		}
+	}
+
+	handle /health/langfuse {
+		header Cache-Control "no-store"
+		rewrite * /health/langfuse
+		reverse_proxy lg-gateway:80 {
+			import probe-response
+			header_up -Authorization
+			header_up -Cookie
+			header_up Host {$PE_PUBLIC_DOMAIN}
+			import forwarded-proto-{$PE_ACCESS_MODE:local}
+		}
+	}
+
+	handle /health/s3 {
+		header Cache-Control "no-store"
+		rewrite * /health/rustfs
+		reverse_proxy lg-gateway:80 {
+			import probe-response
+			header_up -Authorization
+			header_up -Cookie
+			header_up Host {$PE_PUBLIC_DOMAIN}
+			import forwarded-proto-{$PE_ACCESS_MODE:local}
+		}
+	}
+}
