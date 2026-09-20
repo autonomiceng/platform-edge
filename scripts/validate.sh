@@ -3,6 +3,9 @@
 set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
+# Validate the shipped default independently of operator image and Compose overrides.
+export PE_CADDY_IMAGE=''
+unset COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PROFILES
 for tool in python3 shellcheck; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
@@ -17,8 +20,8 @@ python3 -m py_compile scripts/*.py tests/*.py
 echo 'python: PASS'
 command -v docker >/dev/null || { echo 'missing tool: docker' >&2; exit 1; }
 docker compose version >/dev/null
-docker compose --env-file "$work/.env" config -q
-docker compose --env-file "$work/.env" config --format json > "$work/config.json"
+docker compose --env-file "$work/.env" -f compose.yaml config -q
+docker compose --env-file "$work/.env" -f compose.yaml config --format json > "$work/config.json"
 python3 - "$work/config.json" <<'PY'
 import json, re, sys
 config = json.load(open(sys.argv[1]))
@@ -44,6 +47,21 @@ assert {p['target'] for p in caddy['ports']} == {80, 443}, 'HTTP and HTTPS only'
 PY
 echo 'compose config: PASS'
 caddy_image=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"]["caddy"]["image"])' "$work/config.json")
+python3 - "$caddy_image" "$work" <<'PY'
+import os, subprocess, sys
+from pathlib import Path
+env = dict(os.environ)
+env.pop('PE_CADDY_IMAGE', None)
+assert ('    image: ${PE_CADDY_IMAGE:-' + sys.argv[1] + '}') in Path('compose.yaml').read_text().splitlines(), \
+    'keep the full image reference in one Renovate-extractable default'
+path = Path(sys.argv[2]) / 'image.env'
+for value in ('local/edge:experiment', 'registry.example:5000/team/caddy:test', '', None):
+    path.write_text('' if value is None else 'PE_CADDY_IMAGE=' + value + '\n')
+    actual = subprocess.check_output(['docker', 'compose', '--env-file', str(path),
+                                      '-f', 'compose.yaml', 'config', '--images'], env=env, text=True).strip()
+    assert actual == (value or sys.argv[1]), 'native image override or fallback differs'
+PY
+echo 'native image override and empty/unset fallback (4 cases): PASS'
 for mode in 'local http localhost' 'public https example.com' 'proxy https example.com'; do
   # Each mode is a fixed three-word tuple.
   # shellcheck disable=SC2086

@@ -34,6 +34,7 @@ ENV_LINE = re.compile(r"^(?:export\s+)?(?P<key>[A-Z][A-Z0-9_]*)=(?P<value>.*)$")
 ROUTE_LINE = re.compile(r"^\s*https?://(?P<host>(?:[a-z0-9-]+\.)*\{\$PE_PUBLIC_DOMAIN\})\s*\{$")
 PORT = re.compile(r"(?P<host>\[[^]]+\]|[^, ]+):(?P<first>\d+)(?:-(?P<last>\d+))?->[^, ]+/tcp")
 DEFAULTS = {
+    "PE_CADDY_IMAGE": "",
     "PE_ACCESS_MODE": "local",
     "PE_PUBLIC_DOMAIN": "localhost",
     "PE_SCHEME": "http",

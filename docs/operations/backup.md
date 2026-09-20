@@ -65,6 +65,24 @@ stopping Caddy. Run it as the checkout owner with Git installed; a source-only t
 without Git metadata is refused before any outage. For another backup account, arrange
 Git ownership/trust explicitly for this checkout before scheduling it.
 
+Checkpoint capture and restore require a digest-qualified effective image reference,
+including when `PE_CADDY_IMAGE` overrides the default. Tag-only references and local
+image IDs are refused before capture stops Caddy or restore writes volumes. To checkpoint
+an experiment, publish the image to a registry and configure its complete `name@sha256:...`
+reference first. Retain that image and the matching configuration for recovery; these
+tools do not save image layers or resolve mutable tags automatically.
+
+Backup compares the existing container's immutable image ID with the locally available
+configured digest before stopping it. Helpers and the version-1 manifest use that
+effective digest reference. Restore requires the same reference in the target configuration,
+so existing digest-pinned Checkpoints remain compatible. An unavailable configured image
+fails preflight without stopping Caddy.
+
+Capture requires exactly one existing Caddy container to attest its image and mounts;
+use `stop`, not `down`, before an offline capture. Restore also requires the configured
+image locally before creating volumes. To restore an older Checkpoint after an image
+bump, set `PE_CADDY_IMAGE` to its `manifest.json` Caddy reference and pull that image first.
+
 Backup stops Caddy, verifies neither volume has a running consumer, and streams a tar
 of each volume. Before the outage it checks both volumes for restore markers and
 refuses an incomplete restore or a failed state check. There is a brief ingress outage.
@@ -112,7 +130,7 @@ A forced kill after that timeout
 cannot guarantee resumption; alert and verify Caddy manually.
 
 Git fields describe the checkout at preflight. They do not attest which file contents
-the running Caddy loaded. Image pins and volume mounts are checked against the container;
+the running Caddy loaded. Immutable image identity and volume mounts are checked against the container;
 keep the matching configuration separately. Compose's service config hash does not
 hash the contents of bind-mounted Route Files or Caddyfile.
 

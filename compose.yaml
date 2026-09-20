@@ -1,5 +1,5 @@
 # One shared ingress per host (ADR-0001). Only Caddy publishes ports.
-# Images are pinned as tag plus digest; Renovate raises bumps, humans merge them.
+# The validated default is pinned as tag plus digest; Renovate raises bumps, humans merge them.
 name: platform-edge
 
 x-logging: &logging
@@ -9,7 +9,7 @@ x-logging: &logging
 
 services:
   caddy:
-    image: caddy:2.11.4@sha256:13ba145cba2f3e28fa801994876e4c086d1b95d5aa2a520a734765ffb6b12017
+    image: ${PE_CADDY_IMAGE:-caddy:2.11.4@sha256:13ba145cba2f3e28fa801994876e4c086d1b95d5aa2a520a734765ffb6b12017}
     restart: unless-stopped
     mem_limit: 256m
     mem_reservation: 64m

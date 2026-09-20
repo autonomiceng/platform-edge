@@ -36,7 +36,8 @@ def command_failed(stderr: str | bytes, diagnostics: Path, *, reason: str = "com
     raise RuntimeError(f"{reason}; diagnostics: {path}")
 
 
-def checked(argv: list[str], diagnostics: Path, *, timeout: float | None = None) -> str:
+def checked(argv: list[str], diagnostics: Path, *, timeout: float | None = None,
+            reason: str = "command failed") -> str:
     # Terminal interrupts must reach our handler, not kill a stop/start CLI mid-operation.
     timeout = COMMAND_TIMEOUT if timeout is None else timeout
     try:
@@ -44,7 +45,7 @@ def checked(argv: list[str], diagnostics: Path, *, timeout: float | None = None)
     except subprocess.TimeoutExpired as error:
         command_failed(error.stderr or b"", diagnostics, reason=f"command timed out after {timeout:g} seconds")
     if result.returncode:
-        command_failed(result.stderr, diagnostics)
+        command_failed(result.stderr, diagnostics, reason=reason)
     return result.stdout.strip()
 
 
@@ -79,7 +80,7 @@ def archive_fingerprint(directory: Path) -> str | None:
 
 
 def manifest(directory: Path, images: dict, commit: str, dirty: bool = False) -> dict:
-    # Deliberately accept no env values: only public identifiers and artifact hashes.
+    # Record the effective image reference needed for recovery, never other env values.
     return {"version": 1, "created_at": datetime.now(timezone.utc).isoformat(),
             "git_commit": commit, "git_dirty": dirty, "images": images, "caddy_stopped": True,
             "ca_sha256": archive_fingerprint(directory), "artifacts": inventory(directory)}
@@ -110,16 +111,26 @@ class Stack:
                 "--entrypoint", "sh", self.image, "-ec", *command]
 
     def require_capture_provenance(self) -> None:
+        self.require_image_pin()
         ids = checked(self.dc + ["ps", "-aq", "caddy"], self.diagnostics).split()
         if len(ids) != 1:
             raise ValueError("Checkpoint requires exactly one existing Caddy container")
         containers = json.loads(checked(["docker", "inspect", *ids], self.diagnostics))
-        if len(containers) != 1 or containers[0].get("Config", {}).get("Image") != self.image:
+        image_id = checked(["docker", "image", "inspect", "--format", "{{.Id}}", self.image], self.diagnostics,
+                           reason="configured Caddy image is unavailable locally; pull it before backup")
+        if (not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id)
+                or len(containers) != 1 or containers[0].get("Image") != image_id):
             raise ValueError("Caddy image differs from the Checkpoint image pin")
         mounts = {m["Destination"]: m.get("Name") for m in containers[0].get("Mounts", [])
                   if m.get("Type") == "volume"}
         if mounts != dict(zip(("/data", "/config"), self.volumes)):
             raise ValueError("Caddy persistent mounts differ from the Checkpoint volumes")
+
+    def require_image_pin(self) -> None:
+        if not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", self.image):
+            raise ValueError("Checkpoint requires a digest-qualified PE_CADDY_IMAGE; "
+                             "tag-only and local images cannot be captured reproducibly; "
+                             "see docs/operations/backup.md")
 
     def require_stopped(self) -> None:
         for volume in self.volumes:
@@ -278,15 +289,19 @@ def prune(repository: Path, keep: int, protect: Path | None = None) -> None:
 
 
 def restore(stack: Stack, directory: Path) -> None:
+    stack.require_image_pin()
     document = json.loads((directory / "manifest.json").read_text())
     if document.get("version") != 1 or document.get("caddy_stopped") is not True:
         raise ValueError("unsupported or incomplete Checkpoint")
     if document["images"] != stack.images:
-        raise ValueError("restore requires the Checkpoint image pins")
+        raise ValueError("restore requires the Checkpoint image pins; set PE_CADDY_IMAGE "
+                         "to the caddy reference in manifest.json")
     if inventory(directory) != document["artifacts"]:
         raise ValueError("Checkpoint checksum mismatch")
     if archive_fingerprint(directory) != document["ca_sha256"]:
         raise ValueError("Checkpoint CA fingerprint mismatch")
+    checked(["docker", "image", "inspect", "--format", "{{.Id}}", stack.images["caddy"]], stack.diagnostics,
+            reason="configured Caddy image is unavailable locally; pull it before restore")
     if checked(stack.dc + ["ps", "--status", "running", "-q"], stack.diagnostics):
         raise ValueError("restore requires the project stopped")
     stack.require_stopped()
