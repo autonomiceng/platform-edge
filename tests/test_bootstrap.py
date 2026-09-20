@@ -122,11 +122,11 @@ class BootstrapTests(unittest.TestCase):
                 ready.assert_called_once()
                 self.assertEqual(ready.call_args.args[0]["PE_HTTP_PORT"], "18280")
                 self.assertEqual(ready.call_args.args[0]["PE_PUBLIC_DOMAIN"], "localhost")
-                self.assertEqual(len(json.loads(output.getvalue())["hostnames"]), 6)
+                self.assertEqual(len(json.loads(output.getvalue())["hostnames"]), 7)
 
     def test_hostnames_come_from_domain_and_route_files(self):
         expected = ["example.test", "litellm.example.test", "langfuse.example.test", "s3.example.test",
-                    "backplane.example.test", "grafana.example.test"]
+                    "backplane.example.test", "grafana.example.test", "rustfs.example.test"]
         self.assertEqual(bootstrap.routed_hostnames(ROOT / "routes.d", "example.test"), sorted(expected))
         with tempfile.TemporaryDirectory() as directory:
             routes = Path(directory)

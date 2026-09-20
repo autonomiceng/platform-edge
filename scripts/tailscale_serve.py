@@ -53,7 +53,7 @@ def plan(status: dict, serve: dict, port: int, local_port: int, replace: bool = 
 
 
 APPS = {"litellm": 8443, "langfuse": 8444, "s3": 8445, "gateway": 8446,
-        "grafana": 8447, "backplane": 8448}
+        "grafana": 8447, "backplane": 8448, "rustfs": 8449}
 
 
 def links(endpoints: dict) -> dict[str, str]:
@@ -146,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", type=Path, default=root / ".env")
     parser.add_argument("--https-port", type=int, default=443)
-    parser.add_argument("--port-base", type=int, default=8443, help="first of six consecutive application HTTPS ports")
+    parser.add_argument("--port-base", type=int, default=8443, help="first of seven consecutive application HTTPS ports")
     parser.add_argument("--gateway-dir", type=Path, default=root.parent / "llm-gateway-stack")
     parser.add_argument("--observability-dir", type=Path, default=root.parent / "observability-stack")
     parser.add_argument("--backplane-dir", type=Path, default=root.parent / "agent-backplane")
@@ -194,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
                 skipped.append(directory.name + " (no .env; not configured)")
                 continue
             current = values(env)
+            if prefix == "LG" and current.get("LG_RUSTFS_CONSOLE", "on") == "on":
+                names = [*names, "rustfs"]
             changes = {prefix + "_ACCESS_MODE": "proxy", prefix + "_PLATFORM_NETWORK": settings["PE_PLATFORM_NETWORK"]}
             if prefix != "BP":
                 changes.update({prefix + "_SCHEME": "https", prefix + "_TRUSTED_PROXIES": peer,
