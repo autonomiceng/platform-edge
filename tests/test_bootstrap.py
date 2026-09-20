@@ -36,7 +36,7 @@ class FakeRunner:
         self.network_exists = network_exists
         self.calls = []
 
-    def __call__(self, argv):
+    def __call__(self, argv, **options):
         self.calls.append(argv)
         if argv == ["docker", "ps", "--format", "json"]:
             return subprocess.CompletedProcess(argv, 0, "\n".join(map(json.dumps, self.containers)), "")
@@ -131,6 +131,22 @@ class BootstrapTests(unittest.TestCase):
                 self.assertEqual(ready.call_args.args[0]["PE_HTTP_PORT"], "18280")
                 self.assertEqual(ready.call_args.args[0]["PE_PUBLIC_DOMAIN"], "localhost")
                 self.assertEqual(len(json.loads(output.getvalue())["hostnames"]), 7)
+
+    def test_status_timeout_preserves_successful_bootstrap(self):
+        base = FakeRunner()
+        def runner(argv, **options):
+            if str(ROOT / 'scripts/status_observer.py') in argv:
+                self.assertEqual(options, {'timeout': 120})
+                raise bootstrap.Refused('docker_timeout', 'private diagnostic')
+            return base(argv)
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True), \
+                patch.object(bootstrap.shutil, 'which', return_value='docker'), \
+                patch.object(bootstrap, 'directory', return_value=contextlib.nullcontext()), \
+                patch.object(bootstrap, 'task_record'), patch.object(bootstrap, 'wait_ready', return_value={}), \
+                contextlib.redirect_stderr(io.StringIO()) as warning, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(bootstrap.bootstrap(['--env-file', str(Path(directory) / '.env')], runner), 0)
+        self.assertIn('Status observation failed', warning.getvalue())
+        self.assertNotIn('private diagnostic', warning.getvalue())
 
     def test_status_permissions_do_not_mask_bootstrap_readiness(self):
         for failure in (None, bootstrap.Refused('not_ready', 'original readiness failure')):

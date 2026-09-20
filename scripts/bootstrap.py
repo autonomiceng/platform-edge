@@ -425,9 +425,12 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             record_bootstrap(root, env_file, started, "healthy")
         else:
             certificate = wait_ready(settings, root, env_file, runner)
-        observed = runner([sys.executable, str(root / "scripts/status_observer.py"),
-                           "--checkout", str(root), "--env-file", str(env_file)])
-        if observed.returncode:
+        try:
+            observed = runner([sys.executable, str(root / "scripts/status_observer.py"),
+                               "--checkout", str(root), "--env-file", str(env_file)], timeout=120)
+            if observed.returncode:
+                raise subprocess.SubprocessError()
+        except (OSError, subprocess.SubprocessError, Refused):
             print("Status observation failed; inspect publication permissions and retry the observer.", file=sys.stderr)
         print(json.dumps({
             "project": project,
