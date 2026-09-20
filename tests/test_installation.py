@@ -337,10 +337,16 @@ class InstallationTests(unittest.TestCase):
                 self.invoke(*args)
             self.assertEqual(error.exception.code, 2)
         env = self.host / "literal.env"
-        for value in ["/mnt/backup # daily", "/mnt/with spaces"]:
+        for value in ["/mnt/backup # daily"]:
             env.write_text("BP_BACKUP_DIR=" + value + "\n")
             with self.assertRaisesRegex(ValueError, "Quote literal"):
                 installation.read_settings(env)
+        env.write_text("OB_OPERATOR_ALLOW=127.0.0.1/8 ::1\nBP_BACKUP_DIR=/mnt/with spaces\n")
+        self.assertEqual(installation.read_settings(env), {"OB_OPERATOR_ALLOW": "127.0.0.1/8 ::1", "BP_BACKUP_DIR": "/mnt/with spaces"})
+        observability = self.host / "observability-stack"
+        (observability / ".env.example").write_text("OB_OPERATOR_ALLOW=127.0.0.1/8 ::1\nOB_RUSTFS_CONSOLE_ALLOW=127.0.0.1/8 ::1\n")
+        code, plan = self.invoke("--stack", "observability", "--dry-run")
+        self.assertEqual((code, plan["conflicts"]), (0, []))
         env.write_text("BP_BACKUP_DIR='/mnt/with spaces'\n")
         self.assertEqual(installation.read_settings(env)["BP_BACKUP_DIR"], "/mnt/with spaces")
         gateway = self.host / "llm-gateway-stack"
