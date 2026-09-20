@@ -759,3 +759,11 @@ main {
 .optional {
   color: var(--muted);
 }
+
+.evidence {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.version {
+  overflow-wrap: anywhere;
+}
