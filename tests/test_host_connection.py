@@ -248,8 +248,32 @@ class HostConnectionTests(unittest.TestCase):
                 self.assertEqual(self.snapshot(), before)
                 self.assertNotIn('private-key', json.dumps(report))
 
+    def test_gateway_operator_allowlist_is_validated_before_selected_changes(self):
+        gateway = self.host / 'llm-gateway-stack'
+        env = gateway / '.env'
+        valid = ('LG_BACKUP_DIR=' + str(self.backup) + '\nLG_ALLOW_SAME_FILESYSTEM_BACKUP=true\n'
+                 'LANGFUSE_INIT_USER_EMAIL=operator@company.test\n')
+        for value in ('"127.0.0.1/8 bad' + "'" + 'token"', '127.0.0.1/8 hostname'):
+            env.write_text(valid + 'LG_OPERATOR_ALLOW=' + value + '\n')
+            env.chmod(0o600)
+            before = self.snapshot()
+            runner = ConnectionRunner()
+            code, report = self.invoke('--stack', 'gateway', '--tailscale', runner=runner)
+            self.assertEqual(code, 1, report)
+            self.assertEqual(runner.started, [])
+            self.assertEqual(self.snapshot(), before)
+            self.assertNotIn('token', json.dumps(report))
+        env.write_text(valid + 'LG_OPERATOR_ALLOW="127.0.0.1/8 ::1"\n')
+        with patch.object(tailscale, 'verify_application', side_effect=verified):
+            code, report = self.invoke('--stack', 'gateway', '--tailscale', runner=ConnectionRunner())
+        self.assertEqual(code, 0, report)
+        self.assertEqual(installation.read_settings(env)['LG_OPERATOR_ALLOW'], '127.0.0.1/8 ::1 172.30.0.2')
+
     def test_serve_failures_report_safe_cause_command_and_partial_completion(self):
         cases = [('permission denied private-key', 'administrator_action', 'permission'),
+                 ('operation not permitted private-key', 'administrator_action', 'permission'),
+                 ('access is denied private-key', 'administrator_action', 'permission'),
+                 ('must be run as root private-key', 'administrator_action', 'permission'),
                  ('HTTPS is not enabled private-key', 'command_failed', 'certificates'),
                  ('failed to connect to local tailscaled private-key', 'command_failed', 'daemon'),
                  ('unknown private-key' * 1000, 'command_failed', 'failed'),

@@ -293,7 +293,8 @@ def execute(prepared: list[dict], runner, inspect, refused=bootstrap.Refused) ->
                     if {str(ipaddress.ip_interface(value).ip) for value in trust.split()} != {peer}:
                         raise ValueError("The pinned peer differs from the qualified proxy trust.")
                 if name == "gateway" and prepared[0].get("connection"):
-                    allowed = item["recorded"].get("LG_OPERATOR_ALLOW", "127.0.0.0/8 ::1").split()
+                    from tailscale_serve import operator_allow
+                    allowed = operator_allow(item["values"].get("LG_OPERATOR_ALLOW", "127.0.0.0/8 ::1"))
                     changes["LG_OPERATOR_ALLOW"] = " ".join(dict.fromkeys(allowed + [peer]))
                 publish(item, changes)
                 lock.close()

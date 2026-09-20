@@ -24,7 +24,7 @@ class ServeFailure(ValueError):
     """Retain only an authored diagnostic and exit status, never child output."""
     def __init__(self, result):
         diagnostic = ((result.stderr or "")[:4096] + (result.stdout or "")[:4096]).lower()
-        self.permission = any(text in diagnostic for text in ("permission denied", "access denied"))
+        self.permission = any(text in diagnostic for text in ("permission denied", "access denied", "access is denied", "operation not permitted", "must be run as root"))
         self.returncode = result.returncode
         detail = "Serve command failed. Inspect Tailscale status and HTTPS configuration locally."
         if self.permission:
@@ -144,6 +144,16 @@ STACK_APPS = {"gateway": ("LG", ["litellm", "langfuse", "s3", "gateway"]),
               "backplane": ("BP", ["backplane"]), "observability": ("OB", ["grafana"])}
 
 
+def operator_allow(value):
+    allowed = value.split()
+    try:
+        for address in allowed:
+            ipaddress.ip_interface(address)
+    except ValueError:
+        raise ValueError("Gateway operator allowlist must contain only IP addresses or CIDRs.") from None
+    return allowed
+
+
 def selected_plan(settings, selected, status, serve):
     """Derive public settings from the qualified selection, without opening siblings."""
     endpoints = {"Platform Edge": plan(status, serve, int(settings["PE_TAILSCALE_PORT"]), int(settings["PE_HTTP_PORT"]))}
@@ -157,6 +167,8 @@ def selected_plan(settings, selected, status, serve):
     for stack, current in selected.items():
         if stack == "edge":
             continue
+        if stack == "gateway":
+            operator_allow(current.get("LG_OPERATOR_ALLOW", "127.0.0.0/8 ::1"))
         prefix, names = STACK_APPS[stack]
         names = list(names)
         console = "rustfs" if stack == "gateway" else stack + "_rustfs"
@@ -433,7 +445,7 @@ def main(argv: list[str] | None = None) -> int:
                 changes["LG_GRAFANA_URL"] = f"https://{host}:{ports['grafana']}"
                 changes["LG_BACKPLANE_URL"] = f"https://{host}:{ports['backplane']}"
                 # These operator pages still require their application login. Only Edge is added.
-                allow = current.get("LG_OPERATOR_ALLOW", "127.0.0.0/8 ::1").split()
+                allow = operator_allow(current.get("LG_OPERATOR_ALLOW", "127.0.0.0/8 ::1"))
                 changes["LG_OPERATOR_ALLOW"] = " ".join(dict.fromkeys(allow + [peer]))
             for name in names:
                 endpoint = plan(status, serve, ports[name], int(settings["PE_HTTP_PORT"]), args.replace)
