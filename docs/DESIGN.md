@@ -22,7 +22,7 @@ No high availability, dynamic service discovery, authentication, rate limiting o
 ```mermaid
 flowchart TD
     client[Browser or API client] -->|TCP 80 and 443| edge[Edge: Caddy]
-    edge -->|root, litellm, langfuse, s3| gateway[lg-gateway:80]
+    edge -->|root, litellm, langfuse, s3, rustfs| gateway[lg-gateway:80]
     edge -->|backplane| backplane[bp-server:3000]
     edge -->|grafana| observability[ob-gateway:80]
 ```
