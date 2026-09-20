@@ -42,9 +42,25 @@
   <footer><button id="refresh" type="button">Check again</button><span id="checked" role="status">Checking applications…</span></footer>
   <p><small>Checks run every 30 seconds while this page is visible. Each application keeps its own login. An application that is not reachable may not be installed, may be stopped, or may need configuration. After installing another stack, rerun <code>python3 scripts/tailscale_serve.py</code> on the server to connect it.</small></p>
   <noscript>Edge is running. Enable JavaScript to check applications and show their links. To configure remote access, run python3 scripts/tailscale_serve.py on the server.</noscript>
-  <script type="application/json" id="edge-config">{"domain": {{env "PE_PUBLIC_DOMAIN" | toJson}}, "mode": {{env "PE_ACCESS_MODE" | toJson}}, "scheme": {{env "PE_SCHEME" | toJson}}, "tailscale": {{env "PE_TAILSCALE_HOST" | toJson}}, "connected": {{env "PE_TAILSCALE_APPS" | toJson}}, "ports": {"gateway": {{env "PE_TAILSCALE_GATEWAY_PORT" | toJson}}, "litellm": {{env "PE_TAILSCALE_LITELLM_PORT" | toJson}}, "langfuse": {{env "PE_TAILSCALE_LANGFUSE_PORT" | toJson}}, "s3": {{env "PE_TAILSCALE_S3_PORT" | toJson}}, "observability": {{env "PE_TAILSCALE_GRAFANA_PORT" | toJson}}, "backplane": {{env "PE_TAILSCALE_BACKPLANE_PORT" | toJson}}}}</script>
+  <script type="application/json" id="edge-config">{{include "config.json"}}</script>
   <script>
-    const config = JSON.parse(document.querySelector('#edge-config').textContent);
+    function validateConfig(value) {
+      if (!value || typeof value !== 'object' || typeof value.domain !== 'string' || !value.domain
+        || typeof value.tailscale !== 'string' || typeof value.connected !== 'string'
+        || !['http', 'https'].includes(value.scheme) || !value.ports || typeof value.ports !== 'object') {
+        throw new Error('Invalid access settings');
+      }
+      if (value.tailscale && ['gateway', 'litellm', 'langfuse', 's3', 'observability', 'backplane'].some(id => {
+        const port = value.ports[id];
+        return typeof port !== 'string' || !/^[1-9][0-9]*$/.test(port) || Number(port) > 65535;
+      })) throw new Error('Invalid application ports');
+      return value;
+    }
+    let config = JSON.parse(document.querySelector('#edge-config').textContent);
+    let cards = [];
+    function renderConfig(config) {
+    document.querySelector('#apps').replaceChildren();
+    document.querySelector('#setup').hidden = true;
     config.domain = config.domain.toLowerCase();
     const tail = Boolean(config.tailscale) && location.hostname === config.tailscale;
     const configured = tail || location.hostname === config.domain || (config.domain === "localhost" && location.hostname === "127.0.0.1");
@@ -67,7 +83,7 @@
       ['backplane', 'backplane', 'Agent Backplane', 'Shared state, queues and approvals for your agents.', '/dashboard']
     ];
     const connected = new Set((config.connected || "").split(","));
-    const cards = apps.map(([id, prefix, name, description, path]) => {
+    cards = apps.map(([id, prefix, name, description, path]) => {
       const canOpen = configured && (!tail || connected.has(id === "observability" ? "grafana" : id));
       const origin = tail ? 'https://' + config.tailscale + ':' + config.ports[id]
         : (configured ? location.protocol.slice(0, -1) : (config.scheme || location.protocol.slice(0, -1))) + '://' + (prefix ? prefix + '.' : '') + config.domain + (location.port ? ':' + location.port : '');
@@ -85,12 +101,24 @@
       card.append(heading, state, detail, address, open, copy); document.querySelector('#apps').append(card);
       return { id, state, open, copy, configured: canOpen, url: origin + (path || '/') };
     });
+    }
+    renderConfig(config);
     let checking = false;
     async function check() {
       if (checking) return;
       checking = true;
       const refresh = document.querySelector('#refresh'); refresh.disabled = true;
       try {
+        let updated = true;
+        try {
+          const response = await fetch('/edge-config.json', { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+          if (!response.ok) throw new Error('Access settings unavailable');
+          const fresh = validateConfig(await response.json());
+          if (JSON.stringify(fresh) !== JSON.stringify(config)) {
+            config = fresh;
+            renderConfig(config);
+          }
+        } catch (_) { updated = false; }
         await Promise.all(cards.map(async card => {
           let ready = false;
           try {
@@ -103,7 +131,7 @@
           else { card.open.removeAttribute('href'); card.open.setAttribute('aria-disabled', 'true'); }
           card.copy.disabled = !ready;
         }));
-        document.querySelector('#checked').textContent = 'Last checked ' + new Date().toLocaleTimeString();
+        document.querySelector('#checked').textContent = (updated ? 'Last checked ' : 'Could not refresh application addresses. Health checked ') + new Date().toLocaleTimeString();
       } finally { checking = false; refresh.disabled = false; }
     }
     document.querySelector('#refresh').addEventListener('click', check);

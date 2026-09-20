@@ -84,11 +84,24 @@
 (health-public) {
 	import health-https
 }
+(console-config) {
+	handle /edge-config.json {
+		root * /srv/console
+		rewrite * /config.json
+		header Cache-Control "no-store"
+		header Content-Type "application/json"
+		templates {
+			mime application/json
+		}
+		file_server
+	}
+}
 (console-handlers) {
 	import access-log
 	route {
 	import tailscale-apps
 	import stack-probes
+	import console-config
 	handle /health {
 		respond 200
 	}

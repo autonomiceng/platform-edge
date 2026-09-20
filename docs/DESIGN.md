@@ -29,7 +29,7 @@ flowchart TD
 
 Caddy joins only the external Platform Network, under alias `pe-edge`. There is no project-default network and no dependency on a stack's container lifecycle. The external volumes `${PE_VOLUME_PREFIX}_edge-data` and `${PE_VOLUME_PREFIX}_edge-config` keep TLS state and Caddy configuration state; routine Compose teardown preserves them. There is no Docker socket mount.
 
-The root `Caddyfile` holds the shared global block and issuer snippets. `routes.d/gateway.caddy`, `backplane.caddy` and `observability.caddy` own the site blocks. The fallback page is the single `docker/console/index.html` file, mounted read-only. It checks at load, on request, and every 30 seconds while visible, without continuous animation.
+The root `Caddyfile` holds the shared global block and issuer snippets. `routes.d/gateway.caddy`, `backplane.caddy` and `observability.caddy` own the site blocks. The fallback page is the single `docker/console/index.html` file, mounted read-only. It refreshes access settings and health at load, on request, and every 30 seconds while visible, without continuous animation. The uncached `/edge-config.json` endpoint keeps already-open pages current after access setup changes.
 
 ## Access modes
 
