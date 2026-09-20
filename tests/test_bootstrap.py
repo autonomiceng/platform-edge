@@ -84,11 +84,12 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(env.read_bytes(), original)
             self.assertEqual(list(Path(directory).iterdir()), [env])
             self.assertEqual(env.stat().st_mode & 0o777, 0o600)
-            edited = original + b"\r\n# Kept verbatim\r\nCUSTOM_SETTING=value\r\n"
+            edited = original.replace(b"PE_CADDY_IMAGE=\n", b"PE_CADDY_IMAGE=local/edge:experiment\n") + b"\r\n# Kept verbatim\r\nCUSTOM_SETTING=value\r\n"
             env.write_bytes(edited)
             with contextlib.redirect_stdout(io.StringIO()):
                 bootstrap.bootstrap(["--env-file", str(env), "--render-only"], runner)
             self.assertEqual(env.read_bytes(), edited)
+            self.assertEqual(bootstrap.read_env(env)["PE_CADDY_IMAGE"], "local/edge:experiment")
             self.assertEqual(runner.calls, [])
             self.assertEqual(json.loads(output.getvalue().splitlines()[0])["generated"], [])
 

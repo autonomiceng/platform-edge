@@ -110,16 +110,25 @@ class Stack:
                 "--entrypoint", "sh", self.image, "-ec", *command]
 
     def require_capture_provenance(self) -> None:
+        self.require_image_pin()
         ids = checked(self.dc + ["ps", "-aq", "caddy"], self.diagnostics).split()
         if len(ids) != 1:
             raise ValueError("Checkpoint requires exactly one existing Caddy container")
         containers = json.loads(checked(["docker", "inspect", *ids], self.diagnostics))
-        if len(containers) != 1 or containers[0].get("Config", {}).get("Image") != self.image:
+        image_id = checked(["docker", "image", "inspect", "--format", "{{.Id}}", self.image], self.diagnostics)
+        if (not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id)
+                or len(containers) != 1 or containers[0].get("Image") != image_id):
             raise ValueError("Caddy image differs from the Checkpoint image pin")
         mounts = {m["Destination"]: m.get("Name") for m in containers[0].get("Mounts", [])
                   if m.get("Type") == "volume"}
         if mounts != dict(zip(("/data", "/config"), self.volumes)):
             raise ValueError("Caddy persistent mounts differ from the Checkpoint volumes")
+
+    def require_image_pin(self) -> None:
+        if not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", self.image):
+            raise ValueError("Checkpoint requires a digest-qualified PE_CADDY_IMAGE; "
+                             "tag-only and local images cannot be captured reproducibly; "
+                             "see docs/operations/backup.md")
 
     def require_stopped(self) -> None:
         for volume in self.volumes:
@@ -278,6 +287,7 @@ def prune(repository: Path, keep: int, protect: Path | None = None) -> None:
 
 
 def restore(stack: Stack, directory: Path) -> None:
+    stack.require_image_pin()
     document = json.loads((directory / "manifest.json").read_text())
     if document.get("version") != 1 or document.get("caddy_stopped") is not True:
         raise ValueError("unsupported or incomplete Checkpoint")

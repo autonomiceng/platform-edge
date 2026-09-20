@@ -181,7 +181,10 @@ are ready: `SMOKE_INTEGRATION=1 SMOKE_DOMAIN=example.com scripts/smoke.sh` (use
 | --- | --- | --- |
 | Caddy | TLS, hostname routing, a health path, a project console | `edge-data` (certificates and CA keys) and `edge-config` volumes |
 
-Routes live in `routes.d/`, one file per stack. The image is pinned as `tag@sha256` in `compose.yaml`.
+Routes live in `routes.d/`, one file per stack. The validated default image is pinned as `tag@sha256` in `compose.yaml`.
+Set `PE_CADDY_IMAGE` in `.env` to a complete image reference for an unvalidated local
+experiment; empty or unset keeps that default, including with bare `docker compose`.
+See [image overrides](docs/operations/ingress.md#image-overrides) for validation and Checkpoint limits.
 
 ## Built on
 

@@ -12,6 +12,19 @@ Edge owns host ports 80 and 443. Its default loopback binding makes them accessi
 | `backplane.example.com` | `bp-gateway:80` |
 | `grafana.example.com` | `ob-gateway:80` |
 
+## Image overrides
+
+`PE_CADDY_IMAGE` accepts a complete image reference, for example `local/edge:experiment`
+or `registry.example/team/caddy:test`, in `.env`. Empty or unset selects the shipped
+validated tag and digest in `compose.yaml`. Native `docker compose` interpolation applies;
+a shell value takes precedence over `.env`. Bootstrap preserves the setting and env lock.
+Local experiments are unvalidated and must provide the Caddy and shell tools used by Edge.
+
+`scripts/validate.sh`, `scripts/smoke.sh` and the backup drill always exercise the shipped
+default, ignoring local image overrides. Clearing the override returns to that default
+on the next authorized deployment. Checkpoints require a digest-qualified reference;
+see [capture and restore](backup.md#capture-and-restore) before changing an installed image.
+
 ## Access modes
 
 Fresh installs select `PE_ACCESS_MODE=local`. The modes describe the listener independently
