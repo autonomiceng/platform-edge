@@ -90,7 +90,7 @@ class ServeTests(unittest.TestCase):
             outside = root / "custom" / "compose.proxy.yaml"
             env.write_text(f"COMPOSE_FILE={root / 'compose.yaml'}:{outside}:{root / 'compose.proxy.yaml'}:{root / 'compose.tailscale.yaml'}\n")
             result = tailscale_serve.configuration(root, env, {"PE_TAILSCALE_HOST": "host.tail123.ts.net"}, ["caddy"])
-            self.assertEqual(result["files"], f"{root / 'compose.yaml'}:{outside}:compose.tailscale.yaml")
+            self.assertEqual(result["files"], f"{root / 'compose.yaml'}:{outside}:{root / 'compose.tailscale.yaml'}")
 
 class ConsoleSetupTests(unittest.TestCase):
     def test_selected_consoles_preserve_profiles_credentials_and_allowlists(self):
@@ -155,7 +155,11 @@ class ConsoleSetupTests(unittest.TestCase):
             output = io.StringIO()
             with patch.object(tailscale_serve, 'checked', checked), contextlib.redirect_stdout(output):
                 self.assertEqual(tailscale_serve.main(args), 0)
-            self.assertEqual(set(json.loads(output.getvalue())['links']), set(result['links']))
+            absolute_result = json.loads(output.getvalue())
+            self.assertEqual(set(absolute_result['links']), set(result['links']))
+            absolute_settings = {Path(change['env']).parent.name: change['settings'] for change in absolute_result['changes']}
+            self.assertEqual(absolute_settings['bp']['COMPOSE_FILE'], ':'.join(str(bp / name) for name in ['compose.yaml', 'custom.yaml', 'compose.blobs.yaml', 'compose.gateway.yaml']))
+            self.assertEqual(absolute_settings['ob']['COMPOSE_FILE'], ':'.join(str(ob / name) for name in ['compose.yaml', 'compose.s3.yaml', 'compose.proxy.yaml']))
             source = (bp / '.env').read_text()
             (bp / '.env').write_text(source.replace(str(bp / 'compose.gateway.yaml'), str(root / 'other' / 'compose.gateway.yaml')))
             with patch.object(tailscale_serve, 'checked', checked), contextlib.redirect_stderr(io.StringIO()):

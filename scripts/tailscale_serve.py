@@ -122,9 +122,9 @@ def configuration(root: Path, env: Path, changes: dict[str, str], services: list
     managed = {(root / name).resolve() for name in ("compose.proxy.yaml", "compose.tailscale.yaml")}
     files = [f for f in files if (root / f).resolve() not in managed]
     if "BP_ACCESS_MODE" not in changes and "PE_TAILSCALE_HOST" not in changes:
-        files.append("compose.proxy.yaml")
+        files.append(str(root / "compose.proxy.yaml") if files and Path(files[0]).is_absolute() else "compose.proxy.yaml")
     if "PE_TAILSCALE_HOST" in changes:
-        files.append("compose.tailscale.yaml")
+        files.append(str(root / "compose.tailscale.yaml") if files and Path(files[0]).is_absolute() else "compose.tailscale.yaml")
     changes = dict(changes, COMPOSE_FILE=":".join(files))
     return {"root": root, "env": env, "changes": changes, "services": services,
             "source": env.read_text(), "files": changes["COMPOSE_FILE"]}
