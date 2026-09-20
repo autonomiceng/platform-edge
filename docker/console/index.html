@@ -44,6 +44,18 @@
   <noscript>Edge is running. Enable JavaScript to check applications and show their links. To configure remote access, run python3 scripts/tailscale_serve.py on the server.</noscript>
   <script type="application/json" id="edge-config">{{include "config.json"}}</script>
   <script>
+    function validateConfig(value) {
+      if (!value || typeof value !== 'object' || typeof value.domain !== 'string' || !value.domain
+        || typeof value.tailscale !== 'string' || typeof value.connected !== 'string'
+        || !['http', 'https'].includes(value.scheme) || !value.ports || typeof value.ports !== 'object') {
+        throw new Error('Invalid access settings');
+      }
+      if (value.tailscale && ['gateway', 'litellm', 'langfuse', 's3', 'observability', 'backplane'].some(id => {
+        const port = value.ports[id];
+        return typeof port !== 'string' || !/^[1-9][0-9]*$/.test(port) || Number(port) > 65535;
+      })) throw new Error('Invalid application ports');
+      return value;
+    }
     let config = JSON.parse(document.querySelector('#edge-config').textContent);
     let cards = [];
     function renderConfig(config) {
@@ -102,7 +114,7 @@
         try {
           const response = await fetch('/edge-config.json', { cache: 'no-store', signal: AbortSignal.timeout(8000) });
           if (!response.ok) throw new Error('Access settings unavailable');
-          const fresh = await response.json();
+          const fresh = validateConfig(await response.json());
           if (JSON.stringify(fresh) !== JSON.stringify(config)) {
             config = fresh;
             renderConfig(config);

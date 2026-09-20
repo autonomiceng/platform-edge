@@ -249,7 +249,7 @@ code=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -sS --resolve 
 [ "$code" = 502 ] || fail "fallback hid upstream failure: $code"
 grep -q 'Platform Edge' "$work/console.html" || fail 'fallback console missing'
 ok 'absent gateway serves the fallback page with status 502'
-curl --noproxy '*' -fsS -D "$work/config.headers" -H 'Host: localhost' \
+curl --noproxy '*' --max-time 10 -fsS -D "$work/config.headers" -H 'Host: localhost' \
   "http://127.0.0.1:$PE_HTTP_PORT/edge-config.json" > "$work/edge-config.json"
 python3 - "$work/edge-config.json" <<'PYCONFIG'
 import json, sys
