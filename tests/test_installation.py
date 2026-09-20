@@ -222,18 +222,34 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
 
     def test_observability_requires_explicit_alert_delivery_before_any_installation(self):
-        template = self.host / "observability-stack/.env.example"
-        for settings, allowed in [("", False), ("OB_ALERTS=placeholder\n", True),
-                                  ("OB_ALERT_WEBHOOK_URL=https://alerts.example.test/hook\n", True),
-                                  ("OB_ALERT_EMAIL=operator@company.test\nOB_SMTP_URL=smtps://mail.example.test\n", True)]:
-            with self.subTest(settings=settings):
-                template.write_text(settings)
-                before = self.snapshot()
-                code, plan = self.invoke("--stack", "observability", "--dry-run")
-                self.assertEqual(code, 0 if allowed else 1)
-                self.assertEqual(self.snapshot(), before)
-                if not allowed:
-                    self.assertIn("Configure Observability alert delivery", plan["conflicts"][0]["detail"])
+        root = self.host / "observability-stack"
+        template, env = root / ".env.example", root / ".env"
+        cases = [("", False), ("OB_ALERTS=placeholder\n", True),
+                 ("OB_ALERT_WEBHOOK_URL=https://alerts.example.test/hook\n", True),
+                 ("OB_ALERT_EMAIL=operator@company.test\nOB_SMTP_URL=smtps://mail.example.test\n", True),
+                 ("OB_ALERT_EMAIL=configure@example.invalid\nOB_SMTP_URL=smtps://mail.example.test\n", False),
+                 ("OB_ALERT_EMAIL=operator@company.test\n", False),
+                 # This guard checks presence. The owner validates destination syntax later.
+                 ("OB_ALERT_WEBHOOK_URL=invalid-url\n", True),
+                 ("OB_ALERT_EMAIL=operator@company.test\nOB_SMTP_URL=invalid-url\n", True)]
+        for source in (template, env):
+            for settings, allowed in cases:
+                with self.subTest(source=source.name, settings=settings):
+                    env.unlink(missing_ok=True)
+                    template.write_text("")
+                    source.write_text(settings)
+                    source.chmod(0o600)
+                    before = self.snapshot()
+                    runner = FakeRunner()
+                    code, plan = self.invoke("--stack", "observability", "--dry-run", runner=runner)
+                    self.assertEqual(code, 0 if allowed else 1, plan)
+                    self.assertEqual(self.snapshot(), before)
+                    if not allowed:
+                        self.assertIn("Configure Observability alert delivery", plan["conflicts"][0]["detail"])
+                        code, plan = self.invoke("--stack", "observability", runner=runner)
+                        self.assertEqual(code, 1, plan)
+                        self.assertEqual(runner.started, [])
+                        self.assertEqual(self.snapshot(), before)
 
     def test_missing_prerequisites_do_not_write_or_disclose_diagnostics(self):
         before = self.snapshot()
