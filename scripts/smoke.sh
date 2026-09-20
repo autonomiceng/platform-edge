@@ -68,6 +68,16 @@ services:
 YAML
   export COMPOSE_FILE="$root/compose.yaml:$work/integration.yaml"
 fi
+# Status transport reads a frozen fixture owned by this smoke, never local observations.
+mkdir "$work/status"
+printf '%s\n' '{"schemaVersion":1,"stack":"edge","generatedAt":"2026-09-20T00:00:00Z","components":[]}' > "$work/status/status.json"
+cat > "$work/status.yaml" <<YAML
+services:
+  caddy:
+    volumes:
+      - $work/status:/srv/state:ro
+YAML
+export COMPOSE_FILE="${COMPOSE_FILE:-$root/compose.yaml}:$work/status.yaml"
 # Disposable loopback-only smoke uses the host relay; never use this allowance in an installation.
 PE_METRICS_ALLOW="$PE_METRICS_ALLOW $(docker network inspect "$PE_PLATFORM_NETWORK" --format '{{range .IPAM.Config}}{{.Gateway}} {{end}}')"
 export PE_METRICS_ALLOW
@@ -152,7 +162,7 @@ assert not headers.get("x-smoke-authorization", "").strip()
 assert not headers.get("x-smoke-cookie", "").strip()
 PYVERSIONS
   ok 'console version metadata is uncached and forwards no browser credentials'
-  python3 tests/status_proxy.py "http://127.0.0.1:$PE_HTTP_PORT"
+  python3 tests/status_proxy.py "http://127.0.0.1:$PE_HTTP_PORT" --edge-status
   ok 'status proxy methods, credential stripping, content type and body suppression'
 fi
 
@@ -294,6 +304,8 @@ code=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -sS \
 [ "$code" = 502 ] && [ ! -s "$work/body" ] || fail 'failed probe leaked a body or hid failure'
 grep -iq '^Cache-Control: no-store' "$work/headers" || fail 'failed probe can be cached'
 ok 'failed console probe is empty and uncached'
+python3 tests/status_proxy.py "http://127.0.0.1:$PE_HTTP_PORT" --absent-observability --edge-status
+rm "$work/status/status.json"
 python3 tests/status_proxy.py "http://127.0.0.1:$PE_HTTP_PORT" --absent-observability
 ok 'status producer connection failure is empty and independent'
 body=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -fsS --resolve "litellm.localhost:$PE_HTTPS_PORT:127.0.0.1" \

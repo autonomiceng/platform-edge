@@ -6,12 +6,14 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
 SPEC = importlib.util.spec_from_file_location("bootstrap", ROOT / "scripts/bootstrap.py")
 bootstrap = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bootstrap)
@@ -115,12 +117,16 @@ class BootstrapTests(unittest.TestCase):
                 output = io.StringIO()
                 with patch.dict(os.environ, {"PE_PLATFORM_NETWORK": "isolated", "PE_HTTP_PORT": "18280"}, clear=True), \
                         patch.object(bootstrap.shutil, "which", return_value="docker"), \
-                        patch.object(bootstrap, "wait_ready", return_value={}) as ready, contextlib.redirect_stdout(output):
+                        patch.object(bootstrap, "wait_ready", return_value={}) as ready, \
+                        patch.object(bootstrap, "directory", return_value=contextlib.nullcontext()), \
+                        patch.object(bootstrap, "task_record") as recorded, contextlib.redirect_stdout(output):
                     bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env")], runner)
                 creates = [c for c in runner.calls if c[:3] == ["docker", "network", "create"]]
                 self.assertEqual(creates, [] if exists else [["docker", "network", "create", "isolated"]])
                 self.assertIn(["docker", "network", "inspect", "isolated"], runner.calls)
-                self.assertIn("--wait", runner.calls[-1])
+                self.assertTrue(any("up" in call and "--wait" in call for call in runner.calls))
+                self.assertTrue(any(str(ROOT / "scripts/status_observer.py") in call for call in runner.calls))
+                self.assertEqual([call.args[3] for call in recorded.call_args_list], ["unknown", "healthy"])
                 ready.assert_called_once()
                 self.assertEqual(ready.call_args.args[0]["PE_HTTP_PORT"], "18280")
                 self.assertEqual(ready.call_args.args[0]["PE_PUBLIC_DOMAIN"], "localhost")

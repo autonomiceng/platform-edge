@@ -43,6 +43,10 @@ The [public stack status contract](operations/status-contract.md) defines a vers
 interface for independent status producers and console consumers. Its fixtures describe
 compatibility and freshness requirements; they do not attest deployed producer support.
 
+The [Edge host observer](operations/status-observer.md) publishes bounded Caddy
+readiness and version observations through a read-only public file mount. Bootstrap
+attempts an initial observation; periodic publication is an explicit user-timer opt-in.
+
 The ingress runbook contains exact per-stack settings and rollout order. Only move ports or restart services as an authorized installation action. Port conflict checks include overlapping TCP bindings and port ranges, and ignore this project's existing Caddy for idempotent reruns. Host-process conflicts and races after preflight remain Compose startup errors.
 
 Validation and smoke use the shipped validated default image regardless of local image overrides. Validation mounts every Route File in local, public and proxy modes. Smoke owns a fresh project and network, starts three independent stubs using the same image, then tests routing, TLS scheme forwarding, restart with an absent alias, and independent console availability. Smoke refuses existing project containers or volumes and never adopts an existing network.
