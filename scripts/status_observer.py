@@ -48,7 +48,9 @@ def inspect_caddy(config, runner, clock):
     ref = service.get('image')
     if isinstance(ref, str):
         reference, _, digest = ref.partition('@')
-        row['configuredVersion'] = version(reference.rsplit('/', 1)[-1].partition(':')[2]) or 'custom'
+        tag = reference.rsplit('/', 1)[-1].partition(':')[2]
+        if tag:
+            row['configuredVersion'] = version(tag) or 'custom'
         if re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
             row['configuredDigest'] = digest
     at = clock()
@@ -59,7 +61,7 @@ def inspect_caddy(config, runner, clock):
                         'label=com.docker.compose.oneoff=False', '--format', '{{.ID}}'],
                        timeout=4, limit=65536).splitlines()
         if not found:
-            return {**row, 'state': 'absent', 'observedAt': at}
+            return row  # An empty selection cannot distinguish a missing installation from a wrong project.
         if len(found) != 1 or not re.fullmatch(r'[0-9a-f]{64}', found[0]):
             return row
         docs = read_json(runner(['docker', 'inspect', found[0]], timeout=4, limit=LIMIT), LIMIT)

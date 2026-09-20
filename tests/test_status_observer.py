@@ -64,9 +64,9 @@ class ObserverTests(unittest.TestCase):
         self.runner.fail.add('version')
         self.assertNotIn('observedVersion', self.collect()['components'][0])
 
-    def test_only_successful_inventory_proves_absence(self):
+    def test_empty_or_failed_inventory_does_not_claim_a_missing_installation(self):
         self.runner.found = ''
-        self.assertEqual(self.collect()['components'][0]['state'], 'absent')
+        self.assertEqual(self.collect()['components'][0]['state'], 'unknown')
         self.runner.fail.add('inventory')
         self.assertEqual(self.collect()['components'][0]['state'], 'unknown')
         self.runner.fail = {'config'}
@@ -98,7 +98,7 @@ class ObserverTests(unittest.TestCase):
     def test_malformed_and_private_version_values_never_escape(self):
         self.runner.config['services']['caddy']['image'] = SECRET
         row = self.collect()['components'][0]
-        self.assertEqual(row['configuredVersion'], 'custom')
+        self.assertNotIn('configuredVersion', row)
         for value in [SECRET, '1.2.3-private', '١.٢.٣', None]:
             self.assertIsNone(observer.version(value))
         self.runner.config['name'] = None
