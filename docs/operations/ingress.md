@@ -405,8 +405,9 @@ and remain available when component health or producer support is unknown.
 `/stack-status/gateway`, `/stack-status/backplane` and `/stack-status/observability`
 proxy their owning gateway's `/status.json`. `/stack-versions/gateway` remains a legacy
 configured-version fallback, dated by valid `configuredAt`/`pinnedAt` or labelled undated.
-The Edge card shows its own image version from the Caddy container as a configured,
-undated value; Edge component health stays unknown until a host observer exists.
+The Edge card reads `/stack-status/edge`, published by the installed host observer.
+If that producer is unavailable, its own image version remains a configured, undated
+fallback and component health stays unknown.
 A configured image version is never displayed as an observed runtime version. Fresh status
 configuration takes precedence. Tasks display their execution start separately from the
 freshness of the record inspection. Optional architecture entries with no evidence are unknown.
@@ -418,8 +419,8 @@ Caddy does not sanitize fields inside successful JSON. No backend administration
 Docker socket or observer credential is exposed. Gateway, Backplane and Observability status
 producers can roll out independently; there are no new operator environment settings.
 Deploy the reviewed console and routes using the existing rollout procedure. Missing
-sibling producers need no workaround. Until an Edge host observer is available,
-`/stack-status/edge` returns empty JSON 404 and Edge component health is unknown.
+sibling producers need no workaround. Before the Edge observer publishes its first
+record, `/stack-status/edge` returns empty JSON 404 and Edge component health is unknown.
 `/health` reports HTTP reachability only.
 
 Consumer checks use `node --test tests/status*.test.cjs` and the existing
