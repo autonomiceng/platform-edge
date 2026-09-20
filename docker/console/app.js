@@ -418,6 +418,11 @@ function validateConfig(value) {
     )
   )
     throw new Error("Invalid application ports");
+  for (const id of ["backplane_rustfs", "observability_rustfs"]) {
+    if (value.tailscale && value.connected.split(",").includes(id) &&
+        (typeof value.ports[id] !== "string" || !/^[1-9][0-9]*$/.test(value.ports[id]) || Number(value.ports[id]) > 65535))
+      throw new Error("Invalid console port");
+  }
   return {
     ...value,
     domain: value.domain.toLowerCase(),
@@ -486,6 +491,10 @@ function serviceLinks(s) {
   if (s.id === "g-rust") {
     add("Console", "rustfs", "rustfs", "/rustfs/console/");
     add("S3 API", "s3", "s3");
+  }
+  if (config?.tailscale === location.hostname) {
+    if (s.id === "b-rust") add("Console", "backplane_rustfs", "", "/rustfs/console/");
+    if (s.id === "o-rust") add("Console", "observability_rustfs", "", "/rustfs/console/");
   }
   if (s.id === "bp") {
     add("Console", "backplane", "backplane", "/dashboard/");

@@ -16,6 +16,7 @@
 
 	handle {
 		reverse_proxy lg-gateway:80 {
+			header_up X-Forwarded-For {http.request.remote.host}
 			header_up Host {host}
 			import forwarded-proto-{$PE_ACCESS_MODE:local}
 		}
@@ -59,6 +60,7 @@ import gateway-root-{$PE_ACCESS_MODE:local}
 	import access-log
 	import access-headers-{$PE_ACCESS_MODE:local}
 	reverse_proxy lg-gateway:80 {
+		header_up X-Forwarded-For {http.request.remote.host}
 		header_up Host {host}
 		import forwarded-proto-{$PE_ACCESS_MODE:local}
 	}
@@ -89,6 +91,7 @@ import gateway-litellm-{$PE_ACCESS_MODE:local}
 	import access-log
 	import access-headers-{$PE_ACCESS_MODE:local}
 	reverse_proxy lg-gateway:80 {
+		header_up X-Forwarded-For {http.request.remote.host}
 		header_up Host {host}
 		import forwarded-proto-{$PE_ACCESS_MODE:local}
 	}
@@ -119,6 +122,7 @@ import gateway-langfuse-{$PE_ACCESS_MODE:local}
 	import access-log
 	import access-headers-{$PE_ACCESS_MODE:local}
 	reverse_proxy lg-gateway:80 {
+		header_up X-Forwarded-For {http.request.remote.host}
 		header_up Host {host}
 		import forwarded-proto-{$PE_ACCESS_MODE:local}
 	}
@@ -149,6 +153,7 @@ import gateway-s3-{$PE_ACCESS_MODE:local}
 	import access-log
 	import access-headers-{$PE_ACCESS_MODE:local}
 	reverse_proxy lg-gateway:80 {
+		header_up X-Forwarded-For {http.request.remote.host}
 		header_up Host {host}
 		import forwarded-proto-{$PE_ACCESS_MODE:local}
 	}

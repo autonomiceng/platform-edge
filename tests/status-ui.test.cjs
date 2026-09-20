@@ -68,6 +68,18 @@ test("trusted links survive missing producers and failed HTTP reachability", () 
     "https://private.test.ts.net:8448/dashboard/",
   );
 });
+test("optional storage console links require a configured Tailnet endpoint", () => {
+  const run = ui();
+  for (const [service, id, port] of [["b-rust", "backplane_rustfs", "8450"], ["o-rust", "observability_rustfs", "8451"]]) {
+    assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === '${service}')).Console`), undefined);
+    run(`config.tailscale = 'private.test.ts.net'; location.hostname = config.tailscale; config.ports.${id} = '${port}';`);
+    assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === '${service}')).Console`), undefined);
+    run(`config.connected += ',${id}';`);
+    assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === '${service}')).Console`), `https://private.test.ts.net:${port}/rustfs/console/`);
+    run(`location.hostname = 'untrusted.test';`);
+    assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === '${service}')).Console`), undefined);
+  }
+});
 test("every contract ID maps to exactly one catalog component", () => {
   const run = ui();
   for (const [stack, ids] of Object.entries(S.ids)) {

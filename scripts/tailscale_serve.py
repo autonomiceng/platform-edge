@@ -53,15 +53,17 @@ def plan(status: dict, serve: dict, port: int, local_port: int, replace: bool = 
 
 
 APPS = {"litellm": 8443, "langfuse": 8444, "s3": 8445, "gateway": 8446,
-        "grafana": 8447, "backplane": 8448, "rustfs": 8449}
+        "grafana": 8447, "backplane": 8448, "rustfs": 8449,
+        "backplane_rustfs": 8450, "observability_rustfs": 8451}
 
 
 def links(endpoints: dict) -> dict[str, str]:
-    return {name: endpoint["url"] + {"litellm": "ui/", "backplane": "dashboard", "rustfs": "rustfs/console/"}.get(name, "")
+    return {name: endpoint["url"] + {"litellm": "ui/", "backplane": "dashboard", "rustfs": "rustfs/console/",
+                                    "backplane_rustfs": "rustfs/console/", "observability_rustfs": "rustfs/console/"}.get(name, "")
             for name, endpoint in endpoints.items()}
 
 
-def verify_application(name: str, endpoint: dict) -> None:
+def verify_application(name: str, endpoint: dict, *, allowed_denials: tuple[int, ...] = ()) -> str:
     url = links({name: endpoint})[name]
     try:
         with urllib.request.urlopen(url, timeout=20) as response:
@@ -73,8 +75,11 @@ def verify_application(name: str, endpoint: dict) -> None:
         # An anonymous S3 client must authenticate. This is an API, not a login page.
         actual = urllib.parse.urlsplit(error.geturl())
         expected = urllib.parse.urlsplit(url)
-        if name != "s3" or error.code != 403 or (actual.scheme, actual.netloc) != ("https", expected.netloc):
+        accepted = error.code in allowed_denials or (name == "s3" and error.code == 403)
+        if not accepted or (actual.scheme, actual.netloc) != ("https", expected.netloc):
             raise ValueError(name + " returned HTTP " + str(error.code)) from error
+        return "access_denied"
+    return "reachable"
 
 
 def values(path: Path) -> dict[str, str]:
@@ -115,7 +120,7 @@ def configuration(root: Path, env: Path, changes: dict[str, str], services: list
     files = current.get("COMPOSE_FILE", "compose.yaml").split(":")
     # Preserve operator overlays; replace only our own listener selection.
     files = [f for f in files if f not in {"compose.proxy.yaml", "compose.tailscale.yaml"}]
-    if services != ["server"] and "PE_TAILSCALE_HOST" not in changes:
+    if "BP_ACCESS_MODE" not in changes and "PE_TAILSCALE_HOST" not in changes:
         files.append("compose.proxy.yaml")
     if "PE_TAILSCALE_HOST" in changes:
         files.append("compose.tailscale.yaml")
@@ -146,10 +151,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", type=Path, default=root / ".env")
     parser.add_argument("--https-port", type=int, default=443)
-    parser.add_argument("--port-base", type=int, default=8443, help="first of seven consecutive application HTTPS ports")
+    parser.add_argument("--port-base", type=int, default=8443, help="first of nine consecutive application HTTPS ports")
     parser.add_argument("--gateway-dir", type=Path, default=root.parent / "llm-gateway-stack")
     parser.add_argument("--observability-dir", type=Path, default=root.parent / "observability-stack")
     parser.add_argument("--backplane-dir", type=Path, default=root.parent / "agent-backplane")
+    parser.add_argument("--console-allow", help="explicit client IP/CIDR list for enabled Backplane and Observability consoles; omission preserves their allowlists")
     parser.add_argument("--replace", action="store_true", help="replace conflicting HTTPS root handlers on the selected ports")
     parser.add_argument("--dry-run", action="store_true", help="print proposed URLs and public settings without changing anything")
     args = parser.parse_args(argv)
@@ -158,6 +164,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if any(key.startswith(("PE_", "LG_", "OB_", "BP_", "COMPOSE_")) for key in os.environ):
             raise ValueError("Unset exported stack and Compose settings before setup; configure installations through their .env files.")
+        if args.console_allow is not None:
+            if not args.console_allow.strip():
+                raise ValueError("--console-allow requires client IPs or CIDRs")
+            for address in args.console_allow.split():
+                ipaddress.ip_network(address, strict=False)
         settings = bootstrap.settings_for(bootstrap.read_env(args.env_file))
         if settings["PE_ACCESS_MODE"] == "public":
             raise ValueError("This helper adds Tailscale to local access. Keep public installations separate.")
@@ -171,7 +182,13 @@ def main(argv: list[str] | None = None) -> int:
         edge.update({"PE_TAILSCALE_" + name.upper() + "_PORT": str(port) for name, port in ports.items()})
         bootstrap.settings_for(dict(settings, **edge))
         # Pin the existing Edge peer so recreation cannot silently invalidate sibling trust.
-        containers = json.loads(checked(["docker", "network", "inspect", settings["PE_PLATFORM_NETWORK"]]))[0].get("Containers", {})
+        network = json.loads(checked(["docker", "network", "inspect", settings["PE_PLATFORM_NETWORK"]]))[0]
+        containers = network.get("Containers", {})
+        gateways = [str(ipaddress.ip_address(entry["Gateway"])) for entry in network.get("IPAM", {}).get("Config", [])
+                    if entry.get("Gateway") and ipaddress.ip_address(entry["Gateway"]).version == 4]
+        if len(gateways) != 1:
+            raise ValueError("Tailscale ingress requires one exact IPv4 host bridge gateway")
+        edge["PE_TRUSTED_PROXIES"] = gateways[0]
         project = values(args.env_file).get("COMPOSE_PROJECT_NAME", "platform-edge")
         ids = checked(["docker", "ps", "-q", "--filter", "label=com.docker.compose.project=" + project,
                        "--filter", "label=com.docker.compose.service=caddy"]).split()
@@ -179,6 +196,14 @@ def main(argv: list[str] | None = None) -> int:
         if len(peers) != 1:
             raise ValueError("Start Platform Edge first; exactly one running Edge must be on its platform network.")
         peer = str(ipaddress.IPv4Address(peers[0]))
+        if args.console_allow is not None:
+            platform_ranges = [ipaddress.ip_network(entry["Subnet"]) for entry in network.get("IPAM", {}).get("Config", []) if entry.get("Subnet")]
+            for value in args.console_allow.split():
+                allowed = ipaddress.ip_network(value, strict=False)
+                if allowed.prefixlen == 0 or any(allowed.version == subnet.version and allowed.overlaps(subnet) for subnet in platform_ranges):
+                    raise ValueError("console client allowlist must exclude all-address and Platform Network ranges")
+                if allowed.version == 4 and (ipaddress.ip_address(peer) in allowed or ipaddress.ip_address(gateways[0]) in allowed):
+                    raise ValueError("console client allowlist must exclude ingress proxy addresses")
         edge["PE_TAILSCALE_EDGE_IP"] = peer
         configs = [configuration(root, args.env_file.resolve(), edge, ["caddy"])]
         endpoints = {"Platform Edge": landing}
@@ -194,12 +219,32 @@ def main(argv: list[str] | None = None) -> int:
                 skipped.append(directory.name + " (no .env; not configured)")
                 continue
             current = values(env)
+            if prefix == "BP":
+                selected_files = current.get("COMPOSE_FILE", "compose.yaml").split(":")
+                if "compose.gateway.yaml" not in selected_files or "compose.edge.yaml" in selected_files or "gateway" not in current.get("COMPOSE_PROFILES", "").split(","):
+                    raise ValueError("Backplane must select its existing compose.gateway.yaml before connecting Tailscale")
+                services = ["server", "edge"]
+            console_enabled = prefix in {"BP", "OB"} and current.get(prefix + "_RUSTFS_CONSOLE", "false") == "true"
+            if console_enabled:
+                if prefix == "BP" and ("compose.blobs.yaml" not in selected_files or "blobs" not in current.get("COMPOSE_PROFILES", "").split(",") or current.get("BP_BLOB_BACKEND") != "s3"):
+                    raise ValueError("Backplane console requires its existing S3 blobs selection")
+                if prefix == "OB" and ("s3" not in current.get("COMPOSE_PROFILES", "").split(",") or "compose.s3.yaml" not in current.get("COMPOSE_FILE", "compose.yaml").split(":")):
+                    raise ValueError("Observability console requires its existing S3 storage selection")
+                names = [*names, "backplane_rustfs" if prefix == "BP" else "observability_rustfs"]
+                services = [*services, "rustfs"]
             if prefix == "LG" and current.get("LG_RUSTFS_CONSOLE", "on") == "on":
                 names = [*names, "rustfs"]
             changes = {prefix + "_ACCESS_MODE": "proxy", prefix + "_PLATFORM_NETWORK": settings["PE_PLATFORM_NETWORK"]}
             if prefix != "BP":
                 changes.update({prefix + "_SCHEME": "https", prefix + "_TRUSTED_PROXIES": peer,
                                 prefix + "_BIND_HOST": "127.0.0.1", prefix + "_PUBLIC_PORT_SUFFIX": "", prefix + "_PUBLIC_DOMAIN": settings["PE_PUBLIC_DOMAIN"]})
+            if console_enabled:
+                console_name = "backplane_rustfs" if prefix == "BP" else "observability_rustfs"
+                changes.update({prefix + "_RUSTFS_URL_HOST": host,
+                                prefix + "_RUSTFS_AUTHORITY": host + ":" + str(ports[console_name]),
+                                prefix + "_TRUSTED_PROXIES": peer})
+                if args.console_allow is not None:
+                    changes[prefix + "_RUSTFS_CONSOLE_ALLOW"] = " ".join(args.console_allow.split())
             if prefix == "OB":
                 changes["OB_GRAFANA_URL_HOST"] = host
                 changes["OB_GRAFANA_AUTHORITY"] = host + ":" + str(ports["grafana"])
@@ -212,7 +257,8 @@ def main(argv: list[str] | None = None) -> int:
             for name in names:
                 endpoint = plan(status, serve, ports[name], int(settings["PE_HTTP_PORT"]), args.replace)
                 endpoints[name] = endpoint
-                key = {"gateway": "LG_CONSOLE_URL", "grafana": "OB_GRAFANA_URL", "backplane": "BP_PUBLIC_URL"}.get(name, "LG_" + name.upper() + "_URL")
+                key = {"gateway": "LG_CONSOLE_URL", "grafana": "OB_GRAFANA_URL", "backplane": "BP_PUBLIC_URL",
+                       "backplane_rustfs": "BP_RUSTFS_URL", "observability_rustfs": "OB_RUSTFS_URL"}.get(name, "LG_" + name.upper() + "_URL")
                 changes[key] = endpoint["url"].rstrip("/")
             config = configuration(directory, env, changes, services)
             running = checked(compose(directory, env, current.get("COMPOSE_FILE", "compose.yaml")) + ["ps", "--status", "running", "--services"]).split()
@@ -242,7 +288,12 @@ def main(argv: list[str] | None = None) -> int:
                                "--filter", "label=com.docker.compose.service=" + service]).split()
                 if len(ids) != 1:
                     raise ValueError(service + ": start the stack independently before connecting Tailscale")
-                check_storage(rendered, service, json.loads(checked(["docker", "inspect", ids[0]]))[0])
+                container = json.loads(checked(["docker", "inspect", ids[0]]))[0]
+                check_storage(rendered, service, container)
+                if service == "rustfs" and any(key in config["changes"] for key in ("BP_RUSTFS_URL", "OB_RUSTFS_URL")):
+                    environment = dict(value.split("=", 1) for value in container["Config"].get("Env", []) if "=" in value)
+                    if environment.get("RUSTFS_CONSOLE_ENABLE") != "true" or environment.get("RUSTFS_CONSOLE_ADDRESS", ":9001") != ":9001":
+                        raise ValueError("deploy the selected native RustFS console independently before connecting Tailscale")
         for config, handle in zip(configs, locks):
             handle.seek(0)
             handle.write(amended(config["source"], config["changes"]))
@@ -260,15 +311,19 @@ def main(argv: list[str] | None = None) -> int:
         with urllib.request.urlopen(landing["url"] + "health", timeout=15) as response:
             if response.status != 200:
                 raise ValueError("Tailscale Edge health check failed")
+        console_access = {}
         for name in endpoints:
             if name == "Platform Edge":
+                continue
+            if name in {"backplane_rustfs", "observability_rustfs"}:
+                console_access[name] = verify_application(name, endpoints[name], allowed_denials=(401, 403, 404))
                 continue
             probe_name = "observability" if name == "grafana" else name
             with urllib.request.urlopen(landing["url"] + "health/" + probe_name, timeout=15) as response:
                 if response.status != 200:
                     raise ValueError(name + " is not reachable through Edge")
             verify_application(name, endpoints[name])
-        print(json.dumps({"applied": True, "links": links(endpoints),
+        print(json.dumps({"applied": True, "links": links(endpoints), "consoleAccessFromSetupHost": console_access,
                           "next": "Open Platform Edge to check and launch applications. Each application keeps its own login."}))
         return 0
     except (OSError, ValueError, subprocess.TimeoutExpired, bootstrap.Refused) as error:

@@ -2,6 +2,10 @@
 {
 	admin localhost:2019
 	metrics
+	servers {
+		trusted_proxies static {$PE_TRUSTED_PROXIES}
+		trusted_proxies_strict
+	}
 	skip_install_trust
 	# IP clients omit SNI; Docker NAT hides the requested loopback address.
 	default_sni 127.0.0.1

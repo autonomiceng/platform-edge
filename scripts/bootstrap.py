@@ -66,6 +66,9 @@ DEFAULTS = {
     "PE_TAILSCALE_GRAFANA_PORT": "8447",
     "PE_TAILSCALE_BACKPLANE_PORT": "8448",
     "PE_TAILSCALE_RUSTFS_PORT": "8449",
+    "PE_TAILSCALE_BACKPLANE_RUSTFS_PORT": "8450",
+    "PE_TAILSCALE_OBSERVABILITY_RUSTFS_PORT": "8451",
+    "PE_TRUSTED_PROXIES": "",
     "PE_VOLUME_PREFIX": PROJECT,
     "PE_BACKUP_DIR": "./backups",
     "PE_BACKUP_KEEP": "7",
@@ -125,7 +128,7 @@ def read_env(path: Path) -> dict[str, str]:
             raise Refused("env_repair_required", f"{key} is set twice in {path}")
         if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
             value = value[1:-1]
-        if "$" in value or "#" in value or (key != "PE_METRICS_ALLOW" and any(c.isspace() for c in value)):
+        if "$" in value or "#" in value or (key not in {"PE_METRICS_ALLOW", "PE_TRUSTED_PROXIES"} and any(c.isspace() for c in value)):
             raise Refused("env_repair_required", f"{key} must be a plain value in {path}")
         values[key] = value
     return values
@@ -187,13 +190,22 @@ def settings_for(values: dict[str, str]) -> dict[str, str]:
             ipaddress.IPv4Address(settings["PE_TAILSCALE_EDGE_IP"])
         except ValueError as error:
             raise Refused("invalid_settings", "PE_TAILSCALE_EDGE_IP must be an IPv4 address") from error
+    if settings["PE_TRUSTED_PROXIES"] and (settings["PE_BIND_HOST"] != "127.0.0.1" or settings["PE_ACCESS_MODE"] not in ("local", "proxy")):
+        raise Refused("invalid_settings", "trusted ingress peers require a loopback-only local or proxy listener")
+    for peer in settings["PE_TRUSTED_PROXIES"].split():
+        try:
+            address = ipaddress.ip_interface(peer)
+            if address.network.prefixlen != address.max_prefixlen:
+                raise ValueError("proxy range is not exact")
+        except ValueError as error:
+            raise Refused("invalid_settings", "PE_TRUSTED_PROXIES requires exact IP addresses") from error
     tail = settings["PE_TAILSCALE_HOST"]
     if tail:
         if not re.fullmatch(r"[a-z0-9-]+\.[a-z0-9-]+\.ts\.net", tail):
             raise Refused("invalid_settings", "PE_TAILSCALE_HOST must be this machine's Tailscale hostname")
         if mode not in {"local", "proxy"} or settings["PE_BIND_HOST"] != "127.0.0.1":
             raise Refused("invalid_settings", "Tailscale requires local or proxy mode and a loopback HTTP listener")
-        ports = [settings["PE_TAILSCALE_PORT"], *[settings["PE_TAILSCALE_" + app + "_PORT"] for app in ("LITELLM", "LANGFUSE", "S3", "GATEWAY", "GRAFANA", "BACKPLANE", "RUSTFS")]]
+        ports = [settings["PE_TAILSCALE_PORT"], *[settings["PE_TAILSCALE_" + app + "_PORT"] for app in ("LITELLM", "LANGFUSE", "S3", "GATEWAY", "GRAFANA", "BACKPLANE", "RUSTFS", "BACKPLANE_RUSTFS", "OBSERVABILITY_RUSTFS")]]
         if any(not port.isdigit() or not 1 <= int(port) <= 65535 for port in ports) or len(set(map(int, ports))) != len(ports):
             raise Refused("invalid_settings", "Tailscale HTTPS ports must be valid and distinct")
         if any(int(port) <= 1023 for port in ports[1:]):
@@ -233,6 +245,20 @@ def check_ports(runner: Runner, settings: dict[str, str], project: str) -> None:
             if overlaps and conflicts:
                 raise Refused("port_conflict", f"container {container['Names']} ({container['ID']}) "
                               f"already publishes {address}:{conflicts[0]}/tcp; move its published port before starting the edge")
+
+
+def check_proxy_peer(runner: Runner, settings: dict[str, str]) -> None:
+    if not settings["PE_TAILSCALE_HOST"] or not settings["PE_TRUSTED_PROXIES"]:
+        return
+    result = runner(["docker", "network", "inspect", settings["PE_PLATFORM_NETWORK"]])
+    if result.returncode:
+        raise Refused("docker_unavailable", "cannot verify the trusted ingress peer")
+    configs = json.loads(result.stdout)[0].get("IPAM", {}).get("Config", [])
+    gateways = {str(ipaddress.ip_address(item["Gateway"])) for item in configs if item.get("Gateway")
+                and ipaddress.ip_address(item["Gateway"]).version == 4}
+    peers = {str(ipaddress.ip_interface(peer).ip) for peer in settings["PE_TRUSTED_PROXIES"].split()}
+    if len(gateways) != 1 or peers != gateways:
+        raise Refused("invalid_settings", "Tailscale trusted peer must match the current host bridge gateway")
 
 
 def ensure_network(runner: Runner, name: str = NETWORK) -> None:
@@ -402,6 +428,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             record_bootstrap(root, env_file, started, "unknown")
             try:
                 ensure_network(runner, settings["PE_PLATFORM_NETWORK"])
+                check_proxy_peer(runner, settings)
                 ensure_volumes(runner, settings)
                 # The read-only state check must not contend for the running Edge's pinned IP.
                 with tempfile.NamedTemporaryFile("w", suffix=".yaml") as isolated:
