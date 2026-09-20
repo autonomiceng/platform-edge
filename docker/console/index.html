@@ -70,7 +70,7 @@
     const cards = apps.map(([id, prefix, name, description, path]) => {
       const canOpen = configured && (!tail || connected.has(id === "observability" ? "grafana" : id));
       const origin = tail ? 'https://' + config.tailscale + ':' + config.ports[id]
-        : (config.scheme || location.protocol.slice(0, -1)) + '://' + (prefix ? prefix + '.' : '') + config.domain + (location.port ? ':' + location.port : '');
+        : (configured ? location.protocol.slice(0, -1) : (config.scheme || location.protocol.slice(0, -1))) + '://' + (prefix ? prefix + '.' : '') + config.domain + (location.port ? ':' + location.port : '');
       const card = document.createElement('article');
       const heading = document.createElement('h2'); heading.textContent = name;
       const state = document.createElement('span'); state.className = 'state'; state.textContent = 'Checking…';

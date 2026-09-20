@@ -49,6 +49,6 @@ Access logs are JSON on stdout; runtime diagnostics are on stderr. Docker sends 
 journald without a Docker log cache. The host owns journal retention, and Alloy collection
 is optional. Local console aliases do not change application origins or grant metrics access.
 The optional Tailscale setup keeps Edge in local mode with both HTTP and self-signed
-HTTPS listeners, and forwards every Tailscale HTTPS endpoint to Edge's loopback HTTP
+HTTPS listeners, and forwards each Tailscale HTTPS endpoint created by this setup to Edge's loopback HTTP
 listener. It configures explicit application URLs and routes by hostname
 and port, preserving the complete Host for signed requests. See [ADR-0002](adr/0002-tailscale-application-ports.md).

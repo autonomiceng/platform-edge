@@ -84,7 +84,8 @@ application authentication remains required. Your tailnet access rules must perm
 chosen ports. Use `--https-port` for the landing page and `--port-base` to move the six
 consecutive application ports together.
 
-Every Tailscale listener forwards to the same Edge Caddy on `127.0.0.1:80`;
+Each Tailscale listener created by this setup forwards to the configured Edge loopback
+HTTP endpoint at `http://127.0.0.1:<PE_HTTP_PORT>` (port 80 by default);
 Edge chooses the application by hostname and port. Services are not exposed directly.
 Edge retains localhost HTTP and self-signed HTTPS on its configured ports (80 and 443
 by default), using its existing certificate state. Tailscale adds trusted HTTPS for remote
@@ -104,7 +105,7 @@ status` and the affected service's logs; partial setup is not reported as succes
 after installing another stack to connect it. Keep the generated `COMPOSE_FILE` setting
 when recreating Edge so its pinned address stays consistent with sibling proxy trust.
 
-All Serve endpoints forward to Edge's **HTTP** port, usually `http://127.0.0.1:80`.
+Serve endpoints created by this setup forward to Edge's **HTTP** port, usually `http://127.0.0.1:80`.
 Do not forward HTTP to local port 443, and do not use an HTTPS listener on port 80 when
 expecting ordinary HTTP clients. Tailscale access is optional; each stack retains its
 standalone local and public-domain setup.
