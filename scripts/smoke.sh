@@ -266,9 +266,10 @@ ok 'gateway still answers with observability absent'
 
 docker stop "$lg_stub" >/dev/null
 code=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -sS --resolve "localhost:$PE_HTTPS_PORT:127.0.0.1" \
-  -H 'Host: localhost' -o "$work/console.html" -w '%{http_code}' "https://localhost:$PE_HTTPS_PORT/")
+  -H 'Host: localhost' -D "$work/console.headers" -o "$work/console.html" -w '%{http_code}' "https://localhost:$PE_HTTPS_PORT/")
 [ "$code" = 200 ] || fail "Edge console depends on absent gateway: $code"
-grep -q 'Platform Edge' "$work/console.html" || fail 'fallback console missing'
+grep -q 'Platform Edge' "$work/console.html" || fail 'console missing'
+grep -qi 'Cache-Control: no-cache' "$work/console.headers" || fail 'console HTML must revalidate'
 ok 'Edge console remains available when Gateway is absent'
 for asset in app.js style.css icons/caddy.svg; do
   curl --noproxy '*' --max-time 10 -fsS -H 'Host: localhost' "http://127.0.0.1:$PE_HTTP_PORT/console/$asset" > "$work/asset"

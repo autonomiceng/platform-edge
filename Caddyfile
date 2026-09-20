@@ -114,6 +114,7 @@
 	}
 	handle / {
 		root * /srv/console
+		header Cache-Control "no-cache"
 		templates
 		file_server
 	}
