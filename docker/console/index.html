@@ -50,7 +50,7 @@
         || !['http', 'https'].includes(value.scheme) || !value.ports || typeof value.ports !== 'object') {
         throw new Error('Invalid access settings');
       }
-      if (value.tailscale && ['gateway', 'litellm', 'langfuse', 's3', 'observability', 'backplane'].some(id => {
+      if (value.tailscale && ['gateway', 'litellm', 'langfuse', 's3', 'observability', 'backplane', 'rustfs'].some(id => {
         const port = value.ports[id];
         return typeof port !== 'string' || !/^[1-9][0-9]*$/.test(port) || Number(port) > 65535;
       })) throw new Error('Invalid application ports');
@@ -78,7 +78,7 @@
       ['gateway', '', 'LLM Gateway', 'Overview of the gateway and its services.', '/'],
       ['litellm', 'litellm', 'LiteLLM', 'Manage model access, API keys and budgets.', '/ui/'],
       ['langfuse', 'langfuse', 'Langfuse', 'Explore traces, prompts and evaluations.', '/'],
-      ['rustfs', 'rustfs', 'RustFS', 'Browse buckets and manage object storage. Sign in with your RustFS credentials.', '/'],
+      ['rustfs', 'rustfs', 'RustFS', 'Browse buckets and manage object storage. Sign in with your RustFS credentials.', '/rustfs/console/'],
       ['s3', 's3', 'Object storage', 'S3 endpoint for Langfuse uploads and downloads. Use it with an S3 client and your credentials.', null],
       ['observability', 'grafana', 'Grafana', 'Explore logs, metrics and dashboards.', '/'],
       ['backplane', 'backplane', 'Agent Backplane', 'Shared state, queues and approvals for your agents.', '/dashboard']

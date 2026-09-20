@@ -57,7 +57,7 @@ APPS = {"litellm": 8443, "langfuse": 8444, "s3": 8445, "gateway": 8446,
 
 
 def links(endpoints: dict) -> dict[str, str]:
-    return {name: endpoint["url"] + {"litellm": "ui/", "backplane": "dashboard"}.get(name, "")
+    return {name: endpoint["url"] + {"litellm": "ui/", "backplane": "dashboard", "rustfs": "rustfs/console/"}.get(name, "")
             for name, endpoint in endpoints.items()}
 
 
