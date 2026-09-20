@@ -12,6 +12,66 @@ Edge owns host ports 80 and 443. Its default loopback binding makes them accessi
 | `backplane.example.com` | `bp-gateway:80` |
 | `grafana.example.com` | `ob-gateway:80` |
 
+## Selected installation preflight (H-SELECT)
+
+`bootstrap.py --stack NAME --dry-run` prints a read-only JSON plan. Repeat `--stack`
+for `edge`, `gateway`, `backplane`, or `observability`; Edge is always implicit.
+No `--stack` retains the existing standalone Edge bootstrap. `--dry-run` alone
+plans Edge only. Omission never removes an installed stack, route, or Tailscale app.
+
+```sh
+python3 scripts/bootstrap.py --stack backplane --stack observability \
+  --backplane-dir /srv/agent-backplane --observability-dir /srv/observability-stack \
+  --backplane-backup-dir /mnt/backplane-backups \
+  --capability-file /home/operator/private/backplane-enrollment --dry-run
+```
+
+Selected checkout defaults are the sibling directories `llm-gateway-stack`,
+`agent-backplane`, and `observability-stack` beside the Edge checkout. Override them
+with `--gateway-dir`, `--backplane-dir`, and `--observability-dir`. Unselected sibling
+configuration is not read. Configure Edge access and network in its existing env
+file, or use `--template` for fresh planning. Unset selected stack and Compose shell
+exports to avoid ambiguous installation identities.
+
+Gateway needs `--gateway-backup-dir` and `--gateway-email` unless already recorded
+as `LG_BACKUP_DIR` and `LANGFUSE_INIT_USER_EMAIL`. Its backup directory must exist,
+not overlap Postgres data, and use a separate filesystem unless its owning
+`LG_ALLOW_SAME_FILESYSTEM_BACKUP=true` development policy explicitly permits it.
+Backplane needs an existing writable backup directory and an absolute capability
+output path with a private, writable parent. The capability contents are never read.
+Existing backup and login settings cannot be replaced by these inputs.
+
+The plan checks required commands/configuration files, a local Unix-socket Docker
+context, Compose 2.24.4+, selected project/prefix inventory, network, host and Docker
+TCP publications, and backup/capability path constraints. New sibling proxy listeners
+use loopback ports 18080 (Gateway), 18180 (Observability), and 3000 (Backplane).
+Recorded listener ports are preserved. Local Backplane uses HTTPS through Edge;
+clients must trust Edge's public CA certificate. Exact Edge peer trust is planned,
+never guessed before execution. Public and Tailscale access retain their contracts in this runbook.
+
+`--backplane-mode full|minimal` records the request and reports B-PROMOTE as pending:
+the inspected owning bootstrap does not yet accept mode selection. Omission preserves
+recorded selection and delegates fresh defaults to Backplane. `--tailscale` and
+`--status-timers` plan selected-only connection and owning timer installation.
+They do not invoke the current Tailscale helper, which still discovers all siblings.
+
+H-SELECT never writes env/state, generates secrets, builds, starts services, installs
+timers, or enrolls a user. Exit 0 means the available preflight checks found no
+conflicts, not infrastructure readiness or enrollment. Exit 1 reports conflicts;
+usage errors are exit 2. Selected execution without `--dry-run` refuses before any
+inspection or mutation until H-EXEC is implemented. Render/probe flags cannot be
+combined with selected installation or dry-run flags.
+
+Conservative boundary: **any recorded env, data, container, or volume requires the
+owning Checkpoint/upgrade review**, including a rendered-only or interrupted install.
+H-EXEC must distinguish safe reuse from an upgrade by checking image/mount identity,
+secrets, storage selection, and native Compose keys under owning locks. It must also
+finish exact peer reservation, fresh configuration validation, Tailscale authentication
+and Serve conflicts, matching timer recovery, capability readiness, and enrollment.
+These checks appear as deferred obligations, not successful checks. An add-stack plan
+preserves existing routes and settings but remains blocked until installed identity
+can be verified. This preparatory slice does not advance BDEFAULT, H-PROOF, or PE18.
+
 ## Image overrides
 
 `PE_CADDY_IMAGE` accepts a complete image reference, for example `local/edge:experiment`
@@ -487,3 +547,5 @@ native login check from an explicitly allowed client. Existing application
 routes retain their previous peer-address forwarding; only the new console
 routes forward the validated client address. Docker configurations with
 `userland-proxy: false` require explicit ingress-peer validation before use.
+
+The selected-stack preflight recognizes the Gateway template’s native `compose.${LG_ACCESS_MODE:-local}.yaml` selection. Other interpolated Compose paths require explicit recorded file paths before planning.

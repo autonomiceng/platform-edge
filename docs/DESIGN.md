@@ -18,6 +18,13 @@ Multiple standalone stacks each ship an ingress, but only one ingress can own a 
 
 No high availability, dynamic service discovery, authentication, rate limiting or edge dashboards are promised.
 
+Selected host installation is currently a read-only plan in `scripts/installation.py`,
+entered through bootstrap's `--stack`/`--dry-run` flags. It inspects only selected
+sibling configuration, delegates lifecycle ownership to their existing bootstraps,
+and refuses execution until H-EXEC. Existing installation evidence requires an
+owning Checkpoint/upgrade review. The [preflight contract](operations/ingress.md#selected-installation-preflight-h-select)
+lists deferred execution checks and does not claim readiness or enrollment.
+
 ## Shape
 
 ```mermaid
