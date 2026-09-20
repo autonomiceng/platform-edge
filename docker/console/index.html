@@ -45,6 +45,7 @@
   <script type="application/json" id="edge-config">{"domain": {{env "PE_PUBLIC_DOMAIN" | toJson}}, "mode": {{env "PE_ACCESS_MODE" | toJson}}, "scheme": {{env "PE_SCHEME" | toJson}}, "tailscale": {{env "PE_TAILSCALE_HOST" | toJson}}, "connected": {{env "PE_TAILSCALE_APPS" | toJson}}, "ports": {"gateway": {{env "PE_TAILSCALE_GATEWAY_PORT" | toJson}}, "litellm": {{env "PE_TAILSCALE_LITELLM_PORT" | toJson}}, "langfuse": {{env "PE_TAILSCALE_LANGFUSE_PORT" | toJson}}, "s3": {{env "PE_TAILSCALE_S3_PORT" | toJson}}, "observability": {{env "PE_TAILSCALE_GRAFANA_PORT" | toJson}}, "backplane": {{env "PE_TAILSCALE_BACKPLANE_PORT" | toJson}}}}</script>
   <script>
     const config = JSON.parse(document.querySelector('#edge-config').textContent);
+    config.domain = config.domain.toLowerCase();
     const tail = Boolean(config.tailscale) && location.hostname === config.tailscale;
     const configured = tail || location.hostname === config.domain || (config.domain === "localhost" && location.hostname === "127.0.0.1");
     document.querySelector('#intro').textContent = tail

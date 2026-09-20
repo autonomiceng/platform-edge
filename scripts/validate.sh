@@ -63,3 +63,11 @@ service = json.load(open(sys.argv[1]))['services']['caddy']
 assert [p['target'] for p in service['ports']] == [80], 'proxy must publish HTTP only'
 PYCODE
 echo 'proxy publishes HTTP only: PASS'
+
+PE_ACCESS_MODE=public PE_SCHEME='' docker compose --env-file "$work/.env" -f compose.yaml -f compose.public.yaml config --format json > "$work/public.json"
+python3 - "$work/public.json" <<'PYCODE'
+import json, sys
+service = json.load(open(sys.argv[1]))['services']['caddy']
+assert service['environment']['PE_SCHEME'] == 'https', 'public empty scheme must resolve to HTTPS'
+PYCODE
+echo 'public default scheme: PASS'
