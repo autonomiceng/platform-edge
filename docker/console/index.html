@@ -33,7 +33,7 @@
   <script type="application/json" id="edge-config">{"domain": {{env "PE_PUBLIC_DOMAIN" | toJson}}, "mode": {{env "PE_ACCESS_MODE" | toJson}}, "scheme": {{env "PE_SCHEME" | toJson}}}</script>
   <script>
     const config = JSON.parse(document.querySelector('#edge-config').textContent);
-    const configuredDomain = config.domain;
+    const configuredDomain = config.domain.toLowerCase();
     const configuredScheme = config.mode === 'public' ? 'https' : config.scheme;
     const alias = location.hostname !== configuredDomain;
     const routes = [

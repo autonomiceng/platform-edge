@@ -108,6 +108,8 @@ PE_PLATFORM_NETWORK=platform
 PE_ACME_EMAIL=ops@example.com
 ```
 
+Bootstrap selects `compose.public.yaml` in public mode so an empty `PE_SCHEME` uses HTTPS. When running Compose directly, include both `-f compose.yaml -f compose.public.yaml`.
+
 Only public mode uses `PE_ACME_EMAIL`. Caddy stores and renews certificates in `edge-data`. HTTP `/health` intentionally stays available without a redirect. Healthy means Caddy answers, not that upstreams are healthy. Other HTTP requests for configured hosts redirect to HTTPS; the `:80` catch-all returns 404 for unknown hosts on every path except `/health`. For public certificates, externally reachable ports remain 80 and 443 even if NAT maps them to different `PE_HTTP_PORT` and `PE_HTTPS_PORT` values. Nonstandard direct HTTPS URLs require an explicit port in clients; the normal redirect targets port 443.
 
 ## Per-stack settings behind the edge

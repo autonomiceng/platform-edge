@@ -134,10 +134,11 @@ def settings_for(values: dict[str, str]) -> dict[str, str]:
         pass
     else:
         raise Refused("invalid_settings", "PE_PUBLIC_DOMAIN must be a DNS hostname, not an IP address")
+    # Compose parses the base port mappings before applying the proxy override.
     for key in ("PE_HTTP_PORT", "PE_HTTPS_PORT"):
         if not settings[key].isdigit() or not 1 <= int(settings[key]) <= 65535:
             raise Refused("invalid_settings", f"{key} must be a port from 1 to 65535")
-    if int(settings["PE_HTTP_PORT"]) == int(settings["PE_HTTPS_PORT"]):
+    if mode != "proxy" and int(settings["PE_HTTP_PORT"]) == int(settings["PE_HTTPS_PORT"]):
         raise Refused("invalid_settings", "HTTP and HTTPS must use different host ports")
     try:
         ipaddress.ip_address(settings["PE_BIND_HOST"].strip("[]"))
@@ -225,11 +226,11 @@ def compose_command(root: Path, env_file: Path) -> list[str]:
     command = ["docker", "compose", "--project-directory", str(root), "--env-file", str(env_file)]
     values = read_env(env_file) if env_file.exists() else {}
     mode = os.environ.get("PE_ACCESS_MODE", values.get("PE_ACCESS_MODE", "local"))
-    if mode == "proxy":
+    if mode in {"proxy", "public"}:
         files = os.environ.get("COMPOSE_FILE", values.get("COMPOSE_FILE", "compose.yaml")).split(os.pathsep)
         files = [str((root / name).resolve()) for name in files if name]
-        proxy = str(root / "compose.proxy.yaml")
-        for name in [name for name in files if name != proxy] + [proxy]:
+        override = str(root / f"compose.{mode}.yaml")
+        for name in [name for name in files if name != override] + [override]:
             command += ["-f", name]
     return command
 

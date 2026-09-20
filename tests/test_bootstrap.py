@@ -152,6 +152,23 @@ class AccessModeTests(unittest.TestCase):
             self.assertEqual(bootstrap.compose_command(ROOT, env)[-4:],
                              ["-f", str(ROOT / "compose.yaml"), "-f", str(ROOT / "compose.proxy.yaml")])
 
+    def test_public_empty_scheme_selects_https_compose_default(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            env = Path(directory) / ".env"
+            env.write_text("PE_ACCESS_MODE=public\nPE_PUBLIC_DOMAIN=example.com\nPE_SCHEME=\n")
+            self.assertEqual(bootstrap.settings_for(bootstrap.read_env(env))["PE_SCHEME"], "https")
+            self.assertEqual(bootstrap.compose_command(ROOT, env)[-4:],
+                             ["-f", str(ROOT / "compose.yaml"), "-f", str(ROOT / "compose.public.yaml")])
+
+    def test_proxy_allows_matching_ports_but_compose_still_requires_port_syntax(self):
+        with patch.dict(os.environ, {}, clear=True):
+            settings = bootstrap.settings_for({"PE_ACCESS_MODE": "proxy", "PE_HTTP_PORT": "443"})
+            self.assertEqual(settings["PE_HTTP_PORT"], settings["PE_HTTPS_PORT"])
+            for values in ({"PE_HTTP_PORT": "443"},
+                           {"PE_ACCESS_MODE": "proxy", "PE_HTTPS_PORT": "invalid"}):
+                with self.assertRaises(bootstrap.Refused):
+                    bootstrap.settings_for(values)
+
     def test_local_readiness_checks_both_protocols_before_ready(self):
         settings = dict(bootstrap.DEFAULTS, PE_ACCESS_MODE="local", PE_TLS_ISSUER="internal")
         def runner(argv):
