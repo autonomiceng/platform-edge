@@ -405,6 +405,8 @@ and remain available when component health or producer support is unknown.
 `/stack-status/gateway`, `/stack-status/backplane` and `/stack-status/observability`
 proxy their owning gateway's `/status.json`. `/stack-versions/gateway` remains a legacy
 configured-version fallback, dated by valid `configuredAt`/`pinnedAt` or labelled undated.
+The Edge card shows its own image version from the Caddy container as a configured,
+undated value; Edge component health stays unknown until a host observer exists.
 A configured image version is never displayed as an observed runtime version. Fresh status
 configuration takes precedence. Tasks display their execution start separately from the
 freshness of the record inspection. Optional architecture entries with no evidence are unknown.
