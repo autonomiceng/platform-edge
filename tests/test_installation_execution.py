@@ -125,7 +125,8 @@ class ExecutionTests(unittest.TestCase):
         route = self.root / "routes.d/operator.caddy"
         route.parent.mkdir()
         route.write_text("# operator routing stays intact\n")
-        (self.host / "llm-gateway-stack/.env.example").write_text("LG_ALLOW_SAME_FILESYSTEM_BACKUP=true\n")
+        (self.host / "llm-gateway-stack/.env").write_text("LG_ALLOW_SAME_FILESYSTEM_BACKUP=true\n")
+        (self.host / "llm-gateway-stack/.env").chmod(0o600)
         read = Path.read_text
         def selected_only(path, *args, **kwargs):
             if path.is_relative_to(self.host / "observability-stack"):

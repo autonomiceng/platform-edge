@@ -286,6 +286,7 @@ class InstallationTests(unittest.TestCase):
         _, plan = self.invoke("--stack", "gateway", "--gateway-backup-dir", str(self.backup), "--dry-run")
         self.assertTrue(any("separate filesystem" in item["detail"] for item in plan["conflicts"]))
         (gateway / ".env").write_text("LG_ALLOW_SAME_FILESYSTEM_BACKUP=true\n")
+        (gateway / ".env").chmod(0o600)
         _, plan = self.invoke("--stack", "gateway", "--gateway-backup-dir", str(self.backup), "--dry-run")
         self.assertTrue(any("operator's Langfuse" in item["detail"] for item in plan["conflicts"]))
         shared = self.host / "shared"
@@ -326,5 +327,6 @@ class InstallationTests(unittest.TestCase):
         self.assertTrue(any("unavailable or unresolved files" in item["detail"] for item in plan["conflicts"]))
         (gateway / "compose.local.yaml").write_text("")
         (gateway / ".env").write_text("COMPOSE_FILE=compose.yaml:compose.${LG_ACCESS_MODE:-local}.yaml\nLG_BACKUP_DIR=" + str(self.backup) + "\nLG_ALLOW_SAME_FILESYSTEM_BACKUP=true\nLANGFUSE_INIT_USER_EMAIL=operator@company.test\n")
+        (gateway / ".env").chmod(0o600)
         _, plan = self.invoke("--stack", "gateway", "--dry-run")
         self.assertFalse(any(item["code"] == "prerequisite_failed" for item in plan["conflicts"]))
