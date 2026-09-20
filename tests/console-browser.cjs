@@ -13,6 +13,7 @@ const assert = require("node:assert/strict");
       .context()
       .grantPermissions(["clipboard-read", "clipboard-write"]);
     const config = {
+      edgeVersion: "v9.8.7",
       domain: "localhost",
       mode: "local",
       scheme: "http",
@@ -72,6 +73,11 @@ const assert = require("node:assert/strict");
     };
     await page.goto("https://test.ts.net/");
     await settled();
+    assert.equal(
+      await page.locator(".version").first().textContent(),
+      "v9.8.7",
+      "Edge version comes from the running image",
+    );
     assert.equal(
       await page.locator(".project h2").first().textContent(),
       "Platform Edge",

@@ -169,9 +169,7 @@ BP_BIND_HOST=127.0.0.1
 BP_PORT=3000
 ```
 
-Start the internal gateway with `docker compose -f compose.yaml -f compose.gateway.yaml --profile gateway up -d --wait` from the Backplane checkout.
-
-Start Backplane with `docker compose -f compose.yaml -f compose.gateway.yaml --profile gateway up -d --wait`. Edge reaches it at `bp-gateway:80`; the internal gateway publishes no host ports. Keep the standalone `edge` profile off.
+Start Backplane and its internal gateway from the Backplane checkout with `docker compose -f compose.yaml -f compose.gateway.yaml --profile gateway up -d --wait`. Edge reaches it at `bp-gateway:80`; the internal gateway publishes no host ports. Keep the standalone `edge` profile off.
 The seven routed hosts are root, `litellm.`, `langfuse.`, `s3.`, `rustfs.`, `backplane.`
 and `grafana.` under the configured domain. Run shared-host acceptance after siblings
 are ready: `SMOKE_INTEGRATION=1 SMOKE_DOMAIN=example.com scripts/smoke.sh` (use

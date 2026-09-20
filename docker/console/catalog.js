@@ -383,7 +383,7 @@ const DATA = {
       links: {},
       uses: ["g-caddy", "b-caddy", "o-caddy"],
       optional: false,
-      version: "2.11.4",
+      version: null,
       state: "unknown",
     },
   ],
