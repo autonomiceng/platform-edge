@@ -8,6 +8,7 @@ Multiple standalone stacks each ship an ingress, but only one ingress can own a 
 
 ## Guarantees, stated exactly
 
+- `/status.json` and `/stack-status/edge` are unauthenticated in every access mode, including public internet access, and expose allowlisted version and image digest metadata.
 - Caddy is the only service and publisher in this project. Defaults bind HTTP and HTTPS ports to loopback.
 - All seven hostnames are configured even when some stacks are absent. An unavailable alias produces a request failure, independent of other aliases.
 - `/health` returns 200 independently of upstream readiness. It is available on the root site and over HTTP in every access mode.
