@@ -119,7 +119,8 @@ def configuration(root: Path, env: Path, changes: dict[str, str], services: list
     current = values(env)
     files = current.get("COMPOSE_FILE", "compose.yaml").split(":")
     # Preserve operator overlays; replace only our own listener selection.
-    files = [f for f in files if f not in {"compose.proxy.yaml", "compose.tailscale.yaml"}]
+    managed = {(root / name).resolve() for name in ("compose.proxy.yaml", "compose.tailscale.yaml")}
+    files = [f for f in files if (root / f).resolve() not in managed]
     if "BP_ACCESS_MODE" not in changes and "PE_TAILSCALE_HOST" not in changes:
         files.append("compose.proxy.yaml")
     if "PE_TAILSCALE_HOST" in changes:
@@ -220,15 +221,15 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             current = values(env)
             if prefix == "BP":
-                selected_files = current.get("COMPOSE_FILE", "compose.yaml").split(":")
-                if "compose.gateway.yaml" not in selected_files or "compose.edge.yaml" in selected_files or "gateway" not in current.get("COMPOSE_PROFILES", "").split(","):
+                selected_files = {(directory / name).resolve() for name in current.get("COMPOSE_FILE", "compose.yaml").split(":")}
+                if directory / "compose.gateway.yaml" not in selected_files or directory / "compose.edge.yaml" in selected_files or "gateway" not in current.get("COMPOSE_PROFILES", "").split(","):
                     raise ValueError("Backplane must select its existing compose.gateway.yaml before connecting Tailscale")
                 services = ["server", "edge"]
             console_enabled = prefix in {"BP", "OB"} and current.get(prefix + "_RUSTFS_CONSOLE", "false") == "true"
             if console_enabled:
-                if prefix == "BP" and ("compose.blobs.yaml" not in selected_files or "blobs" not in current.get("COMPOSE_PROFILES", "").split(",") or current.get("BP_BLOB_BACKEND") != "s3"):
+                if prefix == "BP" and (directory / "compose.blobs.yaml" not in selected_files or "blobs" not in current.get("COMPOSE_PROFILES", "").split(",") or current.get("BP_BLOB_BACKEND") != "s3"):
                     raise ValueError("Backplane console requires its existing S3 blobs selection")
-                if prefix == "OB" and ("s3" not in current.get("COMPOSE_PROFILES", "").split(",") or "compose.s3.yaml" not in current.get("COMPOSE_FILE", "compose.yaml").split(":")):
+                if prefix == "OB" and ("s3" not in current.get("COMPOSE_PROFILES", "").split(",") or directory / "compose.s3.yaml" not in {(directory / name).resolve() for name in current.get("COMPOSE_FILE", "compose.yaml").split(":")}):
                     raise ValueError("Observability console requires its existing S3 storage selection")
                 names = [*names, "backplane_rustfs" if prefix == "BP" else "observability_rustfs"]
                 services = [*services, "rustfs"]
