@@ -55,7 +55,7 @@
 	}
 }
 (status-errors) {
-	@metadata expression `{http.request.orig_uri.path}.startsWith("/stack-status/") || {http.request.orig_uri.path} == "/stack-versions/gateway"`
+	@metadata expression `{http.request.orig_uri.path}.startsWith("/stack-status/") || {http.request.orig_uri.path} == "/stack-versions/gateway" || {http.request.orig_uri.path} == "/status.json"`
 	handle @metadata {
 		header Cache-Control "no-store"
 		header Content-Type "application/json"
@@ -63,12 +63,41 @@
 	}
 }
 
+(edge-status) {
+	@edge-status path /status.json /stack-status/edge
+	handle @edge-status {
+		route {
+			header {
+				>Cache-Control "no-store"
+				>Content-Type "application/json"
+			}
+			@write not method GET HEAD
+			header @write Allow "GET, HEAD"
+			respond @write "" 405
+			request_header -Authorization
+			request_header -Cookie
+			request_header -If-Match
+			request_header -If-Unmodified-Since
+			request_header -If-None-Match
+			request_header -If-Modified-Since
+			request_header -Range
+			request_header -If-Range
+			root * /srv/state
+			rewrite * /status.json
+			@missing not file /status.json
+			respond @missing "" 404
+			file_server
+		}
+	}
+}
+
 (stack-probes) {
+	import edge-status
 	import status-proxy /stack-status/gateway /status.json lg-gateway:80 {$PE_PUBLIC_DOMAIN}
 	import status-proxy /stack-status/backplane /status.json bp-gateway:80 backplane.{$PE_PUBLIC_DOMAIN}
 	import status-proxy /stack-status/observability /status.json ob-gateway:80 {$PE_PUBLIC_DOMAIN}
 	import status-proxy /stack-versions/gateway /versions.json lg-gateway:80 {$PE_PUBLIC_DOMAIN}
-	# Reserved for an honest host observer. Never fall through to Gateway's producer.
+	# Unknown status endpoints never fall through to Gateway's producer.
 	handle /stack-status/* {
 		header Cache-Control "no-store"
 		header Content-Type "application/json"
