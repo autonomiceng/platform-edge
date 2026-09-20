@@ -32,6 +32,7 @@ from status_io import Unavailable, directory, now, task_record
 
 def record_bootstrap(root, env_file, started, state):
     try:
+        # Create the read-only mount source before Compose can create it as root.
         with directory(root / "data/console"):
             pass
         task_record(root, env_file, started, state)

@@ -3,7 +3,7 @@
 set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
-for tool in docker python3 curl; do
+for tool in docker python3 node curl; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
 export COMPOSE_PROJECT_NAME="${SMOKE_PROJECT:-platform-edge-smoke}"
@@ -70,7 +70,13 @@ YAML
 fi
 # Status transport reads a frozen fixture owned by this smoke, never local observations.
 mkdir "$work/status"
-printf '%s\n' '{"schemaVersion":1,"stack":"edge","generatedAt":"2026-09-20T00:00:00Z","components":[]}' > "$work/status/status.json"
+printf '%s\n' '{"schemaVersion":1,"stack":"edge","generatedAt":"2026-09-20T00:00:00Z","configurationObservedAt":null,"configurationValidForSeconds":120,"telemetry":"unknown","components":[]}' > "$work/status/status.json"
+node - "$work/status/status.json" "$root/docker/console/status.js" <<'JSPARSE'
+const fs = require("node:fs");
+const status = require(process.argv[3]);
+const text = fs.readFileSync(process.argv[2], "utf8");
+status.parse(text, "edge", Date.parse("2026-09-20T00:00:00Z"));
+JSPARSE
 cat > "$work/status.yaml" <<YAML
 services:
   caddy:

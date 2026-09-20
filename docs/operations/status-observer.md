@@ -23,6 +23,10 @@ Successful bootstrap attempts to record its execution and the initial observatio
 Recording failure produces a fixed warning and preserves bootstrap's real result.
 Safe ownership and permissions are required for `data/` and its status directories;
 group-writable existing directories can leave execution records unknown.
+Before running Compose directly, create the public mount source as the deployment user
+with `install -d -m 0755 data/console`. If Compose created it as root, stop the attempted
+installation, verify that it contains only generated status files, then restore ownership
+with `sudo chown -R "$(id -u):$(id -g)" data/console` before retrying.
 `--probe-only` updates observations without claiming a new bootstrap execution.
 For regular refreshes, explicitly install the user timer:
 
@@ -32,10 +36,13 @@ systemctl --user status platform-edge-status.timer
 ```
 
 The timer runs about every 30 seconds, requires an active user manager and ordinary
-Docker access, and does not enable lingering. Existing units are refused. To
-select another checkout, disable the timer, inspect and remove its two user unit
-files, reload the user manager, then reinstall. No stack restart is performed by
-the observer or timer. Merely fetching status does not run an observation.
+Docker access, and does not enable lingering. Existing units are refused. Installation
+failure after activation starts retains both unit files because `systemctl enable --now`
+can partially succeed. Run `systemctl --user disable --now platform-edge-status.timer`,
+inspect and remove `platform-edge-status.service` and `.timer` from the user unit directory,
+then run `systemctl --user daemon-reload` before retrying. Use the same disable-first
+sequence to select another checkout. No stack restart is performed by the observer or
+timer. Merely fetching status does not run an observation.
 
 | Component | Evidence and limits |
 | --- | --- |
