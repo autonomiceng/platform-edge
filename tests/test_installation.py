@@ -31,6 +31,7 @@ class FakeRunner:
     def __init__(self, listeners="", occupied=False, publications="", fail=None):
         self.listeners, self.occupied, self.publications = listeners, occupied, publications
         self.containers, self.images, self.configs, self.volumes = {}, {}, {}, {}
+        self.image_volumes = {}
         self.started = []
         self.fail = fail
         self.interrupted_backplane_services = None
@@ -138,10 +139,13 @@ class FakeRunner:
         elif argv[:3] == ["docker", "network", "ls"]:
             output = ""
         elif argv[:3] == ["docker", "image", "inspect"]:
-            output = self.images[argv[-1]]
+            output = json.dumps(self.image_volumes.get(argv[-1], {})) if argv[4] == "{{json .Config.Volumes}}" else self.images[argv[-1]]
         elif argv[:2] == ["docker", "inspect"]:
             value = self.containers[argv[-1]]
             output = value["Image"] if argv[3] == "{{.Image}}" else json.dumps(value["Networks"] if argv[3] == "{{json .NetworkSettings.Networks}}" else value)
+        elif argv[:2] == ["docker", "ps"] and any(v.startswith("volume=") for v in argv):
+            volume = next(v.removeprefix("volume=") for v in argv if v.startswith("volume="))
+            output = "\n".join(c["Id"] if "--no-trunc" in argv else c["Id"][:12] for c in self.containers.values() if any(m.get("Name") == volume for m in c["Mounts"]))
         elif argv[:2] == ["docker", "ps"]:
             project = next(v.split("=", 2)[2] for v in argv if v.startswith("label=com.docker.compose.project="))
             service = next((v.split("=", 2)[2] for v in argv if v.startswith("label=com.docker.compose.service=")), None)
@@ -155,7 +159,7 @@ class FakeRunner:
                 if (re.search(selector[5:], name) if selector.startswith("name=")
                     else labels.get("com.docker.compose.project") == selector.split("=", 2)[2]))
         elif argv[:3] == ["docker", "volume", "inspect"]:
-            output = json.dumps(self.volumes[argv[-1]].get("com.docker.compose.project"))
+            output = json.dumps(self.volumes[argv[-1]] if argv[4] == "{{json .Labels}}" else self.volumes[argv[-1]].get("com.docker.compose.project"))
         else:
             raise AssertionError("unexpected or mutating inspection: " + repr(argv))
         return subprocess.CompletedProcess(argv, 0, output, "private diagnostic must not escape")

@@ -104,6 +104,26 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(runner.started, started)
 
+    def test_existing_unlabelled_and_image_inherited_volumes_require_qualified_users(self):
+        runner = FakeRunner()
+        self.assertEqual(self.invoke(*self.bp_arguments(), runner=runner)[0], 0)
+        runner.volumes["platform-edge_data"] = {}
+        container = runner.containers["agent-backplane-server"]
+        runner.image_volumes["fixture/backplane:1"] = {"/implicit": {}}
+        runner.volumes["anonymous"] = {"com.docker.volume.anonymous": ""}
+        container["Mounts"].append({"Type": "volume", "Name": "anonymous", "Destination": "/implicit"})
+        before = self.snapshot()
+        self.assertEqual(self.invoke(*self.bp_arguments(), "--dry-run", runner=runner)[0], 0)
+        container["ExplicitMounts"] = [{"Target": "/implicit", "Source": "anonymous"}]
+        self.assertEqual(self.invoke(*self.bp_arguments(), "--dry-run", runner=runner)[0], 1)
+        del container["ExplicitMounts"]
+        runner.containers["foreign"] = {**container, "Id": "foreign", "Labels": {"com.docker.compose.project": "foreign"}}
+        self.assertEqual(self.invoke(*self.bp_arguments(), "--dry-run", runner=runner)[0], 1)
+        del runner.containers["foreign"]
+        runner.image_volumes["fixture/backplane:1"] = {}
+        self.assertEqual(self.invoke(*self.bp_arguments(), "--dry-run", runner=runner)[0], 1)
+        self.assertEqual(self.snapshot(), before)
+
     def test_unavailable_inventory_is_not_treated_as_fresh(self):
         runner = FakeRunner()
         runner.inventory_failed = True
@@ -180,10 +200,9 @@ class ExecutionTests(unittest.TestCase):
         self.assertIn("observability-stack-caddy", runner.containers)
         before, started = self.snapshot(), list(runner.started)
         code, plan = self.invoke("--stack", "gateway", runner=runner)
-        self.assertEqual(code, 1)  # Gateway's owner must label its new external volumes before reuse is supported.
-        self.assertTrue(any("Volume ownership" in error["detail"] for error in plan["conflicts"]))
+        self.assertEqual((code, plan["completed"]), (0, ["edge", "gateway"]))
         self.assertEqual(self.snapshot(), before)
-        self.assertEqual(runner.started, started)
+        self.assertEqual(runner.started[len(started):], ["edge", "gateway"])
 
     def test_child_failure_has_bounded_completion_report_and_does_not_start_later_owners(self):
         runner = FakeRunner(fail="backplane")

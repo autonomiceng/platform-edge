@@ -260,7 +260,9 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                     proxies = [ipaddress.ip_interface(value) for value in recorded.get(prefix + "_TRUSTED_PROXIES", "").split()]
                     if any(proxy.network.prefixlen != proxy.max_prefixlen for proxy in proxies):
                         raise ValueError("Proxy trust must contain only the exact Edge address, never a network range.")
-                    expected[prefix + "_TRUSTED_PROXIES"] = peer + "/32" if peer else "192.0.2.1/32"
+                    if recorded.get(prefix + "_TRUSTED_PROXIES") and not peer:
+                        conflict(name, "peer_unknown", "Start or pin Edge first; its exact peer must be known before saved proxy trust can be verified.")
+                    expected[prefix + "_TRUSTED_PROXIES"] = peer + "/32" if peer else recorded.get(prefix + "_TRUSTED_PROXIES", "192.0.2.1/32")
                     if recorded.get(prefix + "_TRUSTED_PROXIES") and peer:
                         if {str(ipaddress.ip_interface(v).ip) for v in recorded[prefix + "_TRUSTED_PROXIES"].split()} == {peer}:
                             expected[prefix + "_TRUSTED_PROXIES"] = recorded[prefix + "_TRUSTED_PROXIES"]
@@ -367,7 +369,7 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
             item = {"name": name, "prefix": prefix, "root": directory, "env": env, "template": template if name == "edge" else directory / ".env.example",
                     "source": read_source(env), "template_source": read_source(template if name == "edge" else directory / ".env.example"), "recorded": recorded, "values": values, "changes": changes,
                     "files": files, "profiles": profiles, "command": command, "action": action, "ids": containers.split(), "volumes": set(volumes.split()) | set(named.split()),
-                    "resources": bool(containers or volumes or named or name == "gateway" and data.exists() and any(data.iterdir()))}
+                    "resources": bool(containers or volumes or named or name == "gateway" and data.exists() and (not os.access(data, os.R_OK) or any(data.iterdir())))}
             if docker:
                 qualify(item, inspect)
                 if name == "edge" and item["containers"]:
