@@ -8,7 +8,11 @@ const assert = require("node:assert/strict");
     const page = await browser.newPage();
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.clock.install();
+    const now = new Date("2026-09-20T12:00:00Z");
+    await page.clock.install({ time: now });
+    let statusFixture = "current",
+      statusAvailable = true,
+      requests = 0;
     await page
       .context()
       .grantPermissions(["clipboard-read", "clipboard-write"]);
@@ -33,6 +37,22 @@ const assert = require("node:assert/strict");
       backplaneReady = true;
     await page.route("https://test.ts.net/**", (route) => {
       const path = new URL(route.request().url()).pathname;
+      requests++;
+      if (path.startsWith("/stack-status/")) {
+        if (path !== "/stack-status/backplane" || !statusAvailable)
+          return route.fulfill({
+            status: 404,
+            contentType: "application/json",
+            body: "",
+          });
+        return route.fulfill({
+          contentType: "application/json",
+          body: fs.readFileSync(
+            `docs/operations/status-fixtures/${statusFixture}.json`,
+            "utf8",
+          ),
+        });
+      }
       if (path === "/edge-config.json") return route.fulfill({ json: config });
       if (path === "/stack-versions/gateway")
         return route.fulfill({
@@ -75,8 +95,8 @@ const assert = require("node:assert/strict");
     await settled();
     assert.equal(
       await page.locator(".version").first().textContent(),
-      "v9.8.7",
-      "Edge version comes from the running image",
+      "Configured v9.8.7 · undated",
+      "Image metadata remains configured-only until runtime observation",
     );
     assert.equal(
       await page.locator(".project h2").first().textContent(),
@@ -104,7 +124,9 @@ const assert = require("node:assert/strict");
       "https://test.ts.net:8448/api/v1",
     );
     assert.ok(
-      (await page.locator(".version").allTextContents()).includes("1.2.3"),
+      (await page.locator(".version").allTextContents()).includes(
+        "Configured 1.2.3 · undated",
+      ),
     );
     config.connected = "gateway";
     await page.clock.fastForward(30000);
@@ -140,7 +162,9 @@ const assert = require("node:assert/strict");
     versionsAvailable = false;
     await refresh();
     assert.ok(
-      !(await page.locator(".version").allTextContents()).includes("1.2.3"),
+      !(await page.locator(".version").allTextContents()).includes(
+        "Configured 1.2.3 · undated",
+      ),
     );
     backplaneReady = false;
     await refresh();
@@ -148,9 +172,75 @@ const assert = require("node:assert/strict");
       await page
         .getByRole("link", { name: "Backplane ↗", exact: true })
         .count(),
-      0,
+      1,
+      "Trusted navigation survives failed reachability",
     );
     backplaneReady = true;
+    await refresh();
+    const bpCard = page
+      .locator(".app-card")
+      .filter({
+        has: page.getByRole("link", { name: "Backplane ↗", exact: true }),
+      });
+    await page.clock.setSystemTime(now);
+    await refresh();
+    assert.equal(await bpCard.locator(".badge").textContent(), "Healthy");
+    assert.match(
+      await bpCard.locator(".version").textContent(),
+      /Configured custom/,
+    );
+    assert.doesNotMatch(
+      await bpCard.locator(".version").textContent(),
+      /Observed version/,
+    );
+    for (const fixture of ["forward-compatible", "malformed-component"]) {
+      statusFixture = fixture;
+      await refresh();
+      assert.equal(await bpCard.locator(".badge").textContent(), "Healthy");
+    }
+    for (const fixture of ["duplicate", "unsupported", "stale"]) {
+      statusFixture = fixture;
+      await refresh();
+      assert.equal(await bpCard.locator(".badge").textContent(), "Unknown");
+      assert.equal(await bpCard.locator("h3 a").count(), 1);
+    }
+    statusFixture = "current";
+    await refresh();
+    statusAvailable = false;
+    await refresh();
+    assert.equal(await bpCard.locator(".badge").textContent(), "Unknown");
+    assert.match(
+      await bpCard.locator(".evidence").textContent(),
+      /Metadata unavailable · stale.*11:59:58/,
+    );
+    statusAvailable = true;
+    await refresh();
+    // Hidden pages stop network polling, but evidence must still expire.
+    await page.evaluate(() =>
+      Object.defineProperty(document, "hidden", {
+        configurable: true,
+        value: true,
+      }),
+    );
+    const hiddenRequests = requests;
+    await page.clock.fastForward(61000);
+    assert.equal(requests, hiddenRequests);
+    assert.equal(await bpCard.locator(".badge").textContent(), "Unknown");
+    assert.match(
+      await bpCard.locator(".evidence").textContent(),
+      /Stale observation/,
+    );
+    await page.clock.setSystemTime(now);
+    await page.evaluate(() => {
+      Object.defineProperty(document, "hidden", {
+        configurable: true,
+        value: false,
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await settled();
+    assert.equal(await bpCard.locator(".badge").textContent(), "Healthy");
+    statusAvailable = false;
     await refresh();
     await page
       .getByRole("textbox", { name: "Find a service" })
@@ -167,7 +257,10 @@ const assert = require("node:assert/strict");
       0,
       "Unprobed databases must not inherit app health",
     );
-    await page.getByRole("textbox", { name: "Find a service" }).fill("");
+    const search = page.getByRole("textbox", { name: "Find a service" });
+    await search.press("ControlOrMeta+A");
+    await search.press("Backspace");
+    assert.equal(await search.inputValue(), "");
     await page
       .getByRole("button", { name: "Details →", exact: true })
       .first()
@@ -203,7 +296,7 @@ const assert = require("node:assert/strict");
     );
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: live refresh, safe links, independent health, search, service details, map toggles, and mobile layout",
+      "PASS: 6 contract fixtures, stale/failed/hidden expiry, independent health, trusted links, live refresh, search, details, map, and mobile layout",
     );
   } finally {
     await browser.close();

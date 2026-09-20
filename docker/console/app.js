@@ -28,7 +28,10 @@ let detailOpen = false,
   notice = "",
   config;
 const health = {};
-let imageVersions = {};
+let legacyVersions = {};
+const statusDocuments = {},
+  statusFailures = {};
+let expiryTimer;
 DATA.projects.sort((a, b) => (a.id === "edge" ? -1 : b.id === "edge" ? 1 : 0));
 const github = (p) =>
   `<a class="github-link" href="https://github.com/${p.repo.includes("/") ? p.repo : "autonomiceng/" + p.repo}" target="_blank" rel="noreferrer" aria-label="${esc(p.name)} on GitHub"><img src="${DATA.icons.github}" alt=""> GitHub ↗</a>`;
@@ -64,11 +67,12 @@ function services() {
     links: serviceLinks(s),
     state: serviceState(s),
     version: serviceVersion(s),
+    evidence: serviceEvidence(s),
   }));
 }
 const state = (s) =>
-  s.kind === "setup" && s.state === "unknown"
-    ? "Not recorded"
+  s.kind === "setup" && s.state === "healthy"
+    ? "Last execution succeeded"
     : {
         off: "Not enabled",
         healthy: "Healthy",
@@ -76,14 +80,19 @@ const state = (s) =>
         configured: "Configured",
         completed: "Completed",
         "on demand": "On demand",
-        unknown: "Not checked",
+        unknown: "Unknown",
+        unavailable: "Unavailable",
+        degraded: "Degraded",
+        starting: "Starting",
+        disabled: "Disabled",
+        absent: "Absent",
         optional: "Optional",
         checking: "Checking…",
         attention: "Unavailable",
         stopped: "Stopped",
       }[s.state] || s.state;
 const badge = (s) =>
-  `<span class="badge ${s.state.replaceAll(" ", "-")}"><i class="dot"></i>${state(s)}</span>`;
+  `<span class="badge ${s.state.replaceAll(" ", "-")}"><i class="dot"></i>${esc(state(s))}</span>`;
 function endpoints(s) {
   return Object.entries(s.links)
     .filter(([k]) => k !== "Console")
@@ -99,16 +108,16 @@ function title(s) {
     : esc(s.name);
 }
 function appCard(s) {
-  return `<article class="app-card"><div class="service-title">${icon(s)}<h3>${title(s)}</h3>${badge(s)}</div><p class="description">${esc(s.description)}</p>${endpoints(s)}<div class="card-bottom"><span class="version">${esc(s.version || "Version unavailable")}</span><button class="text-button inspect" data-select="${s.id}">Details →</button></div></article>`;
+  return `<article class="app-card"><div class="service-title">${icon(s)}<h3>${title(s)}</h3>${badge(s)}</div><p class="description">${esc(s.description)}</p>${endpoints(s)}<small class="evidence">${esc(s.evidence)}</small><div class="card-bottom"><span class="version">${esc(s.version || "Version unavailable")}</span><button class="text-button inspect" data-select="${s.id}">Details →</button></div></article>`;
 }
 function row(s) {
-  return `<div class="service-row">${icon(s)}<div class="grow"><h3><button class="text-button inspect" data-select="${s.id}">${esc(s.name)} →</button></h3><small>${esc(s.description)}</small><small>${esc(s.version || "")}</small></div>${badge(s)}</div>`;
+  return `<div class="service-row">${icon(s)}<div class="grow"><h3><button class="text-button inspect" data-select="${s.id}">${esc(s.name)} →</button></h3><small>${esc(s.description)}</small><small>${esc(s.version || "")}</small><small class="evidence">${esc(s.evidence)}</small></div>${badge(s)}</div>`;
 }
 function detail() {
   const s = services().find((x) => x.id === selected);
   if (!s) return '<aside class="detail">Select a service.</aside>';
   const p = DATA.projects.find((p) => p.id === s.project);
-  return `<aside class="detail">${view === "projects" ? '<button class="close-detail" aria-label="Close service details">×</button>' : ""}${icon(s)}<div class="meta">${esc(p.name)}</div><h2>${title(s)}</h2>${badge(s)}<p>${esc(s.description)}</p>${endpoints(s)}${!Object.keys(s.links).length ? '<div class="meta">Internal service · no browser endpoint</div>' : ""}<div class="version">${esc(s.version || "Version unavailable")}</div><hr><h3>${s.id === "alloy" ? "Sends telemetry to" : "Connects to"}</h3>${
+  return `<aside class="detail">${view === "projects" ? '<button class="close-detail" aria-label="Close service details">×</button>' : ""}${icon(s)}<div class="meta">${esc(p.name)}</div><h2>${title(s)}</h2>${badge(s)}<p>${esc(s.description)}</p>${endpoints(s)}${!Object.keys(s.links).length ? '<div class="meta">Internal service · no browser endpoint</div>' : ""}<div class="version">${esc(s.version || "Version unavailable")}</div><p class="evidence">${esc(s.evidence)}</p><hr><h3>${s.id === "alloy" ? "Sends telemetry to" : "Connects to"}</h3>${
     s.uses.length
       ? s.uses
           .map((id) => {
@@ -119,7 +128,7 @@ function detail() {
           })
           .join("")
       : "<p>No downstream connections shown.</p>"
-  }${s.kind !== "storage" && s.kind !== "setup" ? "<hr><h3>Logs</h3><p>stdout / stderr → host journal<br>With Observability: Alloy → Loki</p>" : ""}${s.id === "edge" ? "<p>Edge routes through each project’s Caddy.</p>" : ""}<hr>${github({ name: s.name, repo: serviceRepos[s.name] || p.repo })}</aside>`;
+  }${s.kind !== "storage" && s.kind !== "capability" && s.kind !== "setup" ? "<hr><h3>Logs</h3><p>stdout / stderr → host journal<br>With Observability: Alloy → Loki</p>" : ""}${s.id === "edge" ? "<p>Edge routes through each project’s Caddy.</p>" : ""}<hr>${github({ name: s.name, repo: serviceRepos[s.name] || p.repo })}</aside>`;
 }
 function ProjectCards() {
   return `<div class="projects">${
@@ -136,19 +145,22 @@ function ProjectCards() {
             (s) => s.kind !== "app" && s.kind !== "setup" && s.id !== "edge",
           ),
           jobs = all.filter((s) => s.kind === "setup"),
-          active = all.filter((s) => s.state === "healthy").length;
-        return `<section class="project"><div class="project-top">${icon(p)}<div class="grow"><h2>${esc(p.name)}</h2><p>${esc(p.description)}</p><span class="meta">${active} responding · ${all.length - jobs.length} ${all.length - jobs.length === 1 ? "service" : "services"}</span></div>${github(p)}</div><div class="apps">${apps.map(appCard).join("")}</div>${
+          active = all.filter(
+            (s) => s.kind !== "setup" && s.state === "healthy",
+          ).length;
+        return `<section class="project"><div class="project-top">${icon(p)}<div class="grow"><h2>${esc(p.name)}</h2><p>${esc(p.description)}</p><span class="meta">${active} healthy · Telemetry ${esc(StackStatus.telemetry(statusDocuments[p.id], Date.now(), statusFailures[p.id]))} · ${all.length - jobs.length} ${all.length - jobs.length === 1 ? "service" : "services"}</span></div>${github(p)}</div><div class="apps">${apps.map(appCard).join("")}</div>${
           rest.length
             ? `<details data-key="${p.id}-services" ${query || overview !== "all" ? "open" : ""}><summary>All services<small>${rest.length} supporting components</small></summary><div class="inventory">${[
                 "infra",
                 "backend",
                 "storage",
+                "capability",
                 "worker",
               ]
                 .map((k) => {
                   const group = rest.filter((s) => s.kind === k);
                   return group.length
-                    ? `<div class="section-label">${{ backend: "Data", storage: "Files", worker: "Workers & collection", infra: "Routing", setup: "One-time setup jobs" }[k]}</div>${group.map(row).join("")}`
+                    ? `<div class="section-label">${{ backend: "Data", storage: "Files", capability: "Capabilities", worker: "Workers & collection", infra: "Routing", setup: "One-time setup jobs" }[k]}</div>${group.map(row).join("")}`
                     : "";
                 })
                 .join("")}</div></details>`
@@ -259,7 +271,7 @@ function AllProjectsMap() {
         !(s.id === "alloy" && id === "loki")
       )
         links.push({ from: s.id, to: id, type: "app" });
-    if (showLogging && s.kind !== "storage" && s.id !== "alloy" && !s.optional)
+    if (showLogging && s.kind !== "storage" && s.kind !== "capability" && s.id !== "alloy" && !s.optional)
       links.push({ from: s.id, to: "alloy", type: "logs" });
   }
   if (showLogging && positions.alloy && positions.loki)
@@ -288,7 +300,7 @@ function AllProjectsMap() {
   return `<nav class="tabs" aria-label="Projects"><button data-project="all" class="${project === "all" ? "active" : ""}">All projects</button>${DATA.projects.map((p) => `<button data-project="${p.id}" class="${project === p.id ? "active" : ""}">${esc(p.name)}</button>`).join("")}</nav><div class="connection-toggles"><label><input type="checkbox" id="application-connections" ${showApplications ? "checked" : ""}> Application connections</label><label><input type="checkbox" id="logging-connections" ${showLogging ? "checked" : ""}> Log collection (when configured)</label><button class="text-button meta" id="clear-map">Clear selection</button></div><div class="map-layout"><div><div class="map-wrap"><svg class="map all-map" viewBox="0 0 ${width} ${height}" role="group" aria-label="All project connections"><defs><marker id="all-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="4" markerHeight="4" orient="auto"><path d="M0 0 L10 5 L0 10" fill="#9faad7"/></marker></defs>${groups.map((p, i) => `<rect class="lane" x="${12 + i * 298}" y="8" width="276" height="${height - 20}" rx="12"/><text class="project-label" x="${25 + i * 298}" y="38">${esc(p.name)}</text>`).join("")}${edges}${list
     .map((s) => {
       const { x, y } = positions[s.id];
-      return `<g class="node ${selected === s.id ? "selected" : ""} ${selected && !connected.has(s.id) ? "dim" : ""} ${s.optional ? "optional" : ""}" tabindex="0" role="button" aria-label="Inspect ${esc(qualified(s))}" data-select="${s.id}"><rect x="${x}" y="${y}" width="252" height="68" rx="9"/><image href="${DATA.icons[s.icon] || DATA.icons.gateway}" x="${x + 12}" y="${y + 16}" width="22" height="22"/><text x="${x + 44}" y="${y + 27}">${esc(s.name)}</text><text class="state-label" x="${x + 44}" y="${y + 48}">${state(s)}</text></g>`;
+      return `<g class="node ${selected === s.id ? "selected" : ""} ${selected && !connected.has(s.id) ? "dim" : ""} ${s.optional ? "optional" : ""}" tabindex="0" role="button" aria-label="Inspect ${esc(qualified(s))}" data-select="${s.id}"><rect x="${x}" y="${y}" width="252" height="68" rx="9"/><image href="${DATA.icons[s.icon] || DATA.icons.gateway}" x="${x + 12}" y="${y + 16}" width="22" height="22"/><text x="${x + 44}" y="${y + 27}">${esc(s.name)}</text><text class="state-label" x="${x + 44}" y="${y + 48}">${esc(state(s))}</text></g>`;
     })
     .join("")}</svg></div></div>${detail()}</div>`;
 }
@@ -300,9 +312,6 @@ const probes = {
   "g-rust": "s3",
   bp: "backplane",
   grafana: "observability",
-  "g-caddy": "gateway",
-  "b-caddy": "backplane",
-  "o-caddy": "observability",
 };
 const versionKeys = {
   lite: "litellm",
@@ -316,6 +325,66 @@ const versionKeys = {
   "pg-export": "postgres-exporter",
   "vk-export": "valkey-exporter",
 };
+const statusIds = {
+  edge: "caddy",
+  lite: "litellm",
+  langfuse: "langfuse-web",
+  "lf-worker": "langfuse-worker",
+  "g-rust": "rustfs",
+  "g-pg": "postgres",
+  "g-caddy": "caddy",
+  "pg-export": "postgres-exporter",
+  "vk-export": "valkey-exporter",
+  "g-init": "rustfs-init",
+  bp: "server",
+  "b-pg": "postgres",
+  "b-rust": "rustfs",
+  "b-caddy": "caddy",
+  "b-init": "blob-bootstrap",
+  "o-caddy": "caddy",
+  "o-rust": "rustfs",
+  "o-init": "rustfs-init",
+};
+const statusKey = (s) => s.statusId || statusIds[s.id] || s.id;
+function observation(s) {
+  return StackStatus.view(
+    statusDocuments[s.project],
+    statusKey(s),
+    Date.now(),
+    statusFailures[s.project],
+  );
+}
+function serviceEvidence(s) {
+  const v = observation(s),
+    parts = [v.reason];
+  if (v.observedAt !== null)
+    parts.push(`Observed ${new Date(v.observedAt).toISOString()}`);
+  if (v.lastExecutionAt !== null)
+    parts.push(`Last execution ${new Date(v.lastExecutionAt).toISOString()}`);
+  if (!v.configFresh) parts.push("Configuration unknown or stale");
+  if (s.id === "alloy") parts.push(`Telemetry ${v.telemetry}`);
+  if (probes[s.id] !== undefined)
+    parts.push(`HTTP reachability: ${health[probes[s.id]] || "checking"}`);
+  return parts.filter(Boolean).join(" · ");
+}
+function scheduleExpiry() {
+  clearTimeout(expiryTimer);
+  const now = Date.now(),
+    times = [];
+  for (const d of Object.values(statusDocuments)) {
+    if (d.configuration !== null)
+      times.push(d.configuration + d.configurationValidForSeconds * 1000 + 1);
+    for (const c of Object.values(d.components))
+      if (c.observed !== null)
+        times.push(c.observed + c.validForSeconds * 1000 + 1);
+  }
+  const next = Math.min(...times.filter((t) => t > now));
+  if (Number.isFinite(next))
+    expiryTimer = setTimeout(() => {
+      render();
+      scheduleExpiry();
+    }, next - now);
+}
 function validateConfig(value) {
   const hostname = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i;
   if (
@@ -375,17 +444,32 @@ function appOrigin(id, prefix) {
   return `${location.protocol}//${prefix ? prefix + "." : ""}${config.domain}${location.port ? ":" + location.port : ""}`;
 }
 function serviceState(s) {
-  const probe = probes[s.id];
-  if (probe !== undefined) return health[probe] || "checking";
-  return s.optional ? "optional" : "unknown";
+  return observation(s).state;
 }
 function serviceVersion(s) {
-  const value =
-    s.id === "edge" ? config?.edgeVersion : imageVersions[versionKeys[s.id]];
-  return typeof value === "string" && value.length <= 128 ? value : s.version;
+  const v = observation(s),
+    labels = [];
+  if (v.configuredVersion)
+    labels.push(
+      `Configured ${v.configuredVersion} · ${new Date(v.configurationAt).toISOString()}`,
+    );
+  else if (
+    s.project === "gateway" &&
+    (!v.configFresh ||
+      !statusDocuments[s.project]?.components[statusKey(s)])
+  ) {
+    const fallback = StackStatus.legacy(legacyVersions, versionKeys[s.id]);
+    if (fallback) labels.push(fallback);
+  }
+  if (s.id === "edge" && !v.configuredVersion && /^[A-Za-z0-9._+-]{1,128}$/.test(config?.edgeVersion || ""))
+    labels.push(`Configured ${config.edgeVersion} · undated`);
+  if (v.observedVersion) labels.push(`Observed version ${v.observedVersion}`);
+  if (v.configuredDigest)
+    labels.push(`Configured digest ${v.configuredDigest}`);
+  if (v.observedImageId) labels.push(`Observed image ID ${v.observedImageId}`);
+  return labels.join(" · ");
 }
 function serviceLinks(s) {
-  if (serviceState(s) !== "healthy") return {};
   const links = {},
     add = (key, id, prefix, path = "") => {
       const origin = appOrigin(id, prefix);
@@ -400,8 +484,7 @@ function serviceLinks(s) {
     add("OTLP API", "langfuse", "langfuse", "/api/public/otel");
   }
   if (s.id === "g-rust") {
-    if (health.rustfs === "healthy")
-      add("Console", "rustfs", "rustfs", "/rustfs/console/");
+    add("Console", "rustfs", "rustfs", "/rustfs/console/");
     add("S3 API", "s3", "s3");
   }
   if (s.id === "bp") {
@@ -431,7 +514,7 @@ function accessNotice() {
       "observability",
     ].some(
       (id) =>
-        health[id] === "healthy" &&
+        health[id] === "reachable" &&
         !connected.has(id === "observability" ? "grafana" : id),
     );
     if (missing)
@@ -445,53 +528,61 @@ async function check() {
   render();
   let settingsOK = true;
   try {
-    try {
-      const response = await fetch("/edge-config.json", {
-        cache: "no-store",
-        credentials: "omit",
-        signal: AbortSignal.timeout(8000),
-      });
-      if (!response.ok) throw new Error();
-      config = validateConfig(await response.json());
-    } catch {
-      settingsOK = false;
-    }
-    const probeIds = [...new Set([...Object.values(probes), "rustfs"])];
-    await Promise.all([
-      ...probeIds.map(async (id) => {
+    const jobs = Object.keys(StackStatus.ids).map((stack) => async () => {
+      try {
+        const result = await StackStatus.request(`/stack-status/${stack}`);
+        statusDocuments[stack] = StackStatus.parse(
+          result.text,
+          stack,
+          Date.now(),
+          result.date,
+        );
+        statusFailures[stack] = false;
+      } catch {
+        statusFailures[stack] = true;
+      }
+      render();
+      scheduleExpiry();
+    });
+    jobs.push(
+      async () => {
         try {
-          const r = await fetch("/health" + (id ? "/" + id : ""), {
-            cache: "no-store",
-            credentials: "omit",
-            signal: AbortSignal.timeout(8000),
-          });
-          health[id] = r.status === 200 ? "healthy" : "attention";
+          const result = await StackStatus.request("/edge-config.json");
+          config = validateConfig(JSON.parse(result.text));
         } catch {
-          health[id] = "attention";
+          settingsOK = false;
         }
-      }),
-      (async () => {
-        imageVersions = {};
+        render();
+      },
+      async () => {
+        legacyVersions = {};
         try {
-          const r = await fetch("/stack-versions/gateway", {
+          legacyVersions = JSON.parse(
+            (await StackStatus.request("/stack-versions/gateway")).text,
+          );
+        } catch {
+          /* Legacy configuration is optional. */
+        }
+        render();
+      },
+    );
+    for (const id of new Set([...Object.values(probes), "rustfs"]))
+      jobs.push(async () => {
+        try {
+          const response = await fetch("/health" + (id ? "/" + id : ""), {
+            method: "GET",
             cache: "no-store",
             credentials: "omit",
+            redirect: "error",
             signal: AbortSignal.timeout(4000),
           });
-          if (r.ok) {
-            const data = await r.json();
-            if (
-              data?.images &&
-              typeof data.images === "object" &&
-              !Array.isArray(data.images)
-            )
-              imageVersions = data.images;
-          }
+          health[id] = response.status === 200 ? "reachable" : "unavailable";
         } catch {
-          /* Optional metadata must not block independent stacks. */
+          health[id] = "unavailable";
         }
-      })(),
-    ]);
+        render();
+      });
+    await StackStatus.pool(jobs);
     $("#host-name").textContent = location.hostname;
     $("#access-mode").textContent =
       config?.tailscale === location.hostname

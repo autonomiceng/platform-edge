@@ -393,17 +393,41 @@ service names and descriptions. Project overview links narrow the same interface
 shows application and log-collection paths with independent toggles. Component details
 link to the component’s upstream repository; project headers link to the stack repository.
 
-Refresh and automatic checks every 30 seconds update application addresses and health
-without reloading the page. Checks pause while the page is hidden. Backend services
-without a public probe show **Not checked**; optional components show **Optional**.
-The catalog describes the supported architecture, not a Docker inventory. Connections
-show expected dependencies, not live traffic; the logging layer applies when Alloy
-collection is configured. Installation task outcomes are **Not recorded** until a stack
-provides that metadata. Missing stacks do not block other projects.
+Refresh and automatic checks every 30 seconds update application addresses, HTTP
+reachability and independent stack status. Network polling pauses while hidden; evidence
+expires at its original deadline even between refreshes. Three concurrent requests share
+four-second per-request deadlines; status documents are limited to 64 KiB and 32 components.
+HTTP 200 alone never makes a component healthy. Missing, malformed, incompatible or failed
+producers leave other cards usable. Failed refreshes retain previous observations only as
+explicitly stale. Component links come exclusively from validated Edge access configuration
+and remain available when component health or producer support is unknown.
 
-The console reads only same-origin, uncached access settings, application probes and
-optional Gateway version metadata. It has no Docker socket, credentials or installation
-privileges. Version metadata describes pinned images; it does not prove container health.
+`/stack-status/gateway`, `/stack-status/backplane` and `/stack-status/observability`
+proxy their owning gateway's `/status.json`. `/stack-versions/gateway` remains a legacy
+configured-version fallback, dated by valid `configuredAt`/`pinnedAt` or labelled undated.
+The Edge card reads `/stack-status/edge`, published by the installed host observer.
+If that producer is unavailable, its own image version remains a configured, undated
+fallback and component health stays unknown.
+A configured image version is never displayed as an observed runtime version. Fresh status
+configuration takes precedence. Tasks display their execution start separately from the
+freshness of the record inspection. Optional architecture entries with no evidence are unknown.
+
+Metadata routes accept GET/HEAD, remove Authorization and Cookie, suppress upstream error
+and HTML fallback bodies, and return uncached JSON. **Each producer must enforce the contract's
+closed public field allowlist.** Edge checks transport and the browser validates schema;
+Caddy does not sanitize fields inside successful JSON. No backend administration route,
+Docker socket or observer credential is exposed. Gateway, Backplane and Observability status
+producers can roll out independently; there are no new operator environment settings.
+Deploy the reviewed console and routes using the existing rollout procedure. Missing
+sibling producers need no workaround. Before the Edge observer publishes its first
+record, `/stack-status/edge` returns empty JSON 404 and Edge component health is unknown.
+`/health` reports HTTP reachability only.
+
+Consumer checks use `node --test tests/status*.test.cjs` and the existing
+`tests/console-browser.cjs` Playwright acceptance runner. `scripts/smoke.sh` owns disposable
+Docker resources and invokes `tests/status_proxy.py` to check methods, credentials,
+404/HTML/error suppression, forwarding and partial producer failure. Fixture tests do not
+attest deployed sibling producers.
 
 The status consumer enforces a four-second total request deadline, including body
 reads, and a 64 KiB body limit. It aborts and cancels a slow or oversized response.
