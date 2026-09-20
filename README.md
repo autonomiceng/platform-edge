@@ -110,7 +110,7 @@ Host journal persistence remains the operator's choice. Fresh installs provide H
 
 ## Public integration
 
-Point DNS for the root and five subdomains at the host and open TCP 80/443. Certificate issuance requires all six names to be reachable. For private DNS, select `PE_ACCESS_MODE=local` with the private domain and distribute its public CA root.
+Point DNS for the root and six subdomains at the host and open TCP 80/443. Certificate issuance requires all seven names to be reachable. For private DNS, select `PE_ACCESS_MODE=local` with the private domain and distribute its public CA root.
 
 Edge `.env`:
 
@@ -168,7 +168,7 @@ BP_PORT=3000
 ```
 
 The Edge reaches the backplane at `bp-server:3000`; keep the backplane `edge` profile off.
-The six routed hosts are root, `litellm.`, `langfuse.`, `s3.`, `backplane.`
+The seven routed hosts are root, `litellm.`, `langfuse.`, `s3.`, `rustfs.`, `backplane.`
 and `grafana.` under the configured domain. Run shared-host acceptance after siblings
 are ready: `SMOKE_INTEGRATION=1 SMOKE_DOMAIN=example.com scripts/smoke.sh` (use
 `localhost` for Local Mode). A missing-sibling skip is not a pass.

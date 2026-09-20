@@ -327,7 +327,7 @@ curl --noproxy '*' --max-time 10 -fsS "http://127.0.0.1:$PE_HTTP_PORT/health" >/
 curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -fsS "https://127.0.0.1:$PE_HTTPS_PORT/health" >/dev/null
 ok 'Tailscale routes coexist with local HTTP and verified self-signed HTTPS'
 docker start "$lg_stub" "$ob_stub" >/dev/null
-for item in '8443 lg-gateway' '8444 lg-gateway' '8445 lg-gateway' '8446 lg-gateway' '8447 ob-gateway' '8448 bp-server'; do
+for item in '8443 lg-gateway' '8444 lg-gateway' '8445 lg-gateway' '8446 lg-gateway' '8447 ob-gateway' '8448 bp-server' '8449 lg-gateway'; do
   # shellcheck disable=SC2086
   set -- $item
   body=$(curl --noproxy '*' --retry 5 --retry-all-errors --retry-delay 1 --max-time 10 -fsS -H "Host: $PE_TAILSCALE_HOST:$1" -H 'X-Forwarded-Proto: forged' "http://127.0.0.1:$PE_HTTP_PORT/authority")

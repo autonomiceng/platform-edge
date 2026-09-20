@@ -1,4 +1,14 @@
 (stack-probes) {
+	handle /health/rustfs {
+		header Cache-Control "no-store"
+		rewrite * /health/rustfs-console
+		reverse_proxy lg-gateway:80 {
+			import probe-response
+			header_up -Authorization
+			header_up Host {$PE_PUBLIC_DOMAIN}
+			import forwarded-proto-{$PE_ACCESS_MODE:local}
+		}
+	}
 	# Same-origin probes for the fallback page. A missing alias becomes a 502.
 	handle /health/gateway {
 		header Cache-Control "no-store"
@@ -82,7 +92,7 @@
 	}
 	handle_errors {
 		import access-headers-{$PE_ACCESS_MODE:local}
-		@probe expression `{http.request.orig_uri.path} in ["/health/gateway", "/health/backplane", "/health/observability", "/health/litellm", "/health/langfuse", "/health/s3"]`
+		@probe expression `{http.request.orig_uri.path} in ["/health/gateway", "/health/backplane", "/health/observability", "/health/litellm", "/health/langfuse", "/health/s3", "/health/rustfs"]`
 		handle @probe {
 			header Cache-Control "no-store"
 			respond "" {err.status_code}
@@ -212,3 +222,33 @@ import gateway-langfuse-{$PE_ACCESS_MODE:local}
 	}
 }
 import gateway-s3-{$PE_ACCESS_MODE:local}
+
+(gateway-rustfs-routes) {
+	import access-log
+	import access-headers-{$PE_ACCESS_MODE:local}
+	reverse_proxy lg-gateway:80 {
+		header_up Host {host}
+		import forwarded-proto-{$PE_ACCESS_MODE:local}
+	}
+}
+(gateway-rustfs-local) {
+	http://rustfs.{$PE_PUBLIC_DOMAIN} {
+		import gateway-rustfs-routes
+	}
+	https://rustfs.{$PE_PUBLIC_DOMAIN} {
+		tls internal
+		import gateway-rustfs-routes
+	}
+}
+(gateway-rustfs-public) {
+	https://rustfs.{$PE_PUBLIC_DOMAIN} {
+		import ca-acme
+		import gateway-rustfs-routes
+	}
+}
+(gateway-rustfs-proxy) {
+	http://rustfs.{$PE_PUBLIC_DOMAIN} {
+		import gateway-rustfs-routes
+	}
+}
+import gateway-rustfs-{$PE_ACCESS_MODE:local}

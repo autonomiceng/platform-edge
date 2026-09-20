@@ -3,7 +3,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const fs=require('fs');const assert=require('node:assert/strict');
 (async()=>{const browser=await chromium.launch();try{const page=await browser.newPage();
 await page.clock.install();
-const config={domain:'localhost',mode:'local',scheme:'http',tailscale:'test.ts.net',connected:'gateway',ports:{gateway:'8446',litellm:'8443',langfuse:'8444',s3:'8445',observability:'8447',backplane:'8448'}};
+const config={domain:'localhost',mode:'local',scheme:'http',tailscale:'test.ts.net',connected:'gateway',ports:{gateway:'8446',litellm:'8443',langfuse:'8444',s3:'8445',observability:'8447',backplane:'8448',rustfs:'8449'}};
 const html=()=>fs.readFileSync('docker/console/index.html','utf8').replace(/(<script type="application\/json" id="edge-config">)[\s\S]*?(<\/script>)/,'$1'+JSON.stringify(config)+'$2');
 await page.route('https://test.ts.net/**',r=>{const p=new URL(r.request().url()).pathname;return r.fulfill({status:200,contentType:p==='/edge-config.json'?'application/json':p.startsWith('/health/')?'text/plain':'text/html',body:p==='/edge-config.json'?JSON.stringify(config):p.startsWith('/health/')?'':html()});});
 await page.goto('https://test.ts.net/');await page.waitForFunction(()=>!document.querySelector('#refresh').disabled);

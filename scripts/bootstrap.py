@@ -52,6 +52,7 @@ DEFAULTS = {
     "PE_TAILSCALE_GATEWAY_PORT": "8446",
     "PE_TAILSCALE_GRAFANA_PORT": "8447",
     "PE_TAILSCALE_BACKPLANE_PORT": "8448",
+    "PE_TAILSCALE_RUSTFS_PORT": "8449",
     "PE_VOLUME_PREFIX": PROJECT,
     "PE_BACKUP_DIR": "./backups",
     "PE_BACKUP_KEEP": "7",
@@ -179,7 +180,7 @@ def settings_for(values: dict[str, str]) -> dict[str, str]:
             raise Refused("invalid_settings", "PE_TAILSCALE_HOST must be this machine's Tailscale hostname")
         if mode not in {"local", "proxy"} or settings["PE_BIND_HOST"] != "127.0.0.1":
             raise Refused("invalid_settings", "Tailscale requires local or proxy mode and a loopback HTTP listener")
-        ports = [settings["PE_TAILSCALE_PORT"], *[settings["PE_TAILSCALE_" + app + "_PORT"] for app in ("LITELLM", "LANGFUSE", "S3", "GATEWAY", "GRAFANA", "BACKPLANE")]]
+        ports = [settings["PE_TAILSCALE_PORT"], *[settings["PE_TAILSCALE_" + app + "_PORT"] for app in ("LITELLM", "LANGFUSE", "S3", "GATEWAY", "GRAFANA", "BACKPLANE", "RUSTFS")]]
         if any(not port.isdigit() or not 1 <= int(port) <= 65535 for port in ports) or len(set(map(int, ports))) != len(ports):
             raise Refused("invalid_settings", "Tailscale HTTPS ports must be valid and distinct")
         if any(int(port) <= 1023 for port in ports[1:]):

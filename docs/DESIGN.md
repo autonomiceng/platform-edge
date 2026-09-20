@@ -9,7 +9,7 @@ Multiple standalone stacks each ship an ingress, but only one ingress can own a 
 ## Guarantees, stated exactly
 
 - Caddy is the only service and publisher in this project. Defaults bind HTTP and HTTPS ports to loopback.
-- All six hostnames are configured even when some stacks are absent. An unavailable alias produces a request failure, independent of other aliases.
+- All seven hostnames are configured even when some stacks are absent. An unavailable alias produces a request failure, independent of other aliases.
 - `/health` returns 200 independently of upstream readiness. It is available on the root site and over HTTP in every access mode.
 - Every application route sets `Host` to the requested hostname and `X-Forwarded-Proto` to the scheme received by Edge, or the configured external scheme when another gateway handles HTTPS.
 - The root gateway failure serves a small static fallback page with status 502. Its same-origin probes show which applications answer. Application health remains a stack concern.
@@ -22,7 +22,7 @@ No high availability, dynamic service discovery, authentication, rate limiting o
 ```mermaid
 flowchart TD
     client[Browser or API client] -->|TCP 80 and 443| edge[Edge: Caddy]
-    edge -->|root, litellm, langfuse, s3| gateway[lg-gateway:80]
+    edge -->|root, litellm, langfuse, s3, rustfs| gateway[lg-gateway:80]
     edge -->|backplane| backplane[bp-server:3000]
     edge -->|grafana| observability[ob-gateway:80]
 ```

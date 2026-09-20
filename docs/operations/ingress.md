@@ -8,6 +8,7 @@ Edge owns host ports 80 and 443. Its default loopback binding makes them accessi
 | `litellm.example.com` | `lg-gateway:80` |
 | `langfuse.example.com` | `lg-gateway:80` |
 | `s3.example.com` | `lg-gateway:80` |
+| `rustfs.example.com` | `lg-gateway:80` (admin console) |
 | `backplane.example.com` | `bp-server:3000` |
 | `grafana.example.com` | `ob-gateway:80` |
 
@@ -76,12 +77,13 @@ certificate on your computer:
 | LLM Gateway overview | 8446 |
 | Grafana | 8447 |
 | Agent Backplane | 8448 |
+| RustFS admin console | 8449 |
 
 Open the printed Platform Edge link to launch applications. S3 is an API endpoint;
-use an S3 client and your existing credentials. Each application keeps its own login.
+use an S3 client and your existing credentials. RustFS has a separate browser admin console, enabled by default in the gateway. Set `LG_RUSTFS_CONSOLE=off` to disable it; the helper only connects it when enabled. Each application keeps its own login.
 The LiteLLM operator pages become reachable through the private Edge connection;
 application authentication remains required. Your tailnet access rules must permit the
-chosen ports. Use `--https-port` for the landing page and `--port-base` to move the six
+chosen ports. Use `--https-port` for the landing page and `--port-base` to move the seven
 consecutive application ports together.
 
 Each Tailscale listener created by this setup forwards to the configured Edge loopback
@@ -124,7 +126,7 @@ not enabled automatically and metrics authorization remains based on socket peer
 
 ## Public HTTPS with your own domain
 
-Set A and, where IPv6 is configured, AAAA records for all six names to the host. The root needs its own record even if a wildcard record covers subdomains. Every configured name must resolve correctly and reach Caddy to obtain trusted certificates, whether or not its application stack is running. Forward TCP 80 and 443 through the host firewall and any NAT. An AAAA record must not point to an unreachable IPv6 listener.
+Set A and, where IPv6 is configured, AAAA records for all seven names to the host. The root needs its own record even if a wildcard record covers subdomains. Every configured name must resolve correctly and reach Caddy to obtain trusted certificates, whether or not its application stack is running. Forward TCP 80 and 443 through the host firewall and any NAT. An AAAA record must not point to an unreachable IPv6 listener.
 
 Set these exact lines in the edge `.env`:
 
@@ -278,7 +280,7 @@ LiteLLM and Langfuse probes require HTTP 200 and empty public response bodies.
 Backplane and Grafana probes validate their JSON health responses.
 The S3 route uses RustFS's [documented health endpoints](https://docs.rustfs.com/en/operations/status-check).
 The normal smoke uses stubs to also exercise missing siblings, forwarding, local HTTPS without HSTS on all
-six hosts, empty uncached console probes, metrics and container hardening.
+seven hosts, empty uncached console probes, metrics and container hardening.
 This integration does not prove external DNS, port forwarding or public certificate issuance; verify those from
 an external client as the final public rollout check.
 
@@ -309,7 +311,7 @@ Run `python3 scripts/bootstrap.py --probe-only` every five minutes to refresh th
 leaf observation after automatic renewal, as shown in [backup](backup.md). Failure
 leaves the last successful value; alert on expiry, stale/absent observations and scrape
 failure. The root's expiry does not cover independently issued subdomain certificates:
-external TLS probes must cover all six names. HSTS is `max-age=31536000` in public mode, with no preload or includeSubDomains. Local mode deliberately has no HSTS. Console probes expose status and an empty
+external TLS probes must cover all seven names. HSTS is `max-age=31536000` in public mode, with no preload or includeSubDomains. Local mode deliberately has no HSTS. Console probes expose status and an empty
 body, with `Cache-Control: no-store`, including failed upstream connections.
 
 See [backup and restore](backup.md) before adopting the external volume names or changing

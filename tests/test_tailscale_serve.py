@@ -47,7 +47,7 @@ class ServeTests(unittest.TestCase):
     def test_tailscale_ports_must_be_unique_and_loopback_only(self):
         good = {"PE_ACCESS_MODE": "proxy", "PE_TAILSCALE_HOST": "host.tail123.ts.net"}
         tailscale_serve.bootstrap.settings_for(good)
-        for invalid in ({"PE_TAILSCALE_PORT": "8443"}, {"PE_BIND_HOST": "0.0.0.0"}, {"PE_TAILSCALE_S3_PORT": "65536"}):
+        for invalid in ({"PE_TAILSCALE_PORT": "8443"}, {"PE_BIND_HOST": "0.0.0.0"}, {"PE_TAILSCALE_S3_PORT": "65536"}, {"PE_TAILSCALE_RUSTFS_PORT": "8448"}):
             with self.assertRaises(tailscale_serve.bootstrap.Refused):
                 tailscale_serve.bootstrap.settings_for(dict(good, **invalid))
 

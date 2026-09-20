@@ -1,4 +1,10 @@
 (tailscale-apps) {
+	@ts_rustfs expression `"{$PE_TAILSCALE_HOST}" != "" && {http.request.hostport} == "{$PE_TAILSCALE_HOST}:{$PE_TAILSCALE_RUSTFS_PORT:8449}"`
+	handle @ts_rustfs {
+		reverse_proxy lg-gateway:80 {
+			header_up X-Forwarded-Proto https
+		}
+	}
 	@ts_litellm expression `"{$PE_TAILSCALE_HOST}" != "" && {http.request.hostport} == "{$PE_TAILSCALE_HOST}:{$PE_TAILSCALE_LITELLM_PORT:8443}"`
 	handle @ts_litellm {
 		route {
