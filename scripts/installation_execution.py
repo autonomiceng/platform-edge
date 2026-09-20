@@ -190,7 +190,7 @@ def qualify(item: dict, inspect) -> None:
     unlabelled = set()
     for volume in sorted(volumes):
         project = json.loads(inspect(["docker", "volume", "inspect", "--format", '{{json (index .Labels "com.docker.compose.project")}}', volume]))
-        if project is None:
+        if project in (None, ""):
             unlabelled.add(volume)
         elif project != item["action"]["project"]:
             raise ValueError("Volume ownership is foreign; use the owning recovery runbook without adopting or replacing data.")
@@ -219,7 +219,7 @@ def qualify(item: dict, inspect) -> None:
         if extra:
             inherited = json.loads(inspect(["docker", "image", "inspect", "--format", "{{json .Config.Volumes}}", desired["image"]])) or {}
             explicit = {mount["Target"] for mount in container.get("ExplicitMounts") or []}
-            explicit.update(bind.split(":")[-2] if ":" in bind else bind for bind in container.get("Binds") or [])
+            explicit.update(bind.split(":")[1] if ":" in bind else bind for bind in container.get("Binds") or [])
             for target in extra:
                 kind, volume = actual_mounts[target]
                 labels = json.loads(inspect(["docker", "volume", "inspect", "--format", "{{json .Labels}}", volume])) if kind == "volume" else {}
@@ -238,11 +238,15 @@ def qualify(item: dict, inspect) -> None:
         users = set(inspect(["docker", "ps", "-aq", "--no-trunc", "--filter", "volume=" + volume]).split())
         mounted = any(mount.get("Name") == volume for container in containers for mount in container["Mounts"])
         if not mounted or not users or not users <= owned:
-            raise ValueError("Volume ownership is unlabelled and cannot be established from qualified containers; use the owning recovery runbook.")
+            raise ValueError("Volume ownership is unlabelled and cannot be established from qualified containers; restore the original owning containers and inspect foreign volume users before rerunning.")
     if name == "observability":
         marker = root / item["values"].get("OB_STATE_DIR", "data") / "installation/storage-mode"
         expected = "s3" if "s3" in item["profiles"] else "filesystem"
-        if (item["resources"] and not marker.is_file()) or (marker.exists() and marker.read_text().strip() != expected):
+        try:
+            current = marker.read_text().strip() if marker.exists() else expected
+        except OSError:
+            raise ValueError("Observability storage marker is unreadable; verify the saved storage mode through its storage migration runbook.") from None
+        if (item["resources"] and not marker.is_file()) or current != expected:
             raise ValueError("Observability storage selection is unknown or differs; use its storage migration runbook.")
     item["containers"] = containers
 

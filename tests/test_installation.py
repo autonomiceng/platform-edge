@@ -159,7 +159,7 @@ class FakeRunner:
                 if (re.search(selector[5:], name) if selector.startswith("name=")
                     else labels.get("com.docker.compose.project") == selector.split("=", 2)[2]))
         elif argv[:3] == ["docker", "volume", "inspect"]:
-            output = json.dumps(self.volumes[argv[-1]] if argv[4] == "{{json .Labels}}" else self.volumes[argv[-1]].get("com.docker.compose.project"))
+            output = json.dumps(self.volumes[argv[-1]] if argv[4] == "{{json .Labels}}" else self.volumes[argv[-1]].get("com.docker.compose.project", ""))
         else:
             raise AssertionError("unexpected or mutating inspection: " + repr(argv))
         return subprocess.CompletedProcess(argv, 0, output, "private diagnostic must not escape")

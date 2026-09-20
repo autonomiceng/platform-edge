@@ -74,7 +74,10 @@ after volume creation with no containers or only some services present. Every fo
 or referenced existing volume must carry the selected `com.docker.compose.project`
 label, or be mounted only by containers that pass the image, service and mount checks.
 Unlabelled volumes without qualified containers and foreign-labelled volumes are refused,
-including unmounted prefix collisions. Image-declared anonymous volumes are accepted only
+including unmounted prefix collisions. For an old unlabelled installation after teardown,
+restore its original owning containers before using selected installation; inspect foreign
+volume users independently. No relabelling or volume replacement is performed.
+Image-declared anonymous volumes are accepted only
 when Docker created them implicitly and all their users are qualified containers. Each present container must still qualify; the owning
 bootstrap completes missing services and checks its database/storage binding.
 
@@ -94,9 +97,9 @@ Edge labels newly created volumes with its selected Compose project. Existing
 unlabelled Edge and Gateway volumes can be qualified through their matching containers,
 without relabelling or replacing data. Gateway's owning bootstrap must label new volumes
 so interruption before container creation also leaves verifiable ownership.
-Observability custom overlays remain refused because its bootstrap reconstructs its
-file list. Its owning followup must preserve the recorded ordered `COMPOSE_FILE` for
-both config validation and startup. No installer shadow selection is used.
+Observability custom overlays retain the recorded order for both configuration validation
+and startup. The base must remain first, with the selected storage and proxy overlays
+present and no duplicate files. No installer shadow selection is used.
 A stopped, unpinned Edge needs its original peer recovered before reuse. Do not run
 independent lifecycle commands concurrently.
 

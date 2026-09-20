@@ -117,6 +117,11 @@ class ExecutionTests(unittest.TestCase):
         container["ExplicitMounts"] = [{"Target": "/implicit", "Source": "anonymous"}]
         self.assertEqual(self.invoke(*self.bp_arguments(), "--dry-run", runner=runner)[0], 1)
         del container["ExplicitMounts"]
+        container["Binds"] = ["anonymous:/implicit"]
+        self.assertEqual(self.invoke(*self.bp_arguments(), "--dry-run", runner=runner)[0], 1)
+        container["Binds"] = ["anonymous:/implicit:rw"]
+        self.assertEqual(self.invoke(*self.bp_arguments(), "--dry-run", runner=runner)[0], 1)
+        del container["Binds"]
         runner.containers["foreign"] = {**container, "Id": "foreign", "Labels": {"com.docker.compose.project": "foreign"}}
         self.assertEqual(self.invoke(*self.bp_arguments(), "--dry-run", runner=runner)[0], 1)
         del runner.containers["foreign"]
