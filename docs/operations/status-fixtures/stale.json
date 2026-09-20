@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "stack": "edge",
+  "generatedAt": "2026-09-20T11:59:59Z",
+  "configurationObservedAt": "2026-09-20T11:00:00Z",
+  "configurationValidForSeconds": 60,
+  "telemetry": "unknown",
+  "components": [
+    {
+      "id": "caddy", "kind": "service", "configured": true,
+      "state": "healthy", "observedAt": "2026-09-20T11:00:00Z", "validForSeconds": 60,
+      "configuredVersion": "2.11.4", "observedVersion": "2.11.4"
+    }
+  ]
+}

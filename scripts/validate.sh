@@ -18,6 +18,8 @@ shellcheck scripts/*.sh
 echo 'shellcheck: PASS'
 python3 -m py_compile scripts/*.py tests/*.py
 echo 'python: PASS'
+python3 -c 'import json,sys; [json.load(open(path)) for path in sys.argv[1:]]' docs/operations/status-fixtures/*.json
+echo 'status fixtures parse: PASS'
 command -v docker >/dev/null || { echo 'missing tool: docker' >&2; exit 1; }
 docker compose version >/dev/null
 docker compose --env-file "$work/.env" -f compose.yaml config -q

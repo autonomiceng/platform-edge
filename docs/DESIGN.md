@@ -39,6 +39,10 @@ The certificate contact email is used only for public certificates. Its empty va
 
 ## Operations
 
+The [public stack status contract](operations/status-contract.md) defines a versioned
+interface for independent status producers and console consumers. Its fixtures describe
+compatibility and freshness requirements; they do not attest deployed producer support.
+
 The ingress runbook contains exact per-stack settings and rollout order. Only move ports or restart services as an authorized installation action. Port conflict checks include overlapping TCP bindings and port ranges, and ignore this project's existing Caddy for idempotent reruns. Host-process conflicts and races after preflight remain Compose startup errors.
 
 Validation and smoke use the shipped validated default image regardless of local image overrides. Validation mounts every Route File in local, public and proxy modes. Smoke owns a fresh project and network, starts three independent stubs using the same image, then tests routing, TLS scheme forwarding, restart with an absent alias, and independent console availability. Smoke refuses existing project containers or volumes and never adopts an existing network.
