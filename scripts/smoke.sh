@@ -82,12 +82,14 @@ cat > "$work/stub.caddy" <<'CADDY'
 	header X-Smoke-Forwarded-For {http.request.header.X-Forwarded-For}
 	header X-Smoke-Forwarded-Host {http.request.header.X-Forwarded-Host}
 	header X-Smoke-Authorization {http.request.header.Authorization}
+	header X-Smoke-Cookie {http.request.header.Cookie}
 	# Probe responses suppress upstream headers, so leaked credentials must also fail status.
 	@probe_credentials {
 		header X-Smoke-Probe true
 		header Authorization *
 	}
 	respond @probe_credentials 401
+	respond /versions.json `{"images":{"litellm":"1.2.3"}}`
 	respond /authority "{$STUB_ALIAS}|{http.request.hostport}|{http.request.header.X-Forwarded-Proto}"
 	respond "{$STUB_ALIAS}|{host}|{http.request.header.X-Forwarded-Proto}"
 }
@@ -102,6 +104,23 @@ fi
 edge_started=1
 python3 scripts/bootstrap.py --env-file "$env_file"
 ok 'bootstrap reached readiness'
+
+if [ "$integration" != 1 ]; then
+  curl --noproxy '*' --max-time 10 -fsS -D "$work/version.headers" \
+    -H 'Host: private.test.ts.net' -H 'Authorization: Bearer smoke-token' -H 'Cookie: smoke-session=private' \
+    "http://127.0.0.1:$PE_HTTP_PORT/stack-versions/gateway" > "$work/versions.json"
+  python3 - "$work/versions.json" "$work/version.headers" <<'PYVERSIONS'
+import json, sys
+from pathlib import Path
+assert json.loads(Path(sys.argv[1]).read_text())["images"]["litellm"] == "1.2.3"
+headers = dict(line.lower().split(":", 1) for line in Path(sys.argv[2]).read_text().splitlines() if ":" in line)
+assert headers["cache-control"].strip() == "no-store"
+assert not headers.get("x-smoke-authorization", "").strip()
+assert not headers.get("x-smoke-cookie", "").strip()
+PYVERSIONS
+  ok 'console version metadata is uncached and forwards no browser credentials'
+fi
+
 
 for scheme in http https; do
   if [ "$scheme" = https ]; then

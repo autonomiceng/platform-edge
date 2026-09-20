@@ -1,4 +1,15 @@
 (stack-probes) {
+	handle /stack-versions/gateway {
+		header Cache-Control "no-store"
+		rewrite * /versions.json
+		reverse_proxy lg-gateway:80 {
+			header_up -Authorization
+			header_up -Cookie
+			header_up Host {$PE_PUBLIC_DOMAIN}
+			import forwarded-proto-{$PE_ACCESS_MODE:local}
+		}
+	}
+
 	handle /health/rustfs {
 		header Cache-Control "no-store"
 		rewrite * /health/rustfs-console
