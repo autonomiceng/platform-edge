@@ -86,6 +86,9 @@
 }
 (console-handlers) {
 	import access-log
+	route {
+	import tailscale-apps
+	import stack-probes
 	handle /health {
 		respond 200
 	}
@@ -96,6 +99,15 @@
 	}
 	handle {
 		respond 404
+	}
+	}
+	handle_errors {
+		@probe path /health/*
+		handle @probe {
+			header Cache-Control "no-store"
+			respond "" {err.status_code}
+		}
+		respond "This application is not reachable. Return to Platform Edge to check its status." {err.status_code}
 	}
 }
 (health-local) {
@@ -152,5 +164,5 @@ http://pe-edge {
 	}
 }
 
-import health-{$PE_ACCESS_MODE:local}
 import /etc/caddy/routes.d/*.caddy
+import health-{$PE_ACCESS_MODE:local}

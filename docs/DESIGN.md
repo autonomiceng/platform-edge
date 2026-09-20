@@ -12,7 +12,7 @@ Multiple standalone stacks each ship an ingress, but only one ingress can own a 
 - All six hostnames are configured even when some stacks are absent. An unavailable alias produces a request failure, independent of other aliases.
 - `/health` returns 200 independently of upstream readiness. It is available on the root site and over HTTP in every access mode.
 - Every application route sets `Host` to the requested hostname and `X-Forwarded-Proto` to the scheme received by Edge, or the configured external scheme when another gateway handles HTTPS.
-- The root gateway failure serves a small static fallback page with status 502. Its three same-origin probes show which stack ingress answers. Application health remains a stack concern.
+- The root gateway failure serves a small static fallback page with status 502. Its same-origin probes show which applications answer. Application health remains a stack concern.
 - Bootstrap renders no secrets, locks the env inode, refuses container port conflicts, ensures the network and external volumes, runs Compose with `--wait`, and prints route-derived hostnames. HTTPS readiness verifies the local TLS handshake with domain SNI and publishes the root leaf expiry. Exit codes match the sibling bootstrap contract: 0 ready, 1 refused, 2 usage, 3 not ready.
 
 No high availability, dynamic service discovery, authentication, rate limiting or edge dashboards are promised.
@@ -29,7 +29,7 @@ flowchart TD
 
 Caddy joins only the external Platform Network, under alias `pe-edge`. There is no project-default network and no dependency on a stack's container lifecycle. The external volumes `${PE_VOLUME_PREFIX}_edge-data` and `${PE_VOLUME_PREFIX}_edge-config` keep TLS state and Caddy configuration state; routine Compose teardown preserves them. There is no Docker socket mount.
 
-The root `Caddyfile` holds the shared global block and issuer snippets. `routes.d/gateway.caddy`, `backplane.caddy` and `observability.caddy` own the site blocks. The fallback page is the single `docker/console/index.html` file, mounted read-only. It checks once at load and on request, with no background animation.
+The root `Caddyfile` holds the shared global block and issuer snippets. `routes.d/gateway.caddy`, `backplane.caddy` and `observability.caddy` own the site blocks. The fallback page is the single `docker/console/index.html` file, mounted read-only. It checks at load, on request, and every 30 seconds while visible, without continuous animation.
 
 ## Access modes
 
@@ -48,3 +48,7 @@ Adding a hostname requires updating its Route File and the fallback page and ext
 Access logs are JSON on stdout; runtime diagnostics are on stderr. Docker sends both to
 journald without a Docker log cache. The host owns journal retention, and Alloy collection
 is optional. Local console aliases do not change application origins or grant metrics access.
+The optional Tailscale setup keeps Edge in local mode with both HTTP and self-signed
+HTTPS listeners, and forwards each Tailscale HTTPS endpoint created by this setup to Edge's loopback HTTP
+listener. It configures explicit application URLs and routes by hostname
+and port, preserving the complete Host for signed requests. See [ADR-0002](adr/0002-tailscale-application-ports.md).

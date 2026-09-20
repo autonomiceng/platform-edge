@@ -23,6 +23,7 @@ import ssl
 import subprocess
 import sys
 import time
+import tempfile
 from pathlib import Path
 from typing import Callable
 
@@ -41,6 +42,16 @@ DEFAULTS = {
     "PE_HTTPS_PORT": "443",
     "PE_PLATFORM_NETWORK": NETWORK,
     "PE_ACME_EMAIL": "",
+    "PE_TAILSCALE_HOST": "",
+    "PE_TAILSCALE_APPS": "",
+    "PE_TAILSCALE_PORT": "443",
+    "PE_TAILSCALE_EDGE_IP": "",
+    "PE_TAILSCALE_LITELLM_PORT": "8443",
+    "PE_TAILSCALE_LANGFUSE_PORT": "8444",
+    "PE_TAILSCALE_S3_PORT": "8445",
+    "PE_TAILSCALE_GATEWAY_PORT": "8446",
+    "PE_TAILSCALE_GRAFANA_PORT": "8447",
+    "PE_TAILSCALE_BACKPLANE_PORT": "8448",
     "PE_VOLUME_PREFIX": PROJECT,
     "PE_BACKUP_DIR": "./backups",
     "PE_BACKUP_KEEP": "7",
@@ -157,6 +168,22 @@ def settings_for(values: dict[str, str]) -> dict[str, str]:
             raise ValueError("empty allow list")
     except ValueError as error:
         raise Refused("invalid_settings", "PE_METRICS_ALLOW must contain IP addresses or CIDRs") from error
+    if settings["PE_TAILSCALE_EDGE_IP"]:
+        try:
+            ipaddress.IPv4Address(settings["PE_TAILSCALE_EDGE_IP"])
+        except ValueError as error:
+            raise Refused("invalid_settings", "PE_TAILSCALE_EDGE_IP must be an IPv4 address") from error
+    tail = settings["PE_TAILSCALE_HOST"]
+    if tail:
+        if not re.fullmatch(r"[a-z0-9-]+\.[a-z0-9-]+\.ts\.net", tail):
+            raise Refused("invalid_settings", "PE_TAILSCALE_HOST must be this machine's Tailscale hostname")
+        if mode not in {"local", "proxy"} or settings["PE_BIND_HOST"] != "127.0.0.1":
+            raise Refused("invalid_settings", "Tailscale requires local or proxy mode and a loopback HTTP listener")
+        ports = [settings["PE_TAILSCALE_PORT"], *[settings["PE_TAILSCALE_" + app + "_PORT"] for app in ("LITELLM", "LANGFUSE", "S3", "GATEWAY", "GRAFANA", "BACKPLANE")]]
+        if any(not port.isdigit() or not 1 <= int(port) <= 65535 for port in ports) or len(set(map(int, ports))) != len(ports):
+            raise Refused("invalid_settings", "Tailscale HTTPS ports must be valid and distinct")
+        if any(int(port) <= 1023 for port in ports[1:]):
+            raise Refused("invalid_settings", "Tailscale application ports must be above 1023")
     return settings
 
 
@@ -226,12 +253,13 @@ def compose_command(root: Path, env_file: Path) -> list[str]:
     command = ["docker", "compose", "--project-directory", str(root), "--env-file", str(env_file)]
     values = read_env(env_file) if env_file.exists() else {}
     mode = os.environ.get("PE_ACCESS_MODE", values.get("PE_ACCESS_MODE", "local"))
+    files = os.environ.get("COMPOSE_FILE", values.get("COMPOSE_FILE", "compose.yaml")).split(os.pathsep)
+    files = [str((root / name).resolve()) for name in files if name]
     if mode in {"proxy", "public"}:
-        files = os.environ.get("COMPOSE_FILE", values.get("COMPOSE_FILE", "compose.yaml")).split(os.pathsep)
-        files = [str((root / name).resolve()) for name in files if name]
         override = str(root / f"compose.{mode}.yaml")
-        for name in [name for name in files if name != override] + [override]:
-            command += ["-f", name]
+        files = [name for name in files if name != override] + [override]
+    for name in files:
+        command += ["-f", name]
     return command
 
 
@@ -358,11 +386,15 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             check_ports(runner, settings, project)
             ensure_network(runner, settings["PE_PLATFORM_NETWORK"])
             ensure_volumes(runner, settings)
-            result = runner(compose_command(root, env_file) + [
-                "run", "--rm", "--no-deps", "--entrypoint", "sh", "caddy", "-ec",
-                f"if test -e /data/{RESTORE_MARKER} || test -e /config/{RESTORE_MARKER}; "
-                "then echo marker; else ls /data /config >/dev/null && echo clean; fi",
-            ])
+            # The read-only state check must not contend for the running Edge's pinned IP.
+            with tempfile.NamedTemporaryFile("w", suffix=".yaml") as isolated:
+                isolated.write("services:\n  caddy:\n    networks: !reset []\n    network_mode: none\n")
+                isolated.flush()
+                result = runner(compose_command(root, env_file) + ["-f", isolated.name,
+                    "run", "--rm", "--no-deps", "--entrypoint", "sh", "caddy", "-ec",
+                    f"if test -e /data/{RESTORE_MARKER} || test -e /config/{RESTORE_MARKER}; "
+                    "then echo marker; else ls /data /config >/dev/null && echo clean; fi",
+                ])
             state = result.stdout.strip().splitlines()[-1:]
             if result.returncode or state not in (["clean"], ["marker"]):
                 raise Refused("state_check_failed", (result.stderr or result.stdout).strip()[-2000:])

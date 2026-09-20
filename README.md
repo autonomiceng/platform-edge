@@ -90,16 +90,19 @@ BP_PORT=3000
 ```
 
 The console also opens at `http://127.0.0.1`; verified direct HTTPS requires installing
-Edge's public CA root. Application links retain their configured hostnames. To share the
-console through Tailscale's trusted HTTPS, run the optional helper after startup:
+Edge's public CA root. For private access from other computers through Tailscale,
+connect your installed stacks with:
 
 ```sh
-sudo python3 scripts/tailscale_serve.py --https-port 8443
+python3 scripts/tailscale_serve.py --dry-run
+python3 scripts/tailscale_serve.py
 ```
 
-It prints the URL and does not modify unrelated Serve endpoints. See the
-[ingress guide](docs/operations/ingress.md) for prerequisites, collision handling,
-trusting self-signed certificates, and configuring names for application access.
+Use sudo if Tailscale requires it. The command configures application URLs and prints
+private HTTPS links on your machine's Tailscale name, through the same Edge Caddy.
+Localhost HTTP and self-signed HTTPS remain available. No custom DNS or client certificate
+installation is needed. See the [ingress guide](docs/operations/ingress.md#access-everything-through-tailscale)
+for prerequisites, ports, and installations in other directories.
 
 Runtime logs go to stdout/stderr and Docker journald, without Docker log files or cache.
 Alloy collection is optional; `docker compose logs -f caddy` works without observability.

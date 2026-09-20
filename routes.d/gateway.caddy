@@ -1,10 +1,4 @@
-(gateway-root-routes) {
-	import access-log
-	import access-headers-{$PE_ACCESS_MODE:local}
-	handle /health {
-		respond /health 200
-	}
-	import edge-metrics
+(stack-probes) {
 	# Same-origin probes for the fallback page. A missing alias becomes a 502.
 	handle /health/gateway {
 		header Cache-Control "no-store"
@@ -12,7 +6,7 @@
 		reverse_proxy lg-gateway:80 {
 			import probe-response
 			header_up -Authorization
-			header_up Host {host}
+			header_up Host {$PE_PUBLIC_DOMAIN}
 			import forwarded-proto-{$PE_ACCESS_MODE:local}
 		}
 	}
@@ -32,10 +26,53 @@
 		reverse_proxy ob-gateway:80 {
 			import probe-response
 			header_up -Authorization
-			header_up Host {host}
+			header_up Host {$PE_PUBLIC_DOMAIN}
 			import forwarded-proto-{$PE_ACCESS_MODE:local}
 		}
 	}
+	handle /health/litellm {
+		header Cache-Control "no-store"
+		rewrite * /health/litellm
+		reverse_proxy lg-gateway:80 {
+			import probe-response
+			header_up -Authorization
+			header_up Host {$PE_PUBLIC_DOMAIN}
+			import forwarded-proto-{$PE_ACCESS_MODE:local}
+		}
+	}
+
+	handle /health/langfuse {
+		header Cache-Control "no-store"
+		rewrite * /health/langfuse
+		reverse_proxy lg-gateway:80 {
+			import probe-response
+			header_up -Authorization
+			header_up Host {$PE_PUBLIC_DOMAIN}
+			import forwarded-proto-{$PE_ACCESS_MODE:local}
+		}
+	}
+
+	handle /health/s3 {
+		header Cache-Control "no-store"
+		rewrite * /health/rustfs
+		reverse_proxy lg-gateway:80 {
+			import probe-response
+			header_up -Authorization
+			header_up Host {$PE_PUBLIC_DOMAIN}
+			import forwarded-proto-{$PE_ACCESS_MODE:local}
+		}
+	}
+}
+
+(gateway-root-routes) {
+	import access-log
+	import access-headers-{$PE_ACCESS_MODE:local}
+	handle /health {
+		respond /health 200
+	}
+	import edge-metrics
+	import stack-probes
+
 	handle {
 		reverse_proxy lg-gateway:80 {
 			header_up Host {host}
@@ -44,7 +81,7 @@
 	}
 	handle_errors {
 		import access-headers-{$PE_ACCESS_MODE:local}
-		@probe expression `{http.request.orig_uri.path} in ["/health/gateway", "/health/backplane", "/health/observability"]`
+		@probe expression `{http.request.orig_uri.path} in ["/health/gateway", "/health/backplane", "/health/observability", "/health/litellm", "/health/langfuse", "/health/s3"]`
 		handle @probe {
 			header Cache-Control "no-store"
 			respond "" {err.status_code}

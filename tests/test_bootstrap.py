@@ -56,6 +56,9 @@ class BootstrapTests(unittest.TestCase):
                 def runner(argv):
                     calls.append(argv)
                     if "run" in argv:
+                        isolated = Path(argv[argv.index("run") - 1]).read_text()
+                        self.assertIn("networks: !reset []", isolated)
+                        self.assertIn("network_mode: none", isolated)
                         return subprocess.CompletedProcess(argv, code, output, "daemon failure" if code else "")
                     return subprocess.CompletedProcess(argv, 0, "", "")
                 with patch.dict(os.environ, {}, clear=True), \
