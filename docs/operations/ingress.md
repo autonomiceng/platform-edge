@@ -578,3 +578,5 @@ native login check from an explicitly allowed client. Existing application
 routes retain their previous peer-address forwarding; only the new console
 routes forward the validated client address. Docker configurations with
 `userland-proxy: false` require explicit ingress-peer validation before use.
+
+The selected-stack preflight recognizes the Gateway template’s native `compose.${LG_ACCESS_MODE:-local}.yaml` selection. Other interpolated Compose paths require explicit recorded file paths before planning.
