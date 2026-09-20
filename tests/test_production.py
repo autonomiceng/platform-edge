@@ -62,18 +62,18 @@ class ProductionTests(unittest.TestCase):
                     with self.assertRaisesRegex(AssertionError, f"expected 200, got {status}"):
                         integration_smoke.main()
 
-    def test_volume_names_follow_prefix(self):
+    def test_volume_names_follow_prefix_and_new_volumes_record_the_selected_project(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(bootstrap.volume_names(bootstrap.settings_for({})),
                              ["platform-edge_edge-data", "platform-edge_edge-config"])
             settings = bootstrap.settings_for({"PE_VOLUME_PREFIX": "disposable"})
-            calls = []
+            volumes = {}
             def runner(argv):
-                calls.append(argv)
+                volumes.setdefault(argv[-1], dict(argv[i + 1].split("=", 1) for i, value in enumerate(argv) if value == "--label"))
                 return subprocess.CompletedProcess(argv, 0, "", "")
-            bootstrap.ensure_volumes(runner, settings)
-            self.assertEqual(calls, [["docker", "volume", "create", "disposable_edge-data"],
-                                     ["docker", "volume", "create", "disposable_edge-config"]])
+            bootstrap.ensure_volumes(runner, settings, "custom-edge")
+            self.assertEqual(volumes, {name: {"com.docker.compose.project": "custom-edge"}
+                                      for name in ("disposable_edge-data", "disposable_edge-config")})
             with self.assertRaises(bootstrap.Refused):
                 bootstrap.settings_for({"PE_VOLUME_PREFIX": "../bad"})
 

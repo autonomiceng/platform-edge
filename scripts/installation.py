@@ -1,14 +1,18 @@
-"""Read-only selected-installation preflight. Execution belongs to H-EXEC."""
+"""Plan and preflight selected installations before invoking their owning bootstraps."""
 
 from __future__ import annotations
 
+import ipaddress
+import json
 import os
 import re
 import shutil
 import stat
+import sys
 from pathlib import Path
 
 import bootstrap
+from installation_execution import custody, execute, qualify, read_source
 
 STACKS = {
     "edge": ("PE", "platform-edge", "scripts/bootstrap.py"),
@@ -40,8 +44,8 @@ def read_settings(path: Path) -> dict[str, str]:
         if not match or match["key"] in result:
             raise ValueError("Repair ambiguous env assignments using the owning bootstrap contract.")
         value = match["value"].strip()
-        if not value.startswith(("'", '"')) and ("#" in value or any(char.isspace() for char in value)):
-            raise ValueError("Quote literal env values containing spaces or #; inline comments are unsupported.")
+        if not value.startswith(("'", '"')) and "#" in value:
+            raise ValueError("Quote literal env values containing #; inline comments are unsupported.")
         if value.startswith(("'", '"')):
             if len(value) < 2 or value[-1] != value[0]:
                 raise ValueError("Repair unmatched quotes in the selected env file.")
@@ -50,21 +54,19 @@ def read_settings(path: Path) -> dict[str, str]:
     return result
 
 
-def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused):
+def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused, prepared=None):
+    prepared = [] if prepared is None else prepared
     selected = [name for name in STACKS if name == "edge" or name in args.stack]
-    result = {"selected": selected, "actions": [], "conflicts": [], "execution_supported": False,
+    result = {"selected": selected, "actions": [], "conflicts": [], "executable": False, "execution_supported": not (args.tailscale or args.status_timers),
               "infrastructure": "unverified", "enrollment": "unverified",
-              "deferred": ["H-EXEC: recheck all prerequisites under owning locks before any mutation",
-                           "H-EXEC: compare installed images, mounts and secrets before recreation",
-                           "H-EXEC: validate effective configurations with the owning bootstraps",
-                           "H-EXEC: pin and verify exact Edge peer before configuring sibling trust"]}
+              "deferred": ["Backplane enrollment remains a separate bp bootstrap action; readiness is not enrollment."]}
 
     def conflict(stack, code, detail):
         result["conflicts"].append({"stack": stack, "code": code, "detail": detail})
 
-    def inspect(argv):
+    def inspect(argv, **options):
         try:
-            response = runner(argv)
+            response = runner(argv, **options)
         except refused:
             raise ValueError("Read-only inspection failed; inventory is unknown.") from None
         if response.returncode:
@@ -101,6 +103,7 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused)
         conflict("edge", "edge_settings", "Repair Edge settings before planning installation.")
         return result
     network = edge["PE_PLATFORM_NETWORK"]
+    peer = edge["PE_TAILSCALE_EDGE_IP"] or None
     if docker:
         try:
             networks = inspect(["docker", "network", "ls", "--format", "{{.Name}}"])
@@ -120,13 +123,10 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused)
                 listeners.append((address.strip("[]"), int(port)))
     except (ValueError, IndexError, OSError, bootstrap.Refused):
         conflict("edge", "ports_unverified", "Cannot inspect host TCP listeners.")
+    publications = []
     if docker:
         try:
-            published = inspect(["docker", "ps", "--format", "{{.Ports}}"])
-            for line in published.splitlines():
-                for match in bootstrap.PORT.finditer(line):
-                    first, last = int(match["first"]), int(match["last"] or match["first"])
-                    listeners.extend((match["host"].strip("[]"), port) for port in range(first, last + 1))
+            publications = [json.loads(line) for line in inspect(["docker", "ps", "--no-trunc", "--format", "json"]).splitlines()]
         except (ValueError, OSError, bootstrap.Refused):
             conflict("edge", "ports_unverified", "Cannot inspect Docker TCP publications.")
     wanted = []
@@ -136,10 +136,11 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused)
         env = env_file if name == "edge" else directory / ".env"
         action = {"stack": name, "depends_on": [] if name == "edge" else ["edge"],
                   "entrypoint": entrypoint, "checkout": str(directory), "state": "planned",
+                  "recovery": "infra/backup/README.md" if name == "backplane" else "docs/operations/backup.md",
                   "network": network, "preserve": "existing env, secrets, storage, volumes, native Compose selection and routes"}
         result["actions"].append(action)
         try:
-            required = [entrypoint, "compose.yaml", "Caddyfile"] if name == "edge" else [entrypoint, ".env.example", "compose.yaml"]
+            required = [entrypoint, "compose.yaml", "Caddyfile", "compose.tailscale.yaml"] if name == "edge" else [entrypoint, ".env.example", "compose.yaml"]
             if name in {"gateway", "observability"}:
                 required.append("compose.proxy.yaml")
             if name == "backplane":
@@ -148,9 +149,17 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused)
                 required.append("scripts/install_status_timer.py")
             if any(not (directory / filename).is_file() for filename in required):
                 raise ValueError("Selected checkout is missing an owning entrypoint or required configuration file.")
+            custody(env)
             recorded = read_settings(env) if env.exists() else {}
+            if recorded.get("COMPOSE_ENV_FILES") or recorded.get("COMPOSE_PATH_SEPARATOR", ":") != ":":
+                raise ValueError("Alternate Compose env files or separators require owning configuration repair.")
             values = read_settings(template if name == "edge" else directory / ".env.example") | recorded
-            project = recorded.get("COMPOSE_PROJECT_NAME", project_default)
+            if name == "observability" and not (values.get("OB_ALERT_WEBHOOK_URL")
+                    or values.get("OB_ALERT_EMAIL") and not values["OB_ALERT_EMAIL"].endswith("@example.invalid")
+                    and values.get("OB_SMTP_URL")
+                    or values.get("OB_ALERTS") == "placeholder"):
+                raise ValueError("Configure Observability alert delivery, or explicitly record OB_ALERTS=placeholder for degraded delivery, before selected setup.")
+            project = (recorded if env.exists() else values).get("COMPOSE_PROJECT_NAME") or project_default
             volume_prefix = values.get(prefix + "_VOLUME_PREFIX") or project_default
             if not all(re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", item) for item in (project, volume_prefix)):
                 raise ValueError("Repair the recorded project identity or volume prefix.")
@@ -170,15 +179,13 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused)
                                       "backplane": ("BP_DATA_DIR", "data"), "observability": ("OB_STATE_DIR", "data")}[name]
             data = (directory / values.get(data_key, data_default)).resolve()
             existing = env.exists() or data.exists()
+            containers, volumes, named = "", "", ""
             if docker:
                 containers = inspect(["docker", "ps", "-aq", "--filter", "label=com.docker.compose.project=" + project])
                 volumes = inspect(["docker", "volume", "ls", "--filter", "label=com.docker.compose.project=" + project, "--format", "{{.Name}}"])
-                named = inspect(["docker", "volume", "ls", "--filter", "name=^" + re.escape(volume_prefix) + "_", "--format", "{{.Name}}"])
+                named = inspect(["docker", "volume", "ls", "--filter", "name=^" + re.escape(volume_prefix) + ("-" if name == "gateway" else "_"), "--format", "{{.Name}}"])
                 existing = existing or bool(containers or volumes or named)
             action["installation"] = "existing" if existing else ("fresh" if docker else "unknown")
-            if existing:
-                runbook = "infra/backup/README.md" if name == "backplane" else "docs/operations/backup.md"
-                conflict(name, "checkpoint_review_required", "Preserve installation state. Use this stack's " + runbook + " Checkpoint/upgrade route; H-EXEC must verify image and mount identity before reuse.")
             scheme = "https" if name == "backplane" or args.tailscale or edge["PE_TAILSCALE_HOST"] else edge["PE_SCHEME"]
             port = edge["PE_HTTPS_PORT" if scheme == "https" else "PE_HTTP_PORT"]
             suffix = "" if port == ("443" if scheme == "https" else "80") else ":" + port
@@ -186,10 +193,13 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused)
                 suffix = ""
             host = {"edge": "", "gateway": "", "backplane": "backplane.", "observability": "grafana."}[name]
             origin = scheme + "://" + host + edge["PE_PUBLIC_DOMAIN"] + suffix
-            if args.tailscale or edge["PE_TAILSCALE_HOST"]:
+            tail_app = {"edge": "", "gateway": "gateway", "backplane": "backplane", "observability": "grafana"}[name]
+            connected = edge["PE_TAILSCALE_APPS"].split(",")
+            if args.tailscale or edge["PE_TAILSCALE_HOST"] and (not tail_app or tail_app in connected):
                 tail_port = edge["PE_TAILSCALE_" + {"edge": "PORT", "gateway": "GATEWAY_PORT", "backplane": "BACKPLANE_PORT", "observability": "GRAFANA_PORT"}[name]]
                 origin = "https://" + edge["PE_TAILSCALE_HOST"] + ":" + tail_port if edge["PE_TAILSCALE_HOST"] else "planned: authenticated Tailscale machine HTTPS origin"
             action["origin"] = origin
+            changes = {}
             if name == "edge":
                 ports = [edge["PE_HTTP_PORT"]] + ([edge["PE_HTTPS_PORT"]] if edge["PE_ACCESS_MODE"] != "proxy" else [])
                 bind = edge["PE_BIND_HOST"]
@@ -205,12 +215,33 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused)
                 else:
                     expected.update({prefix + "_PUBLIC_DOMAIN": edge["PE_PUBLIC_DOMAIN"], prefix + "_SCHEME": scheme,
                                      prefix + "_PUBLIC_PORT_SUFFIX": suffix})
+                if name == "observability":
+                    expected["OB_GRAFANA_URL"] = origin
+                if name == "gateway":
+                    for app, label in (("gateway", "CONSOLE"), ("litellm", "LITELLM"), ("langfuse", "LANGFUSE"), ("s3", "S3"), ("rustfs", "RUSTFS")):
+                        app_host = "" if app == "gateway" else app + "."
+                        url = scheme + "://" + app_host + edge["PE_PUBLIC_DOMAIN"] + suffix
+                        if edge["PE_TAILSCALE_HOST"] and app in connected:
+                            url = "https://" + edge["PE_TAILSCALE_HOST"] + ":" + edge["PE_TAILSCALE_" + app.upper() + "_PORT"]
+                        expected["LG_" + label + "_URL"] = url
+                expected[prefix + "_PLATFORM_NETWORK"] = network
+                expected[key] = ports[0]
+                if name != "backplane" or recorded.get("BP_RUSTFS_CONSOLE") == "true":
+                    proxies = [ipaddress.ip_interface(value) for value in recorded.get(prefix + "_TRUSTED_PROXIES", "").split()]
+                    if any(proxy.network.prefixlen != proxy.max_prefixlen for proxy in proxies):
+                        raise ValueError("Proxy trust must contain only the exact Edge address, never a network range.")
+                    if recorded.get(prefix + "_TRUSTED_PROXIES") and not peer:
+                        conflict(name, "peer_unknown", "Start or pin Edge first; its exact peer must be known before saved proxy trust can be verified.")
+                    expected[prefix + "_TRUSTED_PROXIES"] = peer + "/32" if peer else recorded.get(prefix + "_TRUSTED_PROXIES", "192.0.2.1/32")
+                    if recorded.get(prefix + "_TRUSTED_PROXIES") and peer:
+                        if {str(ipaddress.ip_interface(v).ip) for v in recorded[prefix + "_TRUSTED_PROXIES"].split()} == {peer}:
+                            expected[prefix + "_TRUSTED_PROXIES"] = recorded[prefix + "_TRUSTED_PROXIES"]
+                changes.update(expected)
                 if any(key in recorded and recorded[key] != value for key, value in expected.items()):
                     conflict(name, "origin_conflict", "Recorded access settings differ; use the owning ingress/reconfiguration procedure.")
             for port in ports:
                 if not port.isdigit() or not 1 <= int(port) <= 65535:
                     raise ValueError("Configured listener port must be from 1 to 65535.")
-                wanted.append((name, bind, int(port)))
             action["listeners"] = [bind + ":" + port for port in ports]
             if name in {"gateway", "backplane"}:
                 backup = getattr(args, name + "_backup_dir")
@@ -221,6 +252,7 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused)
                 backup = backup.resolve() if backup else (directory / recorded[key]).resolve() if recorded.get(key) else None
                 if backup is None or not backup.is_dir() or not os.access(backup, os.W_OK | os.X_OK):
                     raise ValueError("Supply an existing writable mounted backup directory for the selected stack.")
+                changes[key] = str(backup) if key not in recorded else recorded[key]
                 if backup.is_relative_to(data) or data.is_relative_to(backup):
                     raise ValueError("Backup and data directories must not overlap.")
                 parent = data
@@ -232,15 +264,15 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused)
                 email = args.gateway_email or recorded.get("LANGFUSE_INIT_USER_EMAIL", "")
                 if not re.fullmatch(r"[^\s@]+@[^\s@]+", email) or email.lower().endswith("@example.com"):
                     raise ValueError("Supply --gateway-email with the operator's Langfuse login email.")
+                changes["LANGFUSE_INIT_USER_EMAIL"] = email
                 if args.gateway_email and recorded.get("LANGFUSE_INIT_USER_EMAIL", email) != email:
                     conflict(name, "email_conflict", "Preserve the recorded Langfuse login email.")
             if name == "backplane":
-                action["mode"] = args.backplane_mode or ("preserve recorded selection" if existing else "owning Backplane default; B-PROMOTE pending")
+                action["mode"] = args.backplane_mode or ("preserve recorded selection" if "COMPOSE_PROFILES" in recorded else "full")
                 if args.backplane_mode:
                     capabilities = set(recorded.get("COMPOSE_PROFILES", "").split(",")) & {"blobs", "compute"}
-                    if existing and capabilities != ({"blobs", "compute"} if args.backplane_mode == "full" else set()):
+                    if "COMPOSE_PROFILES" in recorded and capabilities != ({"blobs", "compute"} if args.backplane_mode == "full" else set()):
                         conflict(name, "mode_conflict", "Requested capabilities differ from the recorded selection; use Backplane migration procedures.")
-                    conflict(name, "backplane_mode_pending", "Mode selection requires B-PROMOTE's owning bootstrap interface; no default or overlay is inferred here.")
                 capability = args.capability_file
                 if capability is None or not capability.is_absolute() or capability.parent.resolve() != capability.parent or not capability.parent.is_dir():
                     raise ValueError("Supply --capability-file as an absolute path with an existing private parent.")
@@ -253,20 +285,101 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused)
                     info = capability.lstat()
                     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
                         raise ValueError("Existing capability file must be an owned single-link regular file with mode 0600.")
-                if env.with_name(env.name + ".lock").exists():
-                    conflict(name, "backplane_lock", "Preserve the preparation lock; follow Backplane's interrupted-preparation recovery procedure.")
-                result["deferred"].append("Backplane: verify capabilities and enrollment independently; emit bp bootstrap enrollment action")
-        except (OSError, ValueError, bootstrap.Refused) as error:
+                lock = env.with_name(env.name + ".lock")
+                if lock.exists() or lock.is_symlink():
+                    conflict(name, "backplane_lock", "Preserve Backplane .env.lock. Confirm no installer, preparation or bootstrap process is running before removing only that confirmed stale lock, then rerun the same selection.")
+            profiles = [p for p in recorded.get("COMPOSE_PROFILES", "").split(",") if p]
+            if name == "backplane":
+                if "COMPOSE_PROFILES" not in recorded:
+                    profiles = (["blobs", "compute"] if args.backplane_mode != "minimal" else []) + ["gateway"]
+                if any(p not in {"gateway", "blobs", "compute"} for p in profiles) or "gateway" not in profiles:
+                    raise ValueError("Backplane must retain gateway ingress; migrate standalone ingress through its owning procedure.")
+                expected_backend = "s3" if "blobs" in profiles else "filesystem"
+                if recorded.get("BP_BLOB_BACKEND", expected_backend) != expected_backend:
+                    raise ValueError("Backplane backend differs from recorded profiles; use its migration procedure.")
+                default_files = ["compose.yaml"] + ["compose." + p + ".yaml" for p in profiles]
+            elif name == "observability":
+                default_files = ["compose.yaml"] + (["compose.s3.yaml"] if "s3" in profiles else []) + ["compose.proxy.yaml"]
+            else:
+                default_files = ["compose.yaml"] + (["compose.proxy.yaml"] if name == "gateway" else [])
+            configured_files = recorded.get("COMPOSE_FILE", values.get("COMPOSE_FILE", ":".join(default_files)) if name in {"edge", "gateway"} else ":".join(default_files))
+            files = configured_files.replace("${LG_ACCESS_MODE:-local}", "proxy" if name == "gateway" else "local").split(":")
+            if (directory / files[0]).resolve() != directory / "compose.yaml" or any(not (directory / f).is_file() for f in files):
+                raise ValueError("Native Compose selection must retain its base file first and all ordered overlays.")
+            if name == "observability":
+                resolved = [(directory / filename).resolve() for filename in files]
+                if (len(set(resolved)) != len(resolved) or directory / "compose.proxy.yaml" not in resolved
+                        or (directory / "compose.s3.yaml" in resolved) != ("s3" in profiles)):
+                    raise ValueError("Observability overlays must retain the selected storage and proxy access modes without duplicate files.")
+            if name == "edge" and edge["PE_ACCESS_MODE"] in {"public", "proxy"}:
+                mode_file = "compose." + edge["PE_ACCESS_MODE"] + ".yaml"
+                if str(directory / mode_file) not in [str((directory / f).resolve()) for f in files]:
+                    files.append(mode_file)
+            if name != "backplane" and "COMPOSE_FILE" not in recorded:
+                changes["COMPOSE_FILE"] = ":".join(files)
+            command = ["bun" if name == "backplane" else sys.executable, str(directory / entrypoint), "--env-file", str(env)]
+            if name == "backplane":
+                changes.update(COMPOSE_PROJECT_NAME=project, BP_VOLUME_PREFIX=volume_prefix)
+                command += ["--capability-file", str(args.capability_file)]
+                if "COMPOSE_PROFILES" not in recorded:
+                    command += ["--profile", "gateway"]
+                if args.backplane_mode:
+                    command += ["--mode", args.backplane_mode]
+            elif name == "edge":
+                command += ["--template", str(template)]
+            if any(any(character in value for character in "'\"\\\n\r$`") for value in changes.values()):
+                raise ValueError("Installation inputs must be literal env values without quotes, escapes or interpolation.")
+            item = {"name": name, "prefix": prefix, "root": directory, "env": env, "template": template if name == "edge" else directory / ".env.example",
+                    "source": read_source(env), "template_source": read_source(template if name == "edge" else directory / ".env.example"), "recorded": recorded, "values": values, "changes": changes,
+                    "files": files, "profiles": profiles, "command": command, "action": action, "ids": containers.split(), "volumes": set(volumes.split()) | set(named.split()),
+                    "resources": bool(containers or volumes or named or name == "gateway" and data.exists() and (not os.access(data, os.R_OK) or any(data.iterdir())))}
+            if docker:
+                qualify(item, inspect)
+                if name == "edge" and item["containers"]:
+                    actual = item["containers"][0]["Networks"][network]["IPAddress"] or item["pinned_peer"]
+                    if not actual:
+                        raise ValueError("Stopped Edge has no qualified reserved peer; recover its original network identity first.")
+                    if peer and peer != actual:
+                        raise ValueError("Recorded Edge peer differs from the installed peer.")
+                    peer = str(ipaddress.IPv4Address(actual))
+                action["listeners"] = [bind + ":" + str(port) for bind, port in item["ports"]]
+                wanted.extend((name, bind, port) for bind, port in item["ports"])
+                prepared.append(item)
+            action["compose_selection"] = {"COMPOSE_FILE": recorded.get("COMPOSE_FILE", ":".join(files)), "COMPOSE_PROFILES": recorded.get("COMPOSE_PROFILES", ",".join(profiles))}
+        except (OSError, ValueError, KeyError, TypeError, SyntaxError, bootstrap.Refused) as error:
             detail = str(error) if isinstance(error, ValueError) else "Selected installation inspection failed; repair paths/configuration without replacing state."
             conflict(name, "prerequisite_failed", detail)
+    owned = {container["Id"] for item in prepared for container in item["containers"]}
+    owned_ports = {(binding["HostIp"], int(binding["HostPort"])) for item in prepared for container in item["containers"] if container["Running"]
+                   for target, bindings in (container["Ports"] or {}).items() if target.endswith("/tcp") for binding in (bindings or [])}
+    foreign_ports = []
+    for container in publications:
+        if container["ID"] not in owned:
+            for match in bootstrap.PORT.finditer(container.get("Ports", "")):
+                foreign_ports.extend((match["host"].strip("[]"), port) for port in range(int(match["first"]), int(match["last"] or match["first"]) + 1))
     for index, (name, bind, port) in enumerate(wanted):
         overlaps = lambda address: address == bind or address in {"*", "0.0.0.0", "::"} or bind in {"0.0.0.0", "::"}
-        if any(port == other_port and overlaps(address) for address, other_port in listeners) or any(port == other_port and overlaps(address) for _, address, other_port in wanted[:index]):
-            conflict(name, "port_conflict", "Requested TCP listener is occupied or duplicated; verify ownership before execution and preserve recorded ports.")
+        if any(port == other_port and overlaps(address) for address, other_port in foreign_ports + [p for p in listeners if p not in owned_ports]) or any(port == other_port and overlaps(address) for _, address, other_port in wanted[:index]):
+            conflict(name, "port_conflict", "Requested TCP listener has a foreign owner or is duplicated; preserve installed listeners.")
     if args.tailscale:
         result["actions"].append({"stack": "edge", "action": "connect selected Tailscale applications; preserve existing PE_TAILSCALE_APPS", "depends_on": selected})
-        result["deferred"].append("H-EXEC: selected-only Tailscale helper, authenticated machine/HTTPS/Serve conflict checks")
+        result["deferred"].append("H-CONNECT: selected-only Tailscale helper, authenticated machine/HTTPS/Serve conflict checks")
     if args.status_timers:
         result["actions"].append({"action": "install/resume owning status timers for selected stacks", "depends_on": selected})
-        result["deferred"].append("H-EXEC: verify user manager, timer custody and matching interrupted units")
+        result["deferred"].append("H-CONNECT: verify user manager, timer custody and matching interrupted units")
+    result["executable"] = result["execution_supported"] and not result["conflicts"]
     return result
+
+
+def install(root, env_file, template, args, runner, refused=bootstrap.Refused):
+    prepared = []
+    plan = preflight(root, env_file, template, args, runner, refused, prepared)
+    if args.dry_run or plan["conflicts"]:
+        return (1 if plan["conflicts"] else 0), plan
+    def inspect(argv, **options):
+        result = runner(argv, **options)
+        if result.returncode:
+            raise ValueError("Inspection failed.")
+        return result.stdout.strip()
+    report = execute(prepared, runner, inspect, refused)
+    return (3 if report["stopped_at"] else 0), report
