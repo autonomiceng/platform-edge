@@ -84,6 +84,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(env.read_bytes(), original)
             self.assertEqual(list(Path(directory).iterdir()), [env])
             self.assertEqual(env.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(bootstrap.read_env(ROOT / ".env.example")["PE_CADDY_IMAGE"], "")
             edited = original.replace(b"PE_CADDY_IMAGE=\n", b"PE_CADDY_IMAGE=local/edge:experiment\n") + b"\r\n# Kept verbatim\r\nCUSTOM_SETTING=value\r\n"
             env.write_bytes(edited)
             with contextlib.redirect_stdout(io.StringIO()):

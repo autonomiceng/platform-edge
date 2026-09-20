@@ -18,6 +18,8 @@ Edge owns host ports 80 and 443. Its default loopback binding makes them accessi
 or `registry.example/team/caddy:test`, in `.env`. Empty or unset selects the shipped
 validated tag and digest in `compose.yaml`. Native `docker compose` interpolation applies;
 a shell value takes precedence over `.env`. Bootstrap preserves the setting and env lock.
+Use a literal reference: bootstrap refuses `$`, `#` and whitespace in setting values,
+including nested environment expressions that bare Compose would expand.
 Local experiments are unvalidated and must provide the Caddy and shell tools used by Edge.
 
 `scripts/validate.sh`, `scripts/smoke.sh` and the backup drill always exercise the shipped

@@ -198,7 +198,7 @@ class CheckpointTests(unittest.TestCase):
             if defect == "volume": container["Mounts"][0]["Name"] = "old_edge-data"
             if defect == "bind": container["Mounts"][0]["Type"] = "bind"
             calls = []
-            def checked(argv, diagnostics):
+            def checked(argv, diagnostics, **kwargs):
                 calls.append(argv)
                 if argv[:3] == ["docker", "image", "inspect"]: return image_id
                 return ("" if defect == "missing" else "container-id") if "ps" in argv else json.dumps([container])
@@ -249,7 +249,8 @@ class CheckpointTests(unittest.TestCase):
                 checkpoint.restore(self.stack, self.source)
         checked.assert_called_once_with(
             ["docker", "image", "inspect", "--format", "{{.Id}}", self.stack.images["caddy"]],
-            self.stack.diagnostics)
+            self.stack.diagnostics,
+            reason="configured Caddy image is unavailable locally; pull it before restore")
         self.stack.stream.assert_not_called()
 
     def test_restore_refuses_either_nonempty_volume_before_any_write(self):

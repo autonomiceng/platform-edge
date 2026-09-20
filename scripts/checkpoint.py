@@ -36,7 +36,8 @@ def command_failed(stderr: str | bytes, diagnostics: Path, *, reason: str = "com
     raise RuntimeError(f"{reason}; diagnostics: {path}")
 
 
-def checked(argv: list[str], diagnostics: Path, *, timeout: float | None = None) -> str:
+def checked(argv: list[str], diagnostics: Path, *, timeout: float | None = None,
+            reason: str = "command failed") -> str:
     # Terminal interrupts must reach our handler, not kill a stop/start CLI mid-operation.
     timeout = COMMAND_TIMEOUT if timeout is None else timeout
     try:
@@ -44,7 +45,7 @@ def checked(argv: list[str], diagnostics: Path, *, timeout: float | None = None)
     except subprocess.TimeoutExpired as error:
         command_failed(error.stderr or b"", diagnostics, reason=f"command timed out after {timeout:g} seconds")
     if result.returncode:
-        command_failed(result.stderr, diagnostics)
+        command_failed(result.stderr, diagnostics, reason=reason)
     return result.stdout.strip()
 
 
@@ -115,7 +116,8 @@ class Stack:
         if len(ids) != 1:
             raise ValueError("Checkpoint requires exactly one existing Caddy container")
         containers = json.loads(checked(["docker", "inspect", *ids], self.diagnostics))
-        image_id = checked(["docker", "image", "inspect", "--format", "{{.Id}}", self.image], self.diagnostics)
+        image_id = checked(["docker", "image", "inspect", "--format", "{{.Id}}", self.image], self.diagnostics,
+                           reason="configured Caddy image is unavailable locally; pull it before backup")
         if (not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id)
                 or len(containers) != 1 or containers[0].get("Image") != image_id):
             raise ValueError("Caddy image differs from the Checkpoint image pin")
@@ -298,7 +300,8 @@ def restore(stack: Stack, directory: Path) -> None:
         raise ValueError("Checkpoint checksum mismatch")
     if archive_fingerprint(directory) != document["ca_sha256"]:
         raise ValueError("Checkpoint CA fingerprint mismatch")
-    checked(["docker", "image", "inspect", "--format", "{{.Id}}", stack.images["caddy"]], stack.diagnostics)
+    checked(["docker", "image", "inspect", "--format", "{{.Id}}", stack.images["caddy"]], stack.diagnostics,
+            reason="configured Caddy image is unavailable locally; pull it before restore")
     if checked(stack.dc + ["ps", "--status", "running", "-q"], stack.diagnostics):
         raise ValueError("restore requires the project stopped")
     stack.require_stopped()
