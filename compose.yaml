@@ -10,6 +10,8 @@ x-logging: &logging
 services:
   caddy:
     image: ${PE_CADDY_IMAGE:-caddy:2.11.4@sha256:13ba145cba2f3e28fa801994876e4c086d1b95d5aa2a520a734765ffb6b12017}
+    # Reap orphaned timeout helpers from host status probes.
+    init: true
     restart: unless-stopped
     mem_limit: 256m
     mem_reservation: 64m
