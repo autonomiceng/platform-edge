@@ -44,8 +44,8 @@ def read_settings(path: Path) -> dict[str, str]:
         if not match or match["key"] in result:
             raise ValueError("Repair ambiguous env assignments using the owning bootstrap contract.")
         value = match["value"].strip()
-        if not value.startswith(("'", '"')) and ("#" in value or any(char.isspace() for char in value)):
-            raise ValueError("Quote literal env values containing spaces or #; inline comments are unsupported.")
+        if not value.startswith(("'", '"')) and "#" in value:
+            raise ValueError("Quote literal env values containing #; inline comments are unsupported.")
         if value.startswith(("'", '"')):
             if len(value) < 2 or value[-1] != value[0]:
                 raise ValueError("Repair unmatched quotes in the selected env file.")
