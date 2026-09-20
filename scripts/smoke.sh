@@ -104,8 +104,7 @@ cat > "$work/stub.caddy" <<'CADDY'
 				header Content-Type text/html
 				respond "<html>fallback</html>" 200
 			}
-			header Content-Type application/json
-			respond `{"producer":"{$STUB_ALIAS}","host":"{http.request.host}","scheme":"{http.request.header.X-Forwarded-Proto}"}`
+			import {$STUB_STATUS_HANDLER:/etc/caddy/respond-status.caddy}
 		}
 	}
 	header /versions.json Content-Type application/json
@@ -114,12 +113,26 @@ cat > "$work/stub.caddy" <<'CADDY'
 	respond "{$STUB_ALIAS}|{host}|{http.request.header.X-Forwarded-Proto}"
 }
 CADDY
+cat > "$work/respond-status.caddy" <<'CADDY'
+header Content-Type application/json
+respond `{"producer":"{$STUB_ALIAS}","host":"{http.request.host}","scheme":"{http.request.header.X-Forwarded-Proto}"}`
+CADDY
+cat > "$work/file-status.caddy" <<'CADDY'
+root * /srv/stub-status
+file_server
+CADDY
+mkdir "$work/stub-status"
+printf '%s\n' '{"producer":"ob-gateway","host":"localhost","scheme":"http"}' > "$work/stub-status/status.json"
 lg_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias lg-gateway -e STUB_ALIAS=lg-gateway \
-  -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" "$caddy_image")
+  -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" -v "$work/respond-status.caddy:/etc/caddy/respond-status.caddy:ro" \
+  "$caddy_image")
 bp_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias bp-gateway -e STUB_ALIAS=bp-gateway \
-  -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" "$caddy_image")
+  -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" -v "$work/respond-status.caddy:/etc/caddy/respond-status.caddy:ro" \
+  "$caddy_image")
 ob_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias ob-gateway -e STUB_ALIAS=ob-gateway \
-  -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" "$caddy_image")
+  -e STUB_STATUS_HANDLER=/etc/caddy/file-status.caddy -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" \
+  -v "$work/file-status.caddy:/etc/caddy/file-status.caddy:ro" -v "$work/stub-status:/srv/stub-status:ro" \
+  "$caddy_image")
 fi
 edge_started=1
 python3 scripts/bootstrap.py --env-file "$env_file"

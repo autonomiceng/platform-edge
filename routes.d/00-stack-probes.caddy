@@ -13,6 +13,10 @@
 			reverse_proxy {args[2]} {
 				header_up -Authorization
 				header_up -Cookie
+				header_up -If-None-Match
+				header_up -If-Modified-Since
+				header_up -Range
+				header_up -If-Range
 				header_up Host {args[3]}
 				import forwarded-proto-{$PE_ACCESS_MODE:local}
 				header_down -Set-Cookie
