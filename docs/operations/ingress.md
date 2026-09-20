@@ -404,3 +404,10 @@ provides that metadata. Missing stacks do not block other projects.
 The console reads only same-origin, uncached access settings, application probes and
 optional Gateway version metadata. It has no Docker socket, credentials or installation
 privileges. Version metadata describes pinned images; it does not prove container health.
+
+The status consumer enforces a four-second total request deadline, including body
+reads, and a 64 KiB body limit. It aborts and cancels a slow or oversized response.
+The Caddy status proxy separately limits connection setup, response headers and
+idle reads; its read timeout is not a total response-body deadline. Direct clients
+of these routes must apply their own total deadline and size limit. Producers are
+trusted stack services publishing bounded public metadata.
