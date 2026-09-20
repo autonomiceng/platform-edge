@@ -72,6 +72,7 @@
 	}
 	import edge-metrics
 	import stack-probes
+	import console-config
 
 	handle {
 		reverse_proxy lg-gateway:80 {

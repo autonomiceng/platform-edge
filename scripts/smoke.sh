@@ -249,6 +249,17 @@ code=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -sS --resolve 
 [ "$code" = 502 ] || fail "fallback hid upstream failure: $code"
 grep -q 'Platform Edge' "$work/console.html" || fail 'fallback console missing'
 ok 'absent gateway serves the fallback page with status 502'
+curl --noproxy '*' -fsS -D "$work/config.headers" -H 'Host: localhost' \
+  "http://127.0.0.1:$PE_HTTP_PORT/edge-config.json" > "$work/edge-config.json"
+python3 - "$work/edge-config.json" <<'PYCONFIG'
+import json, sys
+config = json.load(open(sys.argv[1]))
+assert config["domain"] == "localhost"
+assert "backplane" in config["ports"]
+PYCONFIG
+grep -qi 'Cache-Control: no-store' "$work/config.headers" || fail 'console settings may be cached'
+ok 'console settings remain available and uncached when the gateway is absent'
+
 body=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -fsS --resolve "backplane.localhost:$PE_HTTPS_PORT:127.0.0.1" \
   -H 'Host: backplane.localhost' "https://backplane.localhost:$PE_HTTPS_PORT/")
 [ "$body" = 'bp-server|backplane.localhost|https' ] || fail 'backplane failed with other stacks absent'
