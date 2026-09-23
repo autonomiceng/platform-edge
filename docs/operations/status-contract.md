@@ -56,7 +56,9 @@ Each component has these fields and no others:
 | `health` | Same-origin path `/health/<id>`. Required for every component; a disabled component's path answers 404 and is never probed. |
 | `url` | Optional. The component's configured browser or API origin. Omitted when the component has none. |
 
-`features.backups` is `{"configured": boolean, "lastCheckpointAt": timestamp or null}`.
+`features.backups` is `{"configured": boolean, "lastCheckpointAt": timestamp or null}`;
+`lastCheckpointAt` is the newest Checkpoint the producer knew of when it rendered the
+document, not a live value.
 `features.alerts` is `{"configured": boolean}`. A missing feature key is unknown.
 
 The field set is closed. Producers emit exactly these fields; a consumer treats a document

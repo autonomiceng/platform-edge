@@ -36,11 +36,16 @@ for dir in "$@"; do
     if ! head -n 1 "$target" | grep -qE "$header_re"; then
       echo "differs: $target has no valid vendoring header" >&2; failed=1; continue
     fi
-    if tail -n +2 "$target" | cmp -s - "$canonical"; then
-      echo "ok: $target ($(head -n 1 "$target" | sed 's/^<!-- vendored from //; s/ ; do not edit here -->$//'))"
-    else
-      echo "differs: $target" >&2; failed=1
+    if ! tail -n +2 "$target" | cmp -s - "$canonical"; then
+      echo "differs: $target" >&2; failed=1; continue
     fi
+    # The header names the commit the copy came from; that commit must hold this content.
+    sha=$(head -n 1 "$target" | sed 's/^<!-- vendored from platform-edge@//; s/ ; do not edit here -->$//')
+    if ! git -C "$root" show "$sha:docs/conventions.md" 2>/dev/null | cmp -s - "$canonical"; then
+      echo "differs: $target claims platform-edge@$sha, which is unknown here or had other content" >&2
+      failed=1; continue
+    fi
+    echo "ok: $target (platform-edge@$sha)"
   else
     [ -d "$dir/docs" ] || { echo "missing: $dir/docs" >&2; exit 1; }
     if [ "$(CDPATH='' cd -- "$dir/docs" && pwd -P)" = "$canonical_dir" ]; then
