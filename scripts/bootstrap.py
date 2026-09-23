@@ -654,7 +654,8 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         raise Refused("docker_missing", "install Docker with the Compose plugin")
 
     # The bundle is planned from the settings Edge will use, before Edge changes anything.
-    source = env_file if env_file.exists() else template
+    # An empty env is filled from the template below, so the bundle plans from the template too.
+    source = env_file if env_file.is_file() and env_file.stat().st_size else template
     values = read_env(source)
     settings = settings_for(values)
     # Behind Edge, browser URLs are HTTPS unless PE_SCHEME is configured; Edge's local-mode

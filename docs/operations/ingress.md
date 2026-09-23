@@ -332,7 +332,12 @@ BP_ACCESS_MODE=proxy
 BP_PUBLIC_URL=https://backplane.example.com
 BP_BIND_HOST=127.0.0.1
 BP_PORT=3000
+BP_PLATFORM_NETWORK=platform
+BP_TRUSTED_PROXIES=172.30.0.2/32
 ```
+
+When Edge overrides the network allocation, every stack also takes `*_PLATFORM_SUBNET` and
+`*_PLATFORM_IP_RANGE` with Edge's values; `--with` writes them only then.
 
 Start Backplane with its internal gateway overlay (Compose 2.24.4+):
 

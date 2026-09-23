@@ -19,7 +19,7 @@ import bundle
 from test_bootstrap import FakeRunner
 
 EDGE = dict(bootstrap.settings_for({"PE_PUBLIC_DOMAIN": "example.com"}), PE_SCHEME="https")
-GATEWAY_ENV = ("# Default public domain.\nLG_PUBLIC_DOMAIN=localhost\n\nLG_ACCESS_MODE=local\nexport LG_SCHEME=''\n"
+GATEWAY_ENV = ("# Default public domain.\r\nLG_PUBLIC_DOMAIN=localhost\r\n\nLG_ACCESS_MODE=local\nexport LG_SCHEME=''\n"
                "LITELLM_MASTER_KEY='sk-secret$1'\nLG_HTTP_PORT=80\nCUSTOM=kept")
 
 
@@ -30,7 +30,7 @@ def checkout(root, stack, env=None):
     entrypoint.write_text("")
     (directory / ".env.example").write_text(f"# template\n{bundle.STACKS[stack][0]}_ACCESS_MODE=local\n")
     if env is not None:
-        (directory / ".env").write_text(env)
+        (directory / ".env").write_bytes(env.encode())
     return directory
 
 
@@ -71,8 +71,8 @@ class BundleTests(unittest.TestCase):
             runs = Runs()
             with patch.object(bundle, "run_bootstrap", runs), contextlib.redirect_stdout(io.StringIO()):
                 bundle.install(bundle.plan(arguments(root, "gateway", "observability"), root, EDGE), ["--with", "gateway"])
-            self.assertEqual((gateway / ".env").read_text(),
-                             "# Default public domain.\nLG_PUBLIC_DOMAIN=example.com\n\nLG_ACCESS_MODE=proxy\nexport LG_SCHEME=https\n"
+            self.assertEqual((gateway / ".env").read_bytes().decode(),
+                             "# Default public domain.\r\nLG_PUBLIC_DOMAIN=example.com\r\n\nLG_ACCESS_MODE=proxy\nexport LG_SCHEME=https\n"
                              "LITELLM_MASTER_KEY='sk-secret$1'\nLG_HTTP_PORT=18080\nCUSTOM=kept\n"
                              "LG_BIND_HOST=127.0.0.1\nLG_PUBLIC_PORT_SUFFIX=\nLG_PLATFORM_NETWORK=platform\nLG_TRUSTED_PROXIES=172.30.0.2/32\n")
             created = observability / ".env"
@@ -106,9 +106,10 @@ class BundleTests(unittest.TestCase):
                 bundle.install([again], [])
             self.assertEqual((gateway / ".env").stat().st_mtime_ns, modified)
             self.assertEqual(json.loads(output.getvalue().splitlines()[-1])["written"], {})
-            with self.assertRaises(bootstrap.Refused) as refused:
-                bundle.amended("LG_SCHEME=a\nLG_SCHEME=b\n", {"LG_SCHEME": "https"})
-            self.assertEqual(refused.exception.code, "bundle_env_repair_required")
+            for broken in ("LG_SCHEME=a\nLG_SCHEME=b\n", "SECRET='first line\nLG_SCHEME=fragment'\n"):
+                with self.assertRaises(bootstrap.Refused) as refused:
+                    bundle.amended(broken, {"LG_SCHEME": "https"})
+                self.assertEqual(refused.exception.code, "bundle_env_repair_required")
             overridden = dict(EDGE, PE_PLATFORM_SUBNET="10.9.0.0/24", PE_PLATFORM_IP_RANGE="10.9.0.128/25", PE_EDGE_IP="10.9.0.2")
             self.assertEqual({key: value for key, value in bundle.settings("gateway", overridden).items() if "PLATFORM" in key or "TRUSTED" in key},
                              {"LG_PLATFORM_NETWORK": "platform", "LG_PLATFORM_SUBNET": "10.9.0.0/24", "LG_PLATFORM_IP_RANGE": "10.9.0.128/25",
@@ -126,7 +127,7 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertEqual(json.loads(err)["error"], "bundle_checkout_missing")
             self.assertFalse(edge_env.exists())
-            self.assertEqual((gateway / ".env").read_text(), GATEWAY_ENV)
+            self.assertEqual((gateway / ".env").read_bytes().decode(), GATEWAY_ENV)
             self.assertEqual(runs.calls, [])
             self.assertEqual(runner.calls, [])
 
@@ -168,13 +169,20 @@ class BundleTests(unittest.TestCase):
                                                   "LG_PLATFORM_NETWORK": "platform", "LG_TRUSTED_PROXIES": "172.30.0.2/32"})
                 self.assertEqual(plan["command"], [sys.executable, "scripts/bootstrap.py"])
                 self.assertFalse(edge_env.exists())
-                self.assertEqual((gateway / ".env").read_text(), GATEWAY_ENV)
+                self.assertEqual((gateway / ".env").read_bytes().decode(), GATEWAY_ENV)
                 self.assertEqual(runs.calls, [])
                 self.assertFalse(any("up" in argv or "create" in argv for argv in runner.calls))
                 code, out, err = run_main(["--env-file", str(edge_env), "--dry-run"], runner)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(json.loads(out)["bundle"], [])
+                # An empty Edge env is filled from the template at execution, so the plan reads the template.
+                edge_env.write_text("")
+                (root / "custom.env.example").write_text("PE_ACCESS_MODE=public\nPE_PUBLIC_DOMAIN=custom.example\nPE_BIND_HOST=0.0.0.0\n")
+                code, out, err = run_main(["--env-file", str(edge_env), "--template", str(root / "custom.env.example"),
+                                           "--dry-run", "--with", "gateway", "--gateway-dir", str(gateway)], runner)
             self.assertEqual(code, 0, err)
-            self.assertEqual(json.loads(out)["bundle"], [])
-            self.assertFalse(edge_env.exists())
+            self.assertEqual(json.loads(out.splitlines()[1])["writes"]["LG_PUBLIC_DOMAIN"], "custom.example")
+            self.assertEqual(edge_env.read_bytes(), b"")
 
     def test_backplane_command_with_and_without_a_recorded_profile_set(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {}, clear=True), \
@@ -195,8 +203,10 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(refused.exception.code, "bundle_capability_file")
             (backplane / ".env.lock").write_text("locked\n")
             with patch.object(bundle, "run_bootstrap", Runs()), self.assertRaises(bootstrap.Refused) as refused:
-                bundle.install([fresh], [])
-            self.assertEqual(refused.exception.code, "bundle_env_locked")
+                bundle.install([fresh], ["--with", "backplane"])
+            self.assertEqual(refused.exception.code, "sibling_bootstrap_failed")
+            self.assertIn("was not started: " + str(backplane / ".env.lock"), refused.exception.detail)
+            self.assertIn("rerun `python3 scripts/bootstrap.py --with backplane`", refused.exception.detail)
             self.assertEqual((backplane / ".env").read_text(), "BP_AUTH_SECRET=s\n")
             (backplane / ".env.lock").unlink()
             with patch.object(bundle, "run_bootstrap", Runs()), contextlib.redirect_stdout(io.StringIO()):

@@ -90,6 +90,9 @@ def amended(source: str, changes: dict[str, str]) -> tuple[str, dict[str, str]]:
     for line in source.splitlines(keepends=True):
         match = bootstrap.ENV_LINE.match(line.rstrip("\r\n"))
         key = match.group("key") if match else None
+        # A quoted value that continues on later lines would make those lines look like assignments.
+        if match and match.group("value").strip()[:1] in ("'", '"') and unquoted(match.group("value")) == match.group("value").strip():
+            raise bootstrap.Refused("bundle_env_repair_required", f"{key} holds a multiline or unterminated quoted value; not supported")
         if key in changes:
             if key not in pending:
                 raise bootstrap.Refused("bundle_env_repair_required", f"{key} is set twice; keep one assignment")
@@ -107,7 +110,8 @@ def amended(source: str, changes: dict[str, str]) -> tuple[str, dict[str, str]]:
 
 def source_text(env: Path) -> str:
     """The sibling env, or its template when the env does not exist yet."""
-    return (env if env.exists() else env.with_name(".env.example")).read_text(encoding="utf-8")
+    with open(env if env.exists() else env.with_name(".env.example"), encoding="utf-8", newline="") as handle:
+        return handle.read()
 
 
 def command(stack: str, args, values: dict[str, str], source: str) -> list[str]:
@@ -189,7 +193,7 @@ def replace(env: Path, text: str) -> None:
     mode = stat.S_IMODE(env.stat().st_mode) if env.exists() else 0o600
     fd, temporary = tempfile.mkstemp(prefix=".env.bundle-", dir=env.parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             os.fchmod(fd, mode)
             handle.write(text)
             handle.flush()
@@ -212,18 +216,23 @@ def run_bootstrap(argv: list[str], directory: Path) -> int:
 
 def install(plans: list[dict], argv: list[str]) -> None:
     for item in plans:
-        stack, env = item["stack"], item["env"]
-        with locked(stack, env):
-            text, writes = amended(source_text(env), item["settings"])
-            if writes or not env.exists():
-                replace(env, text)
+        stack, env, writes = item["stack"], item["env"], {}
+        # Edge is already running here, so every failure from this point is exit 3 with the rerun.
         try:
+            with locked(stack, env):
+                text, writes = amended(source_text(env), item["settings"])
+                if writes or not env.exists():
+                    replace(env, text)
             outcome = "exited " + str(run_bootstrap(item["command"], item["directory"]))
         except subprocess.TimeoutExpired:
             outcome = f"ran longer than {TIMEOUT} s and was stopped"
+        except bootstrap.Refused as refused:
+            outcome = "was not started: " + refused.detail
+        except OSError as error:
+            outcome = "was not started: " + str(error)
         if outcome != "exited 0":
             raise bootstrap.Refused("sibling_bootstrap_failed",
-                                    f"{stack} bootstrap {outcome} in {item['directory']}; its bundle settings are written, earlier "
-                                    f"stacks are ready and later stacks are untouched. Fix the reported problem, then rerun "
+                                    f"{stack} bootstrap {outcome} in {item['directory']}; earlier stacks are ready and later "
+                                    f"stacks are untouched. Fix the reported problem, then rerun "
                                     f"`python3 scripts/bootstrap.py {shlex.join(argv)}` here or `{shlex.join(item['command'])}` in that checkout")
         print(json.dumps({"stack": stack, "env": str(env), "written": writes, "command": item["command"]}))
