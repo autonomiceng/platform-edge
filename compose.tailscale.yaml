@@ -1,0 +1,133 @@
+# Tailnet Origins (ADR-0004): one Tailscale node per routed hostname, selected by
+# `python3 scripts/bootstrap.py --tailscale`, which records PE_TAILNET_DOMAIN before Edge reads it.
+# Each node serves https://<name>.<tailnet>.ts.net and proxies to Edge over the Platform Network.
+x-tailscale: &tailscale
+  # Pinned tag plus digest; Renovate raises bumps, humans merge them.
+  image: tailscale/tailscale:v1.102.4@sha256:2667499ed87ae29218f292556ba062918402dd5e92e93637af14867e4df12dd3
+  restart: unless-stopped
+  mem_limit: 256m
+  mem_reservation: 64m
+  pids_limit: 256
+  cpus: 1
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  # Userspace networking needs no tun device or NET_ADMIN; the socket and logs live on tmpfs.
+  read_only: true
+  tmpfs:
+    - /tmp
+    - /var/run
+  logging:
+    driver: journald
+    options:
+      cache-disabled: "true"
+  networks:
+    - platform
+
+x-tailscale-environment: &tailscale-environment
+  TS_AUTHKEY: ${PE_TS_AUTHKEY:?set a reusable tagged auth key in .env, then run python3 scripts/bootstrap.py --tailscale}
+  TS_AUTH_ONCE: "true"
+  TS_STATE_DIR: /var/lib/tailscale
+  TS_USERSPACE: "true"
+  TS_SERVE_CONFIG: /config/serve.json
+  # An empty tag omits the flag; the key's own tags then apply.
+  TS_EXTRA_ARGS: ${PE_TS_TAG:+--advertise-tags=${PE_TS_TAG}}
+
+services:
+  caddy:
+    environment:
+      # Caddy applies snippet defaults only to unset variables; this overlay is the only source of PE_TAILNET.
+      PE_TAILNET: "on"
+      PE_TAILNET_DOMAIN: ${PE_TAILNET_DOMAIN:-}
+      PE_ROOT_HOST: ${PE_ROOT_HOST:-platform}
+      # The console links only the nodes that exist.
+      PE_TS_APPS: ${PE_TS_APPS:-console,litellm,langfuse,s3,rustfs,backplane,grafana}
+      # Peers in the dynamic range are the sidecars; only their requests carry the HTTPS scheme upstream.
+      PE_PLATFORM_IP_RANGE: ${PE_PLATFORM_IP_RANGE:-172.30.0.128/25}
+  ts-console:
+    <<: *tailscale
+    profiles: [ts-console]
+    environment:
+      <<: *tailscale-environment
+      TS_HOSTNAME: ${PE_ROOT_HOST:-platform}
+    volumes:
+      # containerboot watches the directory, so a serve config edit is applied without a restart.
+      - ./docker/tailscale:/config:ro
+      - ts-console:/var/lib/tailscale
+  ts-litellm:
+    <<: *tailscale
+    profiles: [ts-litellm]
+    environment:
+      <<: *tailscale-environment
+      TS_HOSTNAME: litellm
+    volumes:
+      - ./docker/tailscale:/config:ro
+      - ts-litellm:/var/lib/tailscale
+  ts-langfuse:
+    <<: *tailscale
+    profiles: [ts-langfuse]
+    environment:
+      <<: *tailscale-environment
+      TS_HOSTNAME: langfuse
+    volumes:
+      - ./docker/tailscale:/config:ro
+      - ts-langfuse:/var/lib/tailscale
+  ts-s3:
+    <<: *tailscale
+    profiles: [ts-s3]
+    environment:
+      <<: *tailscale-environment
+      TS_HOSTNAME: s3
+    volumes:
+      - ./docker/tailscale:/config:ro
+      - ts-s3:/var/lib/tailscale
+  ts-rustfs:
+    <<: *tailscale
+    profiles: [ts-rustfs]
+    environment:
+      <<: *tailscale-environment
+      TS_HOSTNAME: rustfs
+    volumes:
+      - ./docker/tailscale:/config:ro
+      - ts-rustfs:/var/lib/tailscale
+  ts-backplane:
+    <<: *tailscale
+    profiles: [ts-backplane]
+    environment:
+      <<: *tailscale-environment
+      TS_HOSTNAME: backplane
+    volumes:
+      - ./docker/tailscale:/config:ro
+      - ts-backplane:/var/lib/tailscale
+  ts-grafana:
+    <<: *tailscale
+    profiles: [ts-grafana]
+    environment:
+      <<: *tailscale-environment
+      TS_HOSTNAME: grafana
+    volumes:
+      - ./docker/tailscale:/config:ro
+      - ts-grafana:/var/lib/tailscale
+
+# Node identity and certificates; bootstrap creates the volumes of the selected nodes.
+volumes:
+  ts-console:
+    external: true
+    name: ${PE_VOLUME_PREFIX:-platform-edge}_ts-console
+  ts-litellm:
+    external: true
+    name: ${PE_VOLUME_PREFIX:-platform-edge}_ts-litellm
+  ts-langfuse:
+    external: true
+    name: ${PE_VOLUME_PREFIX:-platform-edge}_ts-langfuse
+  ts-s3:
+    external: true
+    name: ${PE_VOLUME_PREFIX:-platform-edge}_ts-s3
+  ts-rustfs:
+    external: true
+    name: ${PE_VOLUME_PREFIX:-platform-edge}_ts-rustfs
+  ts-backplane:
+    external: true
+    name: ${PE_VOLUME_PREFIX:-platform-edge}_ts-backplane
+  ts-grafana:
+    external: true
+    name: ${PE_VOLUME_PREFIX:-platform-edge}_ts-grafana

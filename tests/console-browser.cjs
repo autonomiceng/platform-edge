@@ -25,20 +25,12 @@ const assert = require("node:assert/strict");
       domain: "localhost",
       mode: "local",
       scheme: "http",
-      tailscale: "test.ts.net",
-      connected: "gateway",
-      ports: {
-        gateway: "8446",
-        litellm: "8443",
-        langfuse: "8444",
-        s3: "8445",
-        observability: "8447",
-        backplane: "8448",
-        rustfs: "8449",
-      },
+      tailnet: "",
+      root: "",
+      apps: "console,litellm,langfuse,s3,rustfs,backplane,grafana",
     };
     let backplaneReady = true;
-    await page.route("https://test.ts.net/**", (route) => {
+    await page.route("https://platform.test.ts.net/**", (route) => {
       const path = new URL(route.request().url()).pathname;
       requests++;
       if (path.startsWith("/stack-status/")) {
@@ -89,7 +81,7 @@ const assert = require("node:assert/strict");
       await page.getByRole("button", { name: "Refresh", exact: true }).click();
       await settled();
     };
-    await page.goto("https://test.ts.net/");
+    await page.goto("https://platform.test.ts.net/");
     await settled();
     assert.equal(
       await page.locator(".version").first().textContent(),
@@ -110,20 +102,20 @@ const assert = require("node:assert/strict");
         .count(),
       0,
     );
-    config.connected += ",backplane";
+    config.tailnet = "test.ts.net";
     await refresh();
     assert.equal(
       await page
         .getByRole("link", { name: "Backplane ↗", exact: true })
         .getAttribute("href"),
-      "https://test.ts.net:8448/dashboard/",
+      "https://backplane.test.ts.net/dashboard/",
     );
     await page
       .getByRole("button", { name: "Copy Backplane API", exact: true })
       .click();
     assert.equal(
       await page.evaluate(() => navigator.clipboard.readText()),
-      "https://test.ts.net:8448/api/v1",
+      "https://backplane.test.ts.net/api/v1",
     );
     assert.ok(
       !(await page.locator(".version").allTextContents()).some((text) =>
@@ -131,7 +123,7 @@ const assert = require("node:assert/strict");
       ),
       "A missing Gateway producer never borrows another version source",
     );
-    config.connected = "gateway";
+    config.tailnet = "";
     await page.clock.fastForward(30000);
     await settled();
     assert.equal(
@@ -140,7 +132,7 @@ const assert = require("node:assert/strict");
         .count(),
       0,
     );
-    config.connected += ",backplane";
+    config.tailnet = "test.ts.net";
     await page.clock.fastForward(30000);
     await settled();
     assert.equal(

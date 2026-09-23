@@ -95,7 +95,12 @@ validate_caddyfile -e PE_ACCESS_MODE=public -e PE_SCHEME=https -e PE_PUBLIC_DOMA
 validate_caddyfile -e PE_ACCESS_MODE=public -e PE_SCHEME=https -e PE_PUBLIC_DOMAIN=example.com -e PE_TLS_ISSUER=files \
   -v "$work/certs:/certs:ro"
 validate_caddyfile -e PE_ACCESS_MODE=proxy -e PE_SCHEME=https -e PE_PUBLIC_DOMAIN=example.com
-echo 'Caddyfile (local-internal, local-files, public-acme, public-acme-ca, public-acme-eab, public-files, proxy): PASS'
+# The Tailnet variables come only from compose.tailscale.yaml; the runs above prove the unset case.
+validate_caddyfile -e PE_ACCESS_MODE=local -e PE_SCHEME=http -e PE_PUBLIC_DOMAIN=localhost -e PE_TLS_ISSUER=internal \
+  -e PE_TAILNET=on -e PE_TAILNET_DOMAIN=example.ts.net -e PE_ROOT_HOST=platform -e PE_PLATFORM_IP_RANGE=172.30.0.128/25
+validate_caddyfile -e PE_ACCESS_MODE=proxy -e PE_SCHEME=https -e PE_PUBLIC_DOMAIN=example.com \
+  -e PE_TAILNET=on -e PE_TAILNET_DOMAIN=example.ts.net -e PE_ROOT_HOST=edge -e PE_PLATFORM_IP_RANGE=172.30.0.128/25
+echo 'Caddyfile (local-internal, local-files, public-acme, public-acme-ca, public-acme-eab, public-files, proxy, local-tailnet, proxy-tailnet): PASS'
 
 PE_ACCESS_MODE=proxy docker compose --env-file "$work/.env" -f compose.yaml -f compose.proxy.yaml config --format json > "$work/proxy.json"
 python3 - "$work/proxy.json" <<'PYCODE'
@@ -137,3 +142,38 @@ assert files['environment']['PE_TLS_ISSUER'] == 'files', files['environment']
 assert not {'PE_ACME_TRUST', 'PE_ACME_ACCOUNT'} & set(files['environment']), 'ACME discriminators leak into the base'
 PYCODE
 echo 'TLS overlays: read-only mounts without host path creation, discriminators only from overlays: PASS'
+
+# The Tailnet overlay renders one profile-gated node with the serve config mounted read-only.
+PE_TS_AUTHKEY=validate-placeholder PE_TAILNET_DOMAIN=example.ts.net docker compose --env-file "$work/.env" \
+  -f compose.yaml -f compose.tailscale.yaml --profile ts-litellm config --format json > "$work/tailnet.json"
+PE_TS_AUTHKEY=validate-placeholder PE_TS_TAG='' docker compose --env-file "$work/.env" \
+  -f compose.yaml -f compose.tailscale.yaml --profile ts-litellm config --format json > "$work/tailnet-untagged.json"
+python3 - "$work/tailnet.json" "$work/tailnet-untagged.json" <<'PYCODE'
+import json, re, sys
+from pathlib import Path
+config = json.load(open(sys.argv[1]))
+untagged = json.load(open(sys.argv[2]))['services']['ts-litellm']['environment']
+assert untagged['TS_EXTRA_ARGS'] == '', 'an empty tag must omit --advertise-tags'
+assert set(config['services']) == {'caddy', 'ts-litellm'}, sorted(config['services'])
+node = config['services']['ts-litellm']
+assert re.fullmatch(r'tailscale/tailscale:v[^:@]+@sha256:[0-9a-f]{64}', node['image']), node['image']
+assert ('  image: ' + node['image']) in Path('compose.tailscale.yaml').read_text().splitlines(), 'keep the Tailscale pin Renovate-extractable'
+environment = node['environment']
+assert environment['TS_AUTH_ONCE'] == 'true' and environment['TS_USERSPACE'] == 'true', environment
+assert environment['TS_STATE_DIR'] == '/var/lib/tailscale' and environment['TS_SERVE_CONFIG'] == '/config/serve.json', environment
+assert environment['TS_HOSTNAME'] == 'litellm' and environment['TS_EXTRA_ARGS'] == '--advertise-tags=tag:platform', environment
+mounts = {m['target']: m for m in node['volumes']}
+assert mounts['/config']['type'] == 'bind' and mounts['/config']['read_only'] and mounts['/config']['source'].endswith('/docker/tailscale'), mounts
+assert mounts['/var/lib/tailscale'] == {'type': 'volume', 'source': 'ts-litellm', 'target': '/var/lib/tailscale', 'volume': {}}, mounts
+assert set(node['networks']) == {'platform'} and not node.get('ports'), 'a node joins only the Platform Network and publishes nothing'
+assert node['read_only'] and node['cap_drop'] == ['ALL'] and not node.get('cap_add') and not node.get('devices'), 'userspace node privileges'
+assert node['security_opt'] == ['no-new-privileges:true'] and node['profiles'] == ['ts-litellm'], node
+assert node['logging'] == {'driver': 'journald', 'options': {'cache-disabled': 'true'}}, 'journald without Docker cache'
+assert config['volumes']['ts-litellm'] == {'external': True, 'name': 'platform-edge_ts-litellm'}, config['volumes']
+caddy = config['services']['caddy']['environment']
+assert (caddy['PE_TAILNET'], caddy['PE_TAILNET_DOMAIN'], caddy['PE_ROOT_HOST']) == ('on', 'example.ts.net', 'platform'), caddy
+assert caddy['PE_TS_APPS'] == 'console,litellm,langfuse,s3,rustfs,backplane,grafana', caddy
+serve = json.loads(Path('docker/tailscale/serve.json').read_text())
+assert serve == {'TCP': {'443': {'HTTPS': True}}, 'Web': {'${TS_CERT_DOMAIN}:443': {'Handlers': {'/': {'Proxy': 'http://pe-edge:80'}}}}}, serve
+PYCODE
+echo 'Tailnet overlay: pinned userspace node per profile with the serve config mounted: PASS'

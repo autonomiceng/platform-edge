@@ -18,7 +18,7 @@
 		reverse_proxy lg-gateway:80 {
 			header_up X-Forwarded-For {http.request.remote.host}
 			header_up Host {host}
-			import forwarded-proto-{$PE_ACCESS_MODE:local}
+			import {args[0]}
 		}
 	}
 	handle_errors {
@@ -35,6 +35,7 @@
 	}
 }
 import site {$PE_PUBLIC_DOMAIN} gateway-root-routes
+import tailnet-site {$PE_ROOT_HOST:platform} gateway-root-routes
 
 (gateway-app-routes) {
 	import access-log
@@ -42,10 +43,14 @@ import site {$PE_PUBLIC_DOMAIN} gateway-root-routes
 	reverse_proxy lg-gateway:80 {
 		header_up X-Forwarded-For {http.request.remote.host}
 		header_up Host {host}
-		import forwarded-proto-{$PE_ACCESS_MODE:local}
+		import {args[0]}
 	}
 }
 import site litellm.{$PE_PUBLIC_DOMAIN} gateway-app-routes
 import site langfuse.{$PE_PUBLIC_DOMAIN} gateway-app-routes
 import site s3.{$PE_PUBLIC_DOMAIN} gateway-app-routes
 import site rustfs.{$PE_PUBLIC_DOMAIN} gateway-app-routes
+import tailnet-site litellm gateway-app-routes
+import tailnet-site langfuse gateway-app-routes
+import tailnet-site s3 gateway-app-routes
+import tailnet-site rustfs gateway-app-routes

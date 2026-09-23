@@ -50,14 +50,27 @@ def check_usage(parser, args) -> None:
         parser.error("--capability-file requires --with backplane")
 
 
-def settings(stack: str, edge: dict[str, str]) -> dict[str, str]:
-    """The bundle keys one stack receives, derived from the Edge settings."""
+# Browser origin settings per stack, keyed by the Tailnet node that serves them (ADR-0004). The
+# bundle owns these keys: a selected node's Tailnet Origin, else the public-domain origin.
+ORIGIN_KEYS = {
+    "gateway": {"LG_CONSOLE_URL": "console", "LG_LITELLM_URL": "litellm", "LG_LANGFUSE_URL": "langfuse", "LG_S3_URL": "s3",
+                "LG_RUSTFS_URL": "rustfs", "LG_GRAFANA_URL": "grafana", "LG_BACKPLANE_URL": "backplane"},
+    "observability": {"OB_GRAFANA_URL": "grafana", "OB_GATEWAY_URL": "console", "OB_BACKPLANE_URL": "backplane"},
+    "backplane": {"BP_PUBLIC_URL": "backplane"},
+}
+
+
+def tailnet_settings(stack: str, origins: dict[str, str]) -> dict[str, str]:
+    """The origin keys one stack receives for the selected Tailnet nodes."""
+    return {key: origins[app] for key, app in ORIGIN_KEYS[stack].items() if app in origins}
+
+
+def settings(stack: str, edge: dict[str, str], origins: dict[str, str] | None = None) -> dict[str, str]:
+    """The bundle keys one stack receives, derived from the Edge settings and the Tailnet Origins."""
     prefix = STACKS[stack][0]
     domain, scheme = edge["PE_PUBLIC_DOMAIN"], edge["PE_SCHEME"]
     values = {"ACCESS_MODE": "proxy"}
-    if stack == "backplane":
-        values["PUBLIC_URL"] = f"{scheme}://backplane.{domain}"
-    else:
+    if stack != "backplane":
         values.update(PUBLIC_DOMAIN=domain, SCHEME=scheme)
     values["BIND_HOST"] = "127.0.0.1"
     if stack == "backplane":
@@ -70,9 +83,14 @@ def settings(stack: str, edge: dict[str, str]) -> dict[str, str]:
         values[key] = edge["PE_" + key]
     values["TRUSTED_PROXIES"] = edge["PE_EDGE_IP"] + "/32"
     if stack == "observability":
-        values.update(GATEWAY_HEALTH_HOST=domain, GATEWAY_URL=f"{scheme}://{domain}",
-                      BACKPLANE_URL=f"{scheme}://backplane.{domain}")
-    return {prefix + "_" + key: value for key, value in values.items()}
+        values["GATEWAY_HEALTH_HOST"] = domain
+    keys = {prefix + "_" + key: value for key, value in values.items()}
+    # Backplane requires its origin and Observability its companion links; the other siblings derive
+    # an empty origin from their public domain themselves.
+    public = {"BP_PUBLIC_URL": f"{scheme}://backplane.{domain}", "OB_GATEWAY_URL": f"{scheme}://{domain}",
+              "OB_BACKPLANE_URL": f"{scheme}://backplane.{domain}"}
+    keys.update({key: (origins or {}).get(app, public.get(key, "")) for key, app in ORIGIN_KEYS[stack].items()})
+    return keys
 
 
 def unquoted(value: str) -> str:
@@ -132,10 +150,12 @@ def command(stack: str, args, values: dict[str, str], source: str) -> list[str]:
     return argv
 
 
-def plan(args, root: Path, edge: dict[str, str]) -> list[dict]:
+def plan(args, root: Path, edge: dict[str, str], apps: tuple[str, ...] = ()) -> list[dict]:
     """Preflight every selected stack; nothing is written until every checkout qualifies."""
+    import tailnet
     if not args.stacks:
         return []
+    origins = tailnet.origins(edge, apps)
     prefixes = tuple(STACKS[stack][0] + "_" for stack in args.stacks) + ("COMPOSE_",)
     exported = sorted(key for key in os.environ if key.startswith(prefixes))
     if exported:
@@ -156,7 +176,7 @@ def plan(args, root: Path, edge: dict[str, str]) -> list[dict]:
             raise bootstrap.Refused("bundle_checkout_missing", f"{directory} is not a {repository} checkout with {entrypoint} and .env.example; pass --{stack}-dir")
         if env.is_symlink():
             raise bootstrap.Refused("bundle_env_symlink", f"{env} must be a regular file")
-        values = settings(stack, edge)
+        values = settings(stack, edge, origins)
         source = source_text(env)
         _, writes = amended(source, values)
         plans.append({"stack": stack, "directory": directory, "env": env, "settings": values, "writes": writes,

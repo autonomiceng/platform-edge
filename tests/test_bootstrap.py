@@ -251,19 +251,8 @@ class BootstrapTests(unittest.TestCase):
             self.assertIn("172.30.0.2", caught.exception.detail)
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
             env = Path(directory) / ".env"
-            env.write_text("# keep\nCOMPOSE_FILE='compose.yaml:custom.yaml:compose.tailscale.yaml'\nPE_TAILSCALE_EDGE_IP=\nCUSTOM=1\n")
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as log:
-                self.assertEqual(bootstrap.bootstrap(["--env-file", str(env), "--render-only"], FakeRunner()), 0)
-            self.assertEqual(env.read_text(), "# keep\nCOMPOSE_FILE='compose.yaml:custom.yaml'\nPE_TAILSCALE_EDGE_IP=\nCUSTOM=1\n")
-            self.assertIn("compose.tailscale.yaml", log.getvalue())
+            env.write_text("# keep\nCOMPOSE_FILE='compose.yaml:custom.yaml'\nCUSTOM=1\n")
             self.assertEqual(bootstrap.compose_command(ROOT, env)[-4:], ["-f", str(ROOT / "compose.yaml"), "-f", str(ROOT / "custom.yaml")])
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as log:
-                self.assertEqual(bootstrap.bootstrap(["--env-file", str(env), "--render-only"], FakeRunner()), 0)
-            self.assertEqual(log.getvalue(), "")
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"COMPOSE_FILE": "compose.yaml:compose.tailscale.yaml"}, clear=True), \
-                contextlib.redirect_stdout(io.StringIO()), self.assertRaises(bootstrap.Refused) as caught:
-            bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env"), "--render-only"], FakeRunner())
-        self.assertEqual(caught.exception.code, "legacy_setting")
 
     def test_network_created_only_when_missing(self):
         for exists in (True, False):

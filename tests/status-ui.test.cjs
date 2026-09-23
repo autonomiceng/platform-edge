@@ -42,7 +42,7 @@ function ui() {
   );
   const run = (code) => vm.runInContext(code, context);
   run(
-    `config = validateConfig({domain:'localhost', tailscale:'', connected:'', scheme:'http', ports:{}});`,
+    `config = validateConfig({domain:'localhost', tailnet:'', root:'', apps:'console,litellm,langfuse,s3,rustfs,backplane,grafana', scheme:'http'});`,
   );
   return run;
 }
@@ -61,30 +61,36 @@ test("trusted links survive missing producers and failed HTTP reachability", () 
     run(`serviceLinks(DATA.services.find(s => s.id === 'bp')).Console`),
     "http://backplane.localhost/dashboard/",
   );
-  run(
-    `config.tailscale = 'private.test.ts.net'; location.hostname = config.tailscale; config.ports.backplane = '8448';`,
-  );
+  run(`location.hostname = 'platform.private.ts.net';`);
   assert.equal(
     run(`serviceLinks(DATA.services.find(s => s.id === 'bp')).Console`),
     undefined,
   );
-  run(`config.connected = 'backplane';`);
+  run(`config.tailnet = 'private.ts.net';`);
   assert.equal(
     run(`serviceLinks(DATA.services.find(s => s.id === 'bp')).Console`),
-    "https://private.test.ts.net:8448/dashboard/",
+    "https://backplane.private.ts.net/dashboard/",
   );
-});
-test("optional storage console links require a configured Tailnet endpoint", () => {
-  const run = ui();
-  for (const [service, id, port] of [["b-rust", "backplane_rustfs", "8450"], ["o-rust", "observability_rustfs", "8451"]]) {
+  assert.equal(
+    run(`serviceLinks(DATA.services.find(s => s.id === 'lite')).API`),
+    "https://litellm.private.ts.net",
+  );
+  // A recorded tailnet makes the Tailnet Origins the browser URLs from the local address too.
+  run(`location.hostname = 'localhost';`);
+  assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === 'lite')).Console`), "https://litellm.private.ts.net/ui/");
+  run(`config.root = 'edge'; location.hostname = 'platform.private.ts.net';`);
+  assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === 'bp')).Console`), undefined);
+  run(`location.hostname = 'edge.private.ts.net';`);
+  assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === 'bp')).Console`), "https://backplane.private.ts.net/dashboard/");
+  // An application without a node keeps its public link locally and has none on the Tailnet console.
+  run(`config.apps = ['console', 'litellm'];`);
+  assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === 'bp')).Console`), undefined);
+  assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === 'lite')).API`), "https://litellm.private.ts.net");
+  run(`location.hostname = 'localhost';`);
+  assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === 'bp')).Console`), "http://backplane.localhost/dashboard/");
+  // Optional storage consoles are never linked; they are not Tailnet Origins.
+  for (const service of ["b-rust", "o-rust"])
     assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === '${service}')).Console`), undefined);
-    run(`config.tailscale = 'private.test.ts.net'; location.hostname = config.tailscale; config.ports.${id} = '${port}';`);
-    assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === '${service}')).Console`), undefined);
-    run(`config.connected += ',${id}';`);
-    assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === '${service}')).Console`), `https://private.test.ts.net:${port}/rustfs/console/`);
-    run(`location.hostname = 'untrusted.test';`);
-    assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === '${service}')).Console`), undefined);
-  }
 });
 test("every contract ID maps to exactly one catalog component", () => {
   const run = ui();

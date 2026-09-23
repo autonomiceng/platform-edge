@@ -328,60 +328,41 @@ function validateConfig(value) {
     typeof value !== "object" ||
     typeof value.domain !== "string" ||
     !hostname.test(value.domain) ||
-    typeof value.tailscale !== "string" ||
-    (value.tailscale && !hostname.test(value.tailscale)) ||
-    typeof value.connected !== "string" ||
-    !["http", "https"].includes(value.scheme) ||
-    !value.ports ||
-    typeof value.ports !== "object"
+    typeof value.tailnet !== "string" ||
+    (value.tailnet && !hostname.test(value.tailnet)) ||
+    typeof value.root !== "string" ||
+    (value.root && !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(value.root)) ||
+    typeof value.apps !== "string" ||
+    !/^[a-z0-9,]*$/.test(value.apps) ||
+    !["http", "https"].includes(value.scheme)
   )
     throw new Error("Invalid access settings");
-  if (
-    value.tailscale &&
-    [
-      "gateway",
-      "litellm",
-      "langfuse",
-      "s3",
-      "observability",
-      "backplane",
-      "rustfs",
-    ].some(
-      (id) =>
-        typeof value.ports[id] !== "string" ||
-        !/^[1-9][0-9]*$/.test(value.ports[id]) ||
-        Number(value.ports[id]) > 65535,
-    )
-  )
-    throw new Error("Invalid application ports");
-  for (const id of ["backplane_rustfs", "observability_rustfs"]) {
-    if (value.tailscale && value.connected.split(",").includes(id) &&
-        (typeof value.ports[id] !== "string" || !/^[1-9][0-9]*$/.test(value.ports[id]) || Number(value.ports[id]) > 65535))
-      throw new Error("Invalid console port");
-  }
   return {
     ...value,
     domain: value.domain.toLowerCase(),
-    tailscale: value.tailscale.toLowerCase(),
+    tailnet: value.tailnet.toLowerCase(),
+    root: (value.root || "platform").toLowerCase(),
+    apps: value.apps.split(",").filter(Boolean),
   };
 }
+// The console's own Tailnet Origin.
+function tailnetHost() {
+  return config?.tailnet ? `${config.root}.${config.tailnet}` : "";
+}
+// Links are trusted only on the console's own addresses. With a tailnet recorded, the Tailnet
+// Origin of a selected node is the application's browser URL wherever the page was opened; an
+// application without a node keeps its public-domain link, which the Tailnet console cannot offer.
 function appOrigin(id, prefix) {
   if (!config) return null;
-  const tail = config.tailscale && location.hostname === config.tailscale;
-  if (tail) {
-    if (
-      !new Set(config.connected.split(",")).has(
-        id === "observability" ? "grafana" : id,
-      )
-    )
-      return null;
-    return `https://${config.tailscale}:${config.ports[id]}`;
-  }
   if (
+    location.hostname !== tailnetHost() &&
     location.hostname !== config.domain &&
     !(config.domain === "localhost" && location.hostname === "127.0.0.1")
   )
     return null;
+  if (config.tailnet && config.apps.includes(prefix || "console"))
+    return `https://${prefix || config.root}.${config.tailnet}`;
+  if (location.hostname === tailnetHost()) return null;
   return `${location.protocol}//${prefix ? prefix + "." : ""}${config.domain}${location.port ? ":" + location.port : ""}`;
 }
 function serviceState(s) {
@@ -409,10 +390,6 @@ function serviceLinks(s) {
     add("Console", "rustfs", "rustfs", "/rustfs/console/");
     add("S3 API", "s3", "s3");
   }
-  if (config?.tailscale === location.hostname) {
-    if (s.id === "b-rust") add("Console", "backplane_rustfs", "", "/rustfs/console/");
-    if (s.id === "o-rust") add("Console", "observability_rustfs", "", "/rustfs/console/");
-  }
   if (s.id === "bp") {
     add("Console", "backplane", "backplane", "/dashboard/");
     add("API", "backplane", "backplane", "/api/v1");
@@ -424,28 +401,11 @@ function accessNotice() {
   if (!config)
     return "Application addresses are unavailable. Refresh to try again.";
   if (
-    location.hostname !== config.tailscale &&
+    location.hostname !== tailnetHost() &&
     location.hostname !== config.domain &&
     !(config.domain === "localhost" && location.hostname === "127.0.0.1")
   )
-    return "Application access is not configured for this address. Run scripts/tailscale_serve.py on the host to connect through Tailscale, or use the configured domain.";
-  if (location.hostname === config.tailscale) {
-    const connected = new Set(config.connected.split(","));
-    const missing = [
-      "litellm",
-      "langfuse",
-      "s3",
-      "rustfs",
-      "backplane",
-      "observability",
-    ].some(
-      (id) =>
-        health[id] === "reachable" &&
-        !connected.has(id === "observability" ? "grafana" : id),
-    );
-    if (missing)
-      return "Some reachable applications need Tailscale access setup. Run scripts/tailscale_serve.py on the host, then refresh.";
-  }
+    return "Application access is not configured for this address. Use the configured domain, or run bootstrap --tailscale on the host and open the console's Tailnet address.";
   return "";
 }
 async function check() {
@@ -494,7 +454,7 @@ async function check() {
     await StackStatus.pool(jobs);
     $("#host-name").textContent = location.hostname;
     $("#access-mode").textContent =
-      config?.tailscale === location.hostname
+      tailnetHost() && location.hostname === tailnetHost()
         ? "Tailscale"
         : location.protocol === "https:"
           ? "HTTPS"

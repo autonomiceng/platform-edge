@@ -43,3 +43,7 @@ _Avoid_: Healthcheck endpoint, readiness probe
 **Bundle**:
 The sibling stacks installed behind Edge by one bootstrap run with `--with`, each receiving the Platform Contract's bundle settings and running its own bootstrap.
 _Avoid_: Orchestration, selected installation
+
+**Tailnet Origin**:
+An application's `https://<name>.<tailnet>.ts.net` browser origin, served by that hostname's own Tailscale node inside the Edge project and routed by Edge over the Platform Network.
+_Avoid_: Tailscale port, machine URL

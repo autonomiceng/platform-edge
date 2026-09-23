@@ -25,7 +25,8 @@ else
   export PE_PUBLIC_DOMAIN=localhost PE_PLATFORM_NETWORK="$COMPOSE_PROJECT_NAME-platform"
   export PE_PLATFORM_SUBNET="$subnet" PE_PLATFORM_IP_RANGE="$prefix.128/25" PE_EDGE_IP="$prefix.2"
 fi
-export PE_CADDY_IMAGE='' PE_ACCESS_MODE=local PE_SCHEME=http PE_ACME_EMAIL='' PE_BACKUP_KEEP=7 PE_TAILSCALE_HOST='' PE_TRUSTED_PROXIES=''
+export PE_CADDY_IMAGE='' PE_ACCESS_MODE=local PE_SCHEME=http PE_ACME_EMAIL='' PE_BACKUP_KEEP=7 PE_TRUSTED_PROXIES=''
+export PE_TS_AUTHKEY='' PE_TS_TAG='' PE_TS_APPS='' PE_ROOT_HOST='' PE_TAILNET_DOMAIN=''
 export PE_TLS_ISSUER='' PE_TLS_DIR='' PE_TLS_CA='' PE_ACME_CA='' PE_ACME_CA_ROOT='' PE_ACME_EAB_KEY_ID='' PE_ACME_EAB_HMAC=''
 export PE_METRICS_ALLOW="127.0.0.0/8 ::1"
 export PE_VOLUME_PREFIX="$COMPOSE_PROJECT_NAME" PE_BACKUP_DIR=/tmp/unused-edge-smoke-backups
@@ -344,7 +345,7 @@ python3 - "$work/edge-config.json" <<'PYCONFIG'
 import json, sys
 config = json.load(open(sys.argv[1]))
 assert config["domain"] == "localhost"
-assert "backplane" in config["ports"]
+assert (config["tailnet"], config["root"], config["apps"]) == ("", "", ""), config
 PYCONFIG
 grep -qi 'Cache-Control: no-store' "$work/config.headers" || fail 'console settings may be cached'
 ok 'console settings remain available and uncached when the gateway is absent'
@@ -444,46 +445,40 @@ service = json.loads(open(sys.argv[1]).read())
 assert [p['TargetPort'] for p in service['Publishers'] if p.get('PublishedPort')] == [80], service
 PYCODE
 ok 'proxy preserves public HTTPS and publishes HTTP only'
-# One machine hostname must dispatch by port without losing signed S3 authorities.
-export PE_TAILSCALE_HOST=example.tail123.ts.net PE_ACCESS_MODE=local PE_SCHEME=http
-export COMPOSE_FILE="$root/compose.yaml"
+# Tailnet Origins: the overlay's Edge side with a stub domain. No ts-* profile is active, so no
+# node starts and the overlay's auth key guard only needs a placeholder value.
+export PE_ACCESS_MODE=local PE_SCHEME=http PE_TAILNET_DOMAIN=example.ts.net PE_TS_AUTHKEY=tskey-smoke-unused
+export COMPOSE_FILE="$root/compose.yaml:$root/compose.tailscale.yaml:$work/status.yaml"
 python3 scripts/bootstrap.py --env-file "$env_file" >/dev/null
-curl --noproxy '*' --max-time 10 -fsS "http://127.0.0.1:$PE_HTTP_PORT/health" >/dev/null
+[ "$(docker ps -q --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" | wc -l)" = 1 ] || fail 'a Tailscale node started without its profile'
 curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -fsS "https://127.0.0.1:$PE_HTTPS_PORT/health" >/dev/null
-ok 'Tailscale routes coexist with local HTTP and verified self-signed HTTPS'
+ok 'Tailnet overlay keeps local HTTP and verified self-signed HTTPS; nodes start only with their profiles'
 docker start "$lg_stub" "$ob_stub" >/dev/null
-for item in '8443 lg-gateway' '8444 lg-gateway' '8445 lg-gateway' '8446 lg-gateway' '8447 ob-gateway' '8448 bp-gateway' '8449 lg-gateway' '8450 bp-gateway' '8451 ob-gateway'; do
+for item in 'platform lg-gateway' 'litellm lg-gateway' 'langfuse lg-gateway' 's3 lg-gateway' 'rustfs lg-gateway' 'backplane bp-gateway' 'grafana ob-gateway'; do
   # shellcheck disable=SC2086
   set -- $item
-  body=$(curl --noproxy '*' --retry 5 --retry-all-errors --retry-delay 1 --max-time 10 -fsS -D "$work/headers" -H 'X-Forwarded-For: 198.51.100.9' -H "Host: $PE_TAILSCALE_HOST:$1" -H 'X-Forwarded-Proto: forged' "http://127.0.0.1:$PE_HTTP_PORT/authority")
-  [ "$body" = "$2|$PE_TAILSCALE_HOST:$1|https" ] || fail "Tailscale application $1 lost route, Host or scheme: $body"
-  if grep -qi 'X-Smoke-Forwarded-For:.*198.51.100.9' "$work/headers"; then fail 'Tailscale route accepted forged client address'; fi
-  ok "Tailscale $1 reaches $2 with exact authority, HTTPS scheme and unspoofed client"
+  host="$1.example.ts.net"
+  # A Platform Network peer stands in for the sidecar: Edge sets the HTTPS scheme itself.
+  body=$(docker exec "$bp_stub" wget -q -O - --header="Host: $host" --header='X-Forwarded-Proto: forged' \
+    --header='X-Forwarded-For: 198.51.100.9' http://pe-edge/authority)
+  [ "$body" = "$2|$host|https" ] || fail "Tailnet $host from a Platform Network peer answered '$body'"
+  # The same Host from the loopback listener is routed alike but keeps the request scheme.
+  body=$(curl --noproxy '*' --retry 5 --retry-all-errors --retry-delay 1 --max-time 10 -fsS -D "$work/headers" \
+    -H "Host: $host" -H 'X-Forwarded-Proto: forged' -H 'X-Forwarded-For: 198.51.100.9' "http://127.0.0.1:$PE_HTTP_PORT/authority")
+  [ "$body" = "$2|$host|http" ] || fail "Tailnet $host from loopback answered '$body'"
+  if grep -qi 'X-Smoke-Forwarded-For:.*198.51.100.9' "$work/headers"; then fail "Tailnet $host accepted a forged client address"; fi
+  ok "Tailnet $host reaches $2 with the exact Host: https from a Platform Network peer, http from loopback, no header trust"
 done
-code=$(curl --noproxy '*' --max-time 10 -sS -H "Host: $PE_TAILSCALE_HOST:8448" -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PE_HTTP_PORT/metrics")
-[ "$code" = 404 ] || fail 'Tailscale backplane leaked operator endpoint'
-ok 'Tailscale backplane retains operator endpoint restrictions'
-# Trust only the host relay, then prove that forwarded clients remain distinct from Docker peers.
-PE_TRUSTED_PROXIES=$(docker network inspect --format '{{(index .IPAM.Config 0).Gateway}}' "$PE_PLATFORM_NETWORK")
-export PE_TRUSTED_PROXIES
-python3 scripts/bootstrap.py --env-file "$env_file" >/dev/null
-for port in 8443 8444 8445 8446 8447 8448 8449; do
-  curl --noproxy '*' --max-time 10 -fsS -D "$work/headers" -o /dev/null \
-    -H "Host: $PE_TAILSCALE_HOST:$port" -H 'X-Forwarded-For: 198.51.100.9' \
-    "http://127.0.0.1:$PE_HTTP_PORT/authority"
-  if grep -qi 'X-Smoke-Forwarded-For:.*198.51.100.9' "$work/headers"; then fail 'existing route changed client forwarding after console trust setup'; fi
-  grep -qi 'X-Smoke-Forwarded-For:' "$work/headers" || fail 'existing route has no upstream forwarding evidence'
-  ok "existing route $port retains peer-address forwarding after console trust setup"
-done
-for port in 8450 8451; do
-  curl --noproxy '*' --max-time 10 -fsS -D "$work/headers" -o /dev/null \
-    -H "Host: $PE_TAILSCALE_HOST:$port" -H 'X-Forwarded-For: 100.64.0.7' \
-    "http://127.0.0.1:$PE_HTTP_PORT/authority"
-  grep -qi '^X-Smoke-Forwarded-For: 100.64.0.7' "$work/headers" || { grep -i '^X-Smoke-Forwarded-For:' "$work/headers"; echo "expected ingress peer: $PE_TRUSTED_PROXIES"; fail 'trusted ingress lost the original client'; }
-  docker exec "$bp_stub" wget -S -q -O /dev/null --header="Host: $PE_TAILSCALE_HOST:$port" \
-    --header='X-Forwarded-For: 100.64.0.7' http://pe-edge/authority > "$work/untrusted.headers" 2>&1
-  if grep -qi 'X-Smoke-Forwarded-For:.*100.64.0.7' "$work/untrusted.headers"; then fail 'untrusted Docker peer forged a console client'; fi
-  grep -qi 'X-Smoke-Forwarded-For:' "$work/untrusted.headers" || fail 'untrusted client proof has no upstream evidence'
-  ok "console $port preserves the trusted client and rejects Docker peer header spoofing"
-done
+code=$(curl --noproxy '*' --max-time 10 -sS -H 'Host: backplane.example.ts.net' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PE_HTTP_PORT/metrics")
+[ "$code" = 404 ] || fail 'Tailnet backplane leaked an operator endpoint'
+ok 'Tailnet backplane retains operator endpoint restrictions'
+curl --noproxy '*' --max-time 10 -fsS -H 'Host: platform.example.ts.net' "http://127.0.0.1:$PE_HTTP_PORT/" > "$work/body"
+grep -q 'Platform Edge' "$work/body" || fail 'Tailnet console missing'
+curl --noproxy '*' --max-time 10 -fsS -H 'Host: platform.example.ts.net' "http://127.0.0.1:$PE_HTTP_PORT/edge-config.json" > "$work/edge-config.json"
+python3 - "$work/edge-config.json" <<'PYCONFIG'
+import json, sys
+config = json.load(open(sys.argv[1]))
+assert (config["tailnet"], config["root"], config["apps"]) == ("example.ts.net", "platform", "console,litellm,langfuse,s3,rustfs,backplane,grafana"), config
+PYCONFIG
+ok 'Tailnet console serves the fallback page and publishes the tailnet domain and root name'
 echo "SMOKE CONTRACT PASSED ($pass checks)"

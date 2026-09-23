@@ -35,7 +35,6 @@ if __name__ == "__main__":
 
 PROJECT = "platform-edge"
 NETWORK = "platform"
-RETIRED_OVERLAY = "compose.tailscale.yaml"
 # Retired settings are read only to refuse values that contradict the fixed Edge address.
 LEGACY = {"PE_TAILSCALE_EDGE_IP"}
 RESTORE_MARKER = ".pe-restore-incomplete"
@@ -70,19 +69,13 @@ DEFAULTS = {
     "PE_ACME_EAB_HMAC": "",
     "PE_TLS_DIR": "",
     "PE_TLS_CA": "",
-    "PE_TAILSCALE_HOST": "",
-    "PE_TAILSCALE_APPS": "",
-    "PE_TAILSCALE_PORT": "443",
-    "PE_TAILSCALE_LITELLM_PORT": "8443",
-    "PE_TAILSCALE_LANGFUSE_PORT": "8444",
-    "PE_TAILSCALE_S3_PORT": "8445",
-    "PE_TAILSCALE_GATEWAY_PORT": "8446",
-    "PE_TAILSCALE_GRAFANA_PORT": "8447",
-    "PE_TAILSCALE_BACKPLANE_PORT": "8448",
-    "PE_TAILSCALE_RUSTFS_PORT": "8449",
-    "PE_TAILSCALE_BACKPLANE_RUSTFS_PORT": "8450",
-    "PE_TAILSCALE_OBSERVABILITY_RUSTFS_PORT": "8451",
     "PE_TRUSTED_PROXIES": "",
+    # Tailnet Origins (ADR-0004); the auth key is a secret read only for its presence.
+    "PE_TS_AUTHKEY": "",
+    "PE_TS_TAG": "",
+    "PE_TS_APPS": "console,litellm,langfuse,s3,rustfs,backplane,grafana",
+    "PE_ROOT_HOST": "",
+    "PE_TAILNET_DOMAIN": "",
     "PE_VOLUME_PREFIX": PROJECT,
     "PE_BACKUP_DIR": "./backups",
     "PE_BACKUP_KEEP": "7",
@@ -141,7 +134,7 @@ def read_env(path: Path) -> dict[str, str]:
         if not match:
             continue
         key, value = match.group("key"), match.group("value").strip()
-        if key not in DEFAULTS and key not in LEGACY and key not in {"COMPOSE_PROJECT_NAME", "COMPOSE_FILE"}:
+        if key not in DEFAULTS and key not in LEGACY and key not in {"COMPOSE_PROJECT_NAME", "COMPOSE_FILE", "COMPOSE_PROFILES"}:
             continue
         if key in values:
             raise Refused("env_repair_required", f"{key} is set twice in {path}")
@@ -159,6 +152,8 @@ def settings_for(values: dict[str, str]) -> dict[str, str]:
         key: os.environ.get(key, values.get(key, default)) or default
         for key, default in DEFAULTS.items()
     }
+    # An explicitly empty tag omits --advertise-tags; the template default is the only default.
+    settings["PE_TS_TAG"] = os.environ.get("PE_TS_TAG", values.get("PE_TS_TAG", ""))
     mode = settings["PE_ACCESS_MODE"]
     if mode not in {"local", "public", "proxy"}:
         raise Refused("invalid_settings", "PE_ACCESS_MODE must be local, public, or proxy")
@@ -242,17 +237,8 @@ def settings_for(values: dict[str, str]) -> dict[str, str]:
                 raise ValueError("proxy range is not exact")
         except ValueError as error:
             raise Refused("invalid_settings", "PE_TRUSTED_PROXIES requires exact IP addresses") from error
-    tail = settings["PE_TAILSCALE_HOST"]
-    if tail:
-        if not re.fullmatch(r"[a-z0-9-]+\.[a-z0-9-]+\.ts\.net", tail):
-            raise Refused("invalid_settings", "PE_TAILSCALE_HOST must be this machine's Tailscale hostname")
-        if mode not in {"local", "proxy"} or settings["PE_BIND_HOST"] != "127.0.0.1":
-            raise Refused("invalid_settings", "Tailscale requires local or proxy mode and a loopback HTTP listener")
-        ports = [settings["PE_TAILSCALE_PORT"], *[settings["PE_TAILSCALE_" + app + "_PORT"] for app in ("LITELLM", "LANGFUSE", "S3", "GATEWAY", "GRAFANA", "BACKPLANE", "RUSTFS", "BACKPLANE_RUSTFS", "OBSERVABILITY_RUSTFS")]]
-        if any(not port.isdigit() or not 1 <= int(port) <= 65535 for port in ports) or len(set(map(int, ports))) != len(ports):
-            raise Refused("invalid_settings", "Tailscale HTTPS ports must be valid and distinct")
-        if any(int(port) <= 1023 for port in ports[1:]):
-            raise Refused("invalid_settings", "Tailscale application ports must be above 1023")
+    import tailnet
+    tailnet.check_settings(settings)
     return settings
 
 
@@ -345,20 +331,6 @@ def check_ports(runner: Runner, settings: dict[str, str], project: str) -> None:
                               f"already publishes {address}:{conflicts[0]}/tcp; move its published port before starting the edge")
 
 
-def check_proxy_peer(runner: Runner, settings: dict[str, str]) -> None:
-    if not settings["PE_TAILSCALE_HOST"] or not settings["PE_TRUSTED_PROXIES"]:
-        return
-    result = runner(["docker", "network", "inspect", settings["PE_PLATFORM_NETWORK"]])
-    if result.returncode:
-        raise Refused("docker_unavailable", "cannot verify the trusted ingress peer")
-    configs = json.loads(result.stdout)[0].get("IPAM", {}).get("Config", [])
-    gateways = {str(ipaddress.ip_address(item["Gateway"])) for item in configs if item.get("Gateway")
-                and ipaddress.ip_address(item["Gateway"]).version == 4}
-    peers = {str(ipaddress.ip_interface(peer).ip) for peer in settings["PE_TRUSTED_PROXIES"].split()}
-    if len(gateways) != 1 or peers != gateways:
-        raise Refused("invalid_settings", "Tailscale trusted peer must match the current host bridge gateway")
-
-
 def platform_gateway(subnet: ipaddress.IPv4Network) -> ipaddress.IPv4Address:
     return subnet.network_address + 1
 
@@ -399,33 +371,27 @@ def ensure_network(runner: Runner, settings: dict[str, str]) -> None:
     check_network_allocation(name, probe.stdout, settings)
 
 
-def drop_retired_overlay(handle) -> None:
-    """Rewrite a COMPOSE_FILE line that still lists the retired peer-pinning overlay."""
+def record_env(handle, key: str, value: str) -> None:
+    """Set one assignment in the locked env file, keeping every other line byte for byte."""
     handle.seek(0)
     lines = handle.read().splitlines(keepends=True)
     for index, line in enumerate(lines):
         match = ENV_LINE.match(line.rstrip("\r\n"))
-        if not match or match.group("key") != "COMPOSE_FILE":
-            continue
-        value = match.group("value").strip()
-        quote = value[0] if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"') else ""
-        names = value.strip(quote).split(os.pathsep)
-        kept = [name for name in names if Path(name).name != RETIRED_OVERLAY]
-        if len(kept) == len(names):
-            return
-        lines[index] = line[:match.start("value")] + quote + os.pathsep.join(kept) + quote + line[match.end("value"):]
-        print(f"COMPOSE_FILE: dropped {RETIRED_OVERLAY}; the Edge address is fixed by PE_EDGE_IP", file=sys.stderr)
-        handle.seek(0)
-        handle.write("".join(lines))
-        handle.truncate()
-        handle.flush()
-        os.fsync(handle.fileno())
-        return
+        if match and match.group("key") == key:
+            lines[index] = line[:match.start("value")] + value + line[match.end("value"):]
+            break
+    else:
+        lines.append(("" if not lines or lines[-1].endswith("\n") else "\n") + f"{key}={value}\n")
+    handle.seek(0)
+    handle.write("".join(lines))
+    handle.truncate()
+    handle.flush()
+    os.fsync(handle.fileno())
 
 
-def rendered_caddy(root: Path, env_file: Path, runner: Runner) -> tuple[str, Path]:
+def rendered_caddy(root: Path, env_file: Path, runner: Runner, apps: tuple[str, ...] = ()) -> tuple[str, Path]:
     """The configured Caddy image and the host directory Caddy serves as its Status Document root."""
-    result = runner(compose_command(root, env_file) + ["config", "--format", "json"])
+    result = runner(compose_command(root, env_file, apps) + ["config", "--format", "json"])
     try:
         if result.returncode:
             raise ValueError(result.returncode)
@@ -492,27 +458,32 @@ def publish_status(directory: Path, document: dict) -> None:
         raise
 
 
-def compose_up(root: Path, env_file: Path, runner: Runner) -> None:
-    result = runner(compose_command(root, env_file) + [
-        "up", "--detach", "--wait", "--wait-timeout", "300",
+def compose_up(root: Path, env_file: Path, runner: Runner, apps: tuple[str, ...] = (), services: tuple[str, ...] = ()) -> None:
+    result = runner(compose_command(root, env_file, apps) + [
+        "up", "--detach", "--wait", "--wait-timeout", "300", *services,
     ])
     if result.returncode != 0:
         raise Refused("compose_up_failed", (result.stderr or result.stdout).strip()[-2000:])
 
 
-def volume_names(settings: dict[str, str]) -> list[str]:
-    return [f"{settings['PE_VOLUME_PREFIX']}_{suffix}" for suffix in ("edge-data", "edge-config")]
+def volume_names(settings: dict[str, str], apps: tuple[str, ...] = ()) -> list[str]:
+    import tailnet
+    return [f"{settings['PE_VOLUME_PREFIX']}_{suffix}" for suffix in ("edge-data", "edge-config")] + tailnet.volume_names(settings, apps)
 
 
-def ensure_volumes(runner: Runner, settings: dict[str, str], project: str) -> None:
-    for name in volume_names(settings):
+def ensure_volumes(runner: Runner, settings: dict[str, str], project: str, apps: tuple[str, ...] = ()) -> None:
+    for name in volume_names(settings, apps):
         result = runner(["docker", "volume", "create", "--label", f"com.docker.compose.project={project}", name])
         if result.returncode:
             raise Refused("volume_create_failed", result.stderr.strip())
 
 
-def compose_command(root: Path, env_file: Path) -> list[str]:
+def compose_command(root: Path, env_file: Path, apps: tuple[str, ...] = ()) -> list[str]:
+    """The Compose invocation; `apps` adds the Tailnet overlay with one profile per selected node."""
+    import tailnet
     command = ["docker", "compose", "--project-directory", str(root), "--env-file", str(env_file)]
+    for app in apps:
+        command += ["--profile", f"ts-{app}"]
     values = read_env(env_file) if env_file.exists() else {}
     def setting(key: str) -> str:
         return os.environ.get(key, values.get(key, ""))
@@ -526,6 +497,8 @@ def compose_command(root: Path, env_file: Path) -> list[str]:
     if issuer == "acme":
         overlays += [name for name, key in (("compose.acme-ca-root.yaml", "PE_ACME_CA_ROOT"),
                                             ("compose.acme-eab.yaml", "PE_ACME_EAB_KEY_ID")) if setting(key)]
+    if apps:
+        overlays.append(tailnet.OVERLAY)
     # A recorded TLS overlay from an earlier issuer would demand its unused input.
     files = [name for name in files if name not in {str(root / overlay) for overlay in TLS_OVERLAYS}]
     for overlay in overlays:
@@ -588,10 +561,10 @@ def probe_trust(settings: dict[str, str], root: Path, runner: Runner, dc: list[s
 
 
 def wait_ready(settings: dict[str, str], root: Path, env_file: Path,
-               runner: Runner = run, timeout: float = 120.0) -> dict:
+               runner: Runner = run, timeout: float = 120.0, apps: tuple[str, ...] = ()) -> dict:
     deadline = time.monotonic() + timeout
     last = ""
-    dc = compose_command(root, env_file)
+    dc = compose_command(root, env_file, apps)
     while time.monotonic() < deadline:
         try:
             ca = probe_trust(settings, root, runner, dc)
@@ -640,12 +613,14 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
     parser.add_argument("--probe-only", action="store_true", help="refresh readiness and expiry without starting services")
     parser.add_argument("--dry-run", action="store_true", help="validate the settings and print the bundle plan, write nothing")
     import bundle
+    import tailnet
     bundle.add_arguments(parser)
+    tailnet.add_arguments(parser)
     args = parser.parse_args(argv)
     if args.render_only and args.probe_only:
         parser.error("--render-only and --probe-only are mutually exclusive")
-    if (args.dry_run or args.stacks) and (args.render_only or args.probe_only):
-        parser.error("--dry-run and --with cannot be combined with --render-only or --probe-only")
+    if (args.dry_run or args.stacks or args.tailscale) and (args.render_only or args.probe_only):
+        parser.error("--dry-run, --with and --tailscale cannot be combined with --render-only or --probe-only")
     bundle.check_usage(parser, args)
     root = Path(__file__).resolve().parent.parent
     env_file = (root / args.env_file).resolve()
@@ -658,15 +633,25 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
     source = env_file if env_file.is_file() and env_file.stat().st_size else template
     values = read_env(source)
     settings = settings_for(values)
+    # Once recorded, the nodes stay part of the project; --tailscale (re)selects, enrolls and probes them.
+    apps = tailnet.recorded(values)
+    if args.tailscale:
+        tailnet.check_ready(settings)
+        apps = tailnet.selected(settings)
+    elif apps and not settings["PE_TAILNET_DOMAIN"]:
+        raise Refused("tailnet_not_enrolled", "the Tailnet selection is recorded but PE_TAILNET_DOMAIN is empty; "
+                      "rerun python3 scripts/bootstrap.py --tailscale")
+    if apps:
+        tailnet.check_listener(settings)
     # Behind Edge, browser URLs are HTTPS unless PE_SCHEME is configured; Edge's local-mode
     # default of http must not leak into the siblings.
     edge = dict(settings, PE_SCHEME=os.environ.get("PE_SCHEME", values.get("PE_SCHEME", "")) or "https")
-    plans = bundle.plan(args, root, edge)
+    plans = bundle.plan(args, root, edge, apps)
     if args.dry_run:
         project = os.environ.get("COMPOSE_PROJECT_NAME") or values.get("COMPOSE_PROJECT_NAME") or PROJECT
         check_tls_inputs(runner, settings, root)
         check_ports(runner, settings, project)
-        image, _ = rendered_caddy(root, source, runner)
+        image, _ = rendered_caddy(root, source, runner, apps)
         print(json.dumps({
             "project": project,
             "env": str(env_file),
@@ -674,6 +659,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             "scheme": settings["PE_SCHEME"],
             "image": image,
             "hostnames": routed_hostnames(root / "routes.d", settings["PE_PUBLIC_DOMAIN"]),
+            "tailnet": tailnet_report(settings, apps, plans) if apps else None,
             "bundle": [item["stack"] for item in plans],
         }))
         for item in plans:
@@ -692,10 +678,6 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             handle.flush()
             os.fsync(handle.fileno())
         os.fchmod(handle.fileno(), 0o600)
-        drop_retired_overlay(handle)
-        exported = os.environ.get("COMPOSE_FILE", "")
-        if any(Path(name).name == RETIRED_OVERLAY for name in exported.split(os.pathsep)):
-            raise Refused("legacy_setting", f"the exported COMPOSE_FILE lists the retired {RETIRED_OVERLAY}; unset it or drop that entry")
         values = read_env(env_file)
         settings = settings_for(values)
         project = os.environ.get("COMPOSE_PROJECT_NAME") or values.get("COMPOSE_PROJECT_NAME") or PROJECT
@@ -703,10 +685,11 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             print(json.dumps({"env": str(env_file), "project": project, "generated": []}))
             return 0
         check_tls_inputs(runner, settings, root)
+        probes = None
         if not args.probe_only:
             check_ports(runner, settings, project)
             configured_at = utc(datetime.now(timezone.utc))
-            image, status_root = rendered_caddy(root, env_file, runner)
+            image, status_root = rendered_caddy(root, env_file, runner, apps)
             # Create the read-only mount source before Docker can create it as root. Caddy reads it
             # as uid 0 without CAP_DAC_OVERRIDE, so others need search permission whatever the umask.
             try:
@@ -720,8 +703,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
                 raise Refused("status_write_failed", f"{status_root} must be searchable by others (chmod o+x) "
                               "so Caddy can read the Status Document")
             ensure_network(runner, settings)
-            check_proxy_peer(runner, settings)
-            ensure_volumes(runner, settings, project)
+            ensure_volumes(runner, settings, project, apps)
             # The read-only state check must not contend for the running Edge's fixed address.
             # Caddy runs as uid 0 without CAP_DAC_OVERRIDE, so mounted certificate files are read
             # here under the same identity; busybox `test -r` would wrongly pass for root.
@@ -730,7 +712,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             with tempfile.NamedTemporaryFile("w", suffix=".yaml") as isolated:
                 isolated.write("services:\n  caddy:\n    networks: !reset []\n    network_mode: none\n")
                 isolated.flush()
-                result = runner(compose_command(root, env_file) + ["-f", isolated.name,
+                result = runner(compose_command(root, env_file, apps) + ["-f", isolated.name,
                     "run", "--rm", "--no-deps", "--entrypoint", "sh", "caddy", "-ec",
                     f"if test -e /data/{RESTORE_MARKER} || test -e /config/{RESTORE_MARKER}; then echo marker; "
                     f"{unreadable}else ls /data /config >/dev/null && echo clean; fi",
@@ -743,13 +725,25 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             if state == ["unreadable"]:
                 raise Refused("tls_files_unreadable", "Caddy (uid 0 without CAP_DAC_OVERRIDE) cannot read "
                               + ", ".join(mounted) + "; own tls.key by root with mode 0600, and keep certificates readable")
-            compose_up(root, env_file, runner)
-            certificate = wait_ready(settings, root, env_file, runner)
+            if args.tailscale:
+                # The nodes enroll before Edge reads the overlay, so Caddy never sees an empty domain.
+                compose_up(root, env_file, runner, apps, tuple(f"ts-{app}" for app in apps))
+                domain = tailnet.wait_enrolled(runner, compose_command(root, env_file, apps), settings, apps)
+                if settings["PE_TAILNET_DOMAIN"] != domain:
+                    record_env(handle, "PE_TAILNET_DOMAIN", domain)
+                    settings["PE_TAILNET_DOMAIN"] = edge["PE_TAILNET_DOMAIN"] = domain
+                    plans = bundle.plan(args, root, edge, apps)
+                # Recorded only now: a failed enrollment leaves no selection for ordinary reruns to start.
+                tailnet.record(handle, values, apps)
+            compose_up(root, env_file, runner, apps)
+            certificate = wait_ready(settings, root, env_file, runner, apps=apps)
             try:
                 publish_status(status_root, status_document(image, configured_at, root, settings))
             except OSError as error:
                 raise Refused("status_write_failed", f"cannot write {status_root / 'status.json'}: {error.strerror}; "
                               "fix that directory's ownership and rerun bootstrap") from None
+            if args.tailscale:
+                probes = tailnet.probe_origins(tailnet.origins(settings, apps))
         else:
             certificate = wait_ready(settings, root, env_file, runner)
         print(json.dumps({
@@ -760,11 +754,23 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             "listener_urls": access_urls(settings),
             "trust": "Install the public CA root for direct HTTPS" if settings["PE_TLS_ISSUER"] == "internal" else None,
             "hostnames": routed_hostnames(root / "routes.d", settings["PE_PUBLIC_DOMAIN"]),
+            "tailnet": dict(tailnet_report(settings, apps, plans), probes=probes) if apps else None,
             "next": ("Bundle stacks follow: " + ", ".join(item["stack"] for item in plans)) if plans
                     else "Configure each stack for the shared edge; see docs/operations/ingress.md.",
         }))
     bundle.install(plans, argv)
     return 0
+
+
+def tailnet_report(settings: dict[str, str], apps: tuple[str, ...], plans: list[dict]) -> dict:
+    """The Tailnet Origins and, without --with, the sibling settings the operator sets by hand."""
+    import bundle
+    import tailnet
+    origins = tailnet.origins(settings, apps)
+    report = {"domain": settings["PE_TAILNET_DOMAIN"] or None, "nodes": [f"ts-{app}" for app in apps], "origins": origins}
+    if not plans:
+        report["sibling_settings"] = {stack: bundle.tailnet_settings(stack, origins) for stack in bundle.ORDER}
+    return report
 
 
 def main() -> int:

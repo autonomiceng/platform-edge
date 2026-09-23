@@ -3,7 +3,8 @@
 	import access-headers-{$PE_ACCESS_MODE:local}
 	reverse_proxy ob-gateway:80 {
 		header_up Host {host}
-		import forwarded-proto-{$PE_ACCESS_MODE:local}
+		import {args[0]}
 	}
 }
 import site grafana.{$PE_PUBLIC_DOMAIN} observability-routes
+import tailnet-site grafana observability-routes
