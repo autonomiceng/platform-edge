@@ -5,7 +5,9 @@
 set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 canonical=$root/docs/conventions.md
+canonical_dir=$(CDPATH='' cd -- "$root/docs" && pwd -P)
 header_prefix='<!-- vendored from platform-edge@'
+header_re='^<!-- vendored from platform-edge@[0-9a-f]{7,40} ; do not edit here -->$'
 
 usage() {
   echo 'usage: scripts/sync-conventions.sh <sibling-dir>... | --check [<sibling-dir>...]' >&2
@@ -31,10 +33,9 @@ for dir in "$@"; do
     if [ ! -f "$target" ]; then
       echo "missing: $target" >&2; failed=1; continue
     fi
-    case $(head -n 1 "$target") in
-      "$header_prefix"*) ;;
-      *) echo "differs: $target has no vendoring header" >&2; failed=1; continue ;;
-    esac
+    if ! head -n 1 "$target" | grep -qE "$header_re"; then
+      echo "differs: $target has no valid vendoring header" >&2; failed=1; continue
+    fi
     if tail -n +2 "$target" | cmp -s - "$canonical"; then
       echo "ok: $target ($(head -n 1 "$target" | sed 's/^<!-- vendored from //; s/ ; do not edit here -->$//'))"
     else
@@ -42,6 +43,9 @@ for dir in "$@"; do
     fi
   else
     [ -d "$dir/docs" ] || { echo "missing: $dir/docs" >&2; exit 1; }
+    if [ "$(CDPATH='' cd -- "$dir/docs" && pwd -P)" = "$canonical_dir" ]; then
+      echo "refused: $dir is the canonical checkout" >&2; exit 1
+    fi
     # A header naming a commit is only true when the canonical file is committed as is.
     if ! git -C "$root" diff --quiet HEAD -- docs/conventions.md; then
       echo "refused: $canonical has uncommitted changes; commit before vendoring" >&2; exit 1

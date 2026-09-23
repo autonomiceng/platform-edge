@@ -26,9 +26,10 @@
      "health": "/health/rustfs", "url": "https://s3.example.com"},
     {"id": "postgres-exporter", "name": "PostgreSQL exporter", "kind": "collector", "enabled": false,
      "image": "prometheuscommunity/postgres-exporter:v0.19.0", "version": "0.19.0",
-     "health": null},
+     "health": "/health/postgres-exporter"},
     {"id": "valkey-exporter", "name": "Valkey exporter", "kind": "collector", "enabled": false,
-     "image": "oliver006/redis_exporter:v1.80.1", "version": "1.80.1", "health": null}
+     "image": "oliver006/redis_exporter:v1.80.1", "version": "1.80.1",
+     "health": "/health/valkey-exporter"}
   ],
   "features": {
     "backups": {"configured": true, "lastCheckpointAt": "2026-09-22T03:00:00Z"}

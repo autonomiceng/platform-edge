@@ -56,6 +56,11 @@ class SyncConventionsTest(unittest.TestCase):
             self.assertIn("refused:", result.stderr)
         with self.subTest("canonical file without a header passes the self-check"):
             self.assertEqual(run("--check").returncode, 0)
+        with self.subTest("vendoring into the canonical checkout is refused"):
+            result = run(str(ROOT))
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("canonical checkout", result.stderr)
+            self.assertFalse(CANONICAL.read_text().startswith(HEADER))
 
 
 if __name__ == "__main__":
