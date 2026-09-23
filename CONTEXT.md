@@ -32,6 +32,10 @@ _Avoid_: Shared config, spec sheet
 A stack's public `/status.json` under contract 2, listing its configured components and features without any claim about what is running.
 _Avoid_: Health report, inventory
 
+**Issuer**:
+The source of a stack's HTTPS certificates, selected by `*_TLS_ISSUER` independently of the access mode: the stack's internal CA, an ACME directory, or operator certificate files.
+_Avoid_: Certificate mode, TLS provider
+
 **Health Path**:
 A stack's same-origin `/health/<component>` route that answers with a status code only.
 _Avoid_: Healthcheck endpoint, readiness probe

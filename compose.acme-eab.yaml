@@ -1,0 +1,5 @@
+# Selected by bootstrap when PE_ACME_EAB_KEY_ID and PE_ACME_EAB_HMAC are set (external account binding).
+services:
+  caddy:
+    environment:
+      PE_ACME_ACCOUNT: eab

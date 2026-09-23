@@ -30,6 +30,20 @@ class CommandDeadlineTests(unittest.TestCase):
                 self.assertEqual(child.call_args.kwargs["timeout"], budget)
 
 
+# A throwaway self-signed CA certificate (no key) for PEM parsing checks.
+TEST_CA = """-----BEGIN CERTIFICATE-----
+MIIBlzCCAT2gAwIBAgIULZKdwh3+v+jTCz4OG24FGjstfrMwCgYIKoZIzj0EAwIw
+IDEeMBwGA1UEAwwVcGxhdGZvcm0tZWRnZSB0ZXN0IENBMCAXDTI2MDkyMzE5NDA0
+MVoYDzIxMjYwODMwMTk0MDQxWjAgMR4wHAYDVQQDDBVwbGF0Zm9ybS1lZGdlIHRl
+c3QgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASf6G8DMMGsHM2JJUi6/SM8
+WZ5IA7rp245laoEeHTZMIb3C/gOtaN15IWuxZonJioqcFM0UHYj/kADv3254ybfq
+o1MwUTAdBgNVHQ4EFgQUVlyz0zArW/aTRB/o2Gysz+MplDkwHwYDVR0jBBgwFoAU
+Vlyz0zArW/aTRB/o2Gysz+MplDkwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQD
+AgNIADBFAiEA9vTa0ChUeNGznGFKaysMzbHwnjIW6A0je9Le20OUWHoCIBenkx/s
+xRz4Sf+J5HLs6Iw1kwdvvDGnPop1e7G9gyac
+-----END CERTIFICATE-----
+"""
+
 CONTRACT_IPAM = [{"Subnet": "172.30.0.0/24", "IPRange": "172.30.0.128/25", "Gateway": "172.30.0.1"}]
 
 
@@ -57,6 +71,34 @@ class FakeRunner:
         if "run" in argv:
             return subprocess.CompletedProcess(argv, 0, "clean\n", "")
         return subprocess.CompletedProcess(argv, 0, "", "")
+
+
+class SanRunner(FakeRunner):
+    """Answers the host openssl SAN query and the container state check."""
+
+    def __init__(self, names, **options):
+        super().__init__(**options)
+        self.names = names
+        self.state = "clean\n"
+
+    def __call__(self, argv, **options):
+        if argv[:2] == ["openssl", "x509"]:
+            self.calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "X509v3 Subject Alternative Name: \n    " + self.names + "\n", "")
+        if "run" in argv:
+            self.calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, self.state, "")
+        return super().__call__(argv, **options)
+
+
+def start_bootstrap(runner, environment, directory):
+    output = io.StringIO()
+    with patch.dict(os.environ, environment, clear=True), \
+            patch.object(bootstrap.shutil, "which", return_value="docker"), \
+            patch.object(bootstrap, "wait_ready", return_value={}), \
+            patch.object(bootstrap, "directory", return_value=contextlib.nullcontext()), \
+            patch.object(bootstrap, "task_record"), contextlib.redirect_stdout(output):
+        return bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env")], runner)
 
 
 class BootstrapTests(unittest.TestCase):
@@ -126,15 +168,6 @@ class BootstrapTests(unittest.TestCase):
                                       "Labels": "com.docker.compose.project=platform-edge,com.docker.compose.service=caddy"}])
         bootstrap.check_ports(own, bootstrap.DEFAULTS, bootstrap.PROJECT)
 
-    def start(self, runner, environment, directory):
-        output = io.StringIO()
-        with patch.dict(os.environ, environment, clear=True), \
-                patch.object(bootstrap.shutil, "which", return_value="docker"), \
-                patch.object(bootstrap, "wait_ready", return_value={}), \
-                patch.object(bootstrap, "directory", return_value=contextlib.nullcontext()), \
-                patch.object(bootstrap, "task_record"), contextlib.redirect_stdout(output):
-            return bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env")], runner)
-
     def test_missing_network_is_created_with_the_contract_allocation(self):
         for environment, expected in ((
                 {}, ["--subnet", "172.30.0.0/24", "--ip-range", "172.30.0.128/25", "--gateway", "172.30.0.1", "isolated"]), (
@@ -143,7 +176,7 @@ class BootstrapTests(unittest.TestCase):
             with self.subTest(environment=environment), tempfile.TemporaryDirectory() as directory:
                 ipam = [{"Subnet": expected[1], "IPRange": expected[3], "Gateway": expected[5]}]
                 runner = FakeRunner(network_exists=False, ipam=ipam)
-                self.assertEqual(self.start(runner, dict(environment, PE_PLATFORM_NETWORK="isolated"), directory), 0)
+                self.assertEqual(start_bootstrap(runner, dict(environment, PE_PLATFORM_NETWORK="isolated"), directory), 0)
                 creates = [c for c in runner.calls if c[:3] == ["docker", "network", "create"]]
                 self.assertEqual(creates, [["docker", "network", "create", "--driver", "bridge"] + expected])
                 probe = ["docker", "network", "inspect", "--format", "{{json .IPAM.Config}}", "isolated"]
@@ -153,7 +186,7 @@ class BootstrapTests(unittest.TestCase):
     def test_existing_network_with_matching_allocation_is_reused(self):
         with tempfile.TemporaryDirectory() as directory:
             runner = FakeRunner(ipam=[{"Subnet": "172.30.0.0/24", "IPRange": "172.30.0.128/25", "Gateway": "172.30.0.1"}])
-            self.assertEqual(self.start(runner, {"PE_PLATFORM_NETWORK": "isolated"}, directory), 0)
+            self.assertEqual(start_bootstrap(runner, {"PE_PLATFORM_NETWORK": "isolated"}, directory), 0)
             self.assertFalse([c for c in runner.calls if c[:3] == ["docker", "network", "create"]])
             self.assertTrue(any("up" in call and "--wait" in call for call in runner.calls))
 
@@ -166,7 +199,7 @@ class BootstrapTests(unittest.TestCase):
             with self.subTest(ipam=ipam), tempfile.TemporaryDirectory() as directory:
                 runner = FakeRunner(ipam=ipam)
                 with self.assertRaises(bootstrap.Refused) as caught:
-                    self.start(runner, {"PE_PLATFORM_NETWORK": "isolated"}, directory)
+                    start_bootstrap(runner, {"PE_PLATFORM_NETWORK": "isolated"}, directory)
                 self.assertEqual(caught.exception.code, "platform_network_mismatch")
                 for text in (observed, "172.30.0.0/24", "172.30.0.128/25", "gateway 172.30.0.1", "docker network rm isolated"):
                     self.assertIn(text, caught.exception.detail)
@@ -175,13 +208,13 @@ class BootstrapTests(unittest.TestCase):
     def test_lost_creation_race_validates_the_winner_instead_of_failing(self):
         with tempfile.TemporaryDirectory() as directory:
             runner = FakeRunner(network_exists=False, create_fails=True)
-            self.assertEqual(self.start(runner, {"PE_PLATFORM_NETWORK": "isolated"}, directory), 0)
+            self.assertEqual(start_bootstrap(runner, {"PE_PLATFORM_NETWORK": "isolated"}, directory), 0)
             self.assertEqual(len([c for c in runner.calls if c[:3] == ["docker", "network", "create"]]), 1)
             self.assertTrue(any("up" in call and "--wait" in call for call in runner.calls))
         with tempfile.TemporaryDirectory() as directory:
             runner = FakeRunner(network_exists=False, create_fails=True, ipam=[{"Subnet": "172.18.0.0/16"}])
             with self.assertRaises(bootstrap.Refused) as caught:
-                self.start(runner, {"PE_PLATFORM_NETWORK": "isolated"}, directory)
+                start_bootstrap(runner, {"PE_PLATFORM_NETWORK": "isolated"}, directory)
             self.assertEqual(caught.exception.code, "platform_network_mismatch")
 
     def test_allocation_settings_and_retired_peer_pinning_are_validated(self):
@@ -274,20 +307,143 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(bootstrap.routed_hostnames(ROOT / "routes.d", "example.test"), sorted(expected))
         with tempfile.TemporaryDirectory() as directory:
             routes = Path(directory)
-            (routes / "custom.caddy").write_text('http://custom.{$PE_PUBLIC_DOMAIN} {\n}\n')
-            self.assertEqual(bootstrap.routed_hostnames(routes, "other.test"), ["custom.other.test"])
+            (routes / "custom.caddy").write_text('import site custom.{$PE_PUBLIC_DOMAIN} custom-routes\nhttp://legacy.{$PE_PUBLIC_DOMAIN} {\n}\n')
+            self.assertEqual(bootstrap.routed_hostnames(routes, "other.test"), ["custom.other.test", "legacy.other.test"])
 
 
 class AccessModeTests(unittest.TestCase):
     def test_modes_derive_issuers_and_schemes(self):
         with patch.dict(os.environ, {}, clear=True):
             for mode, scheme, issuer in [("local", "http", "internal"), ("public", "https", "acme"),
-                                         ("proxy", "https", "none")]:
+                                         ("proxy", "https", "")]:
                 settings = bootstrap.settings_for({"PE_ACCESS_MODE": mode, "PE_PUBLIC_DOMAIN": "example.com"})
                 self.assertEqual((settings["PE_SCHEME"], settings["PE_TLS_ISSUER"]), (scheme, issuer))
-            for invalid in ({"PE_ACCESS_MODE": "typo"}, {"PE_PUBLIC_DOMAIN": "pe-edge"}):
-                with self.assertRaises(bootstrap.Refused):
+            files = {"PE_TLS_ISSUER": "files", "PE_TLS_DIR": "/srv/certs", "PE_PUBLIC_DOMAIN": "example.com"}
+            for mode, issuer in (("local", "files"), ("public", "files"), ("proxy", "")):
+                self.assertEqual(bootstrap.settings_for(dict(files, PE_ACCESS_MODE=mode))["PE_TLS_ISSUER"], issuer)
+            for invalid in ({"PE_ACCESS_MODE": "typo"}, {"PE_PUBLIC_DOMAIN": "pe-edge"}, {"PE_TLS_ISSUER": "acme"},
+                            {"PE_TLS_ISSUER": "files"}, {"PE_TLS_ISSUER": "letsencrypt"}, {"PE_TLS_ISSUER": "none"},
+                            {"PE_ACCESS_MODE": "public", "PE_PUBLIC_DOMAIN": "example.com", "PE_TLS_ISSUER": "none"},
+                            {"PE_ACCESS_MODE": "public", "PE_PUBLIC_DOMAIN": "example.com", "PE_TLS_ISSUER": "internal"}):
+                with self.subTest(invalid=invalid), self.assertRaises(bootstrap.Refused) as caught:
                     bootstrap.settings_for(invalid)
+                self.assertEqual(caught.exception.code, "invalid_settings")
+
+    def test_acme_settings_validate_directory_and_account_binding(self):
+        public = {"PE_ACCESS_MODE": "public", "PE_PUBLIC_DOMAIN": "example.com"}
+        with patch.dict(os.environ, {}, clear=True):
+            settings = bootstrap.settings_for(dict(public, PE_ACME_CA="https://ca.example.com/acme/acme/directory"))
+            self.assertEqual((settings["PE_TLS_ISSUER"], settings["PE_ACME_EMAIL"]), ("acme", ""))
+            bootstrap.settings_for(dict(public, PE_ACME_EAB_KEY_ID="kid", PE_ACME_EAB_HMAC="mac"))
+            for invalid in (dict(public, PE_ACME_EAB_KEY_ID="kid"), dict(public, PE_ACME_EAB_HMAC="mac"),
+                            dict(public, PE_ACME_CA_ROOT="/srv/ca.crt"),
+                            dict(public, PE_ACME_CA="http://ca.example.com/acme/acme/directory"),
+                            dict(public, PE_ACME_CA="ca.example.com/acme/acme/directory")):
+                with self.subTest(invalid=invalid), self.assertRaises(bootstrap.Refused) as caught:
+                    bootstrap.settings_for(invalid)
+                self.assertEqual(caught.exception.code, "invalid_settings")
+
+    def test_compose_selection_adds_tls_overlays_only_when_used(self):
+        cases = (("PE_ACCESS_MODE=local\nPE_TLS_ISSUER=files\nPE_TLS_DIR=/srv/certs\n", ["compose.yaml", "compose.files.yaml"]),
+                 ("PE_ACCESS_MODE=public\nPE_TLS_ISSUER=files\nPE_TLS_DIR=/srv/certs\n",
+                  ["compose.yaml", "compose.public.yaml", "compose.files.yaml"]),
+                 ("PE_ACCESS_MODE=public\nPE_ACME_CA=https://ca.example.com/acme/acme/directory\nPE_ACME_CA_ROOT=/srv/ca.crt\nPE_ACME_EAB_KEY_ID=kid\nPE_ACME_EAB_HMAC=mac\n",
+                  ["compose.yaml", "compose.public.yaml", "compose.acme-ca-root.yaml", "compose.acme-eab.yaml"]),
+                 ("PE_ACCESS_MODE=public\nPE_TLS_ISSUER=files\nPE_TLS_DIR=/srv/certs\nPE_ACME_CA_ROOT=/srv/ca.crt\n",
+                  ["compose.yaml", "compose.public.yaml", "compose.files.yaml"]),
+                 ("PE_ACCESS_MODE=public\n", ["compose.yaml", "compose.public.yaml"]),
+                 ("PE_ACCESS_MODE=proxy\nPE_TLS_ISSUER=files\nPE_TLS_DIR=/srv/certs\n", ["compose.yaml", "compose.proxy.yaml"]),
+                 ("PE_TLS_ISSUER=files\nPE_TLS_DIR=/srv/certs\nCOMPOSE_FILE=compose.yaml:compose.files.yaml:custom.yaml\n",
+                  ["compose.yaml", "custom.yaml", "compose.files.yaml"]),
+                 # A recorded overlay from an earlier issuer is dropped, custom overlays stay.
+                 ("PE_TLS_ISSUER=internal\nCOMPOSE_FILE=compose.yaml:compose.files.yaml:compose.acme-eab.yaml:custom.yaml\n",
+                  ["compose.yaml", "custom.yaml"]))
+        for content, expected in cases:
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+                env = Path(directory) / ".env"
+                env.write_text(content)
+                command = bootstrap.compose_command(ROOT, env)
+                self.assertEqual([Path(name).name for name in command[command.index("-f") + 1::2]], expected)
+
+    def test_files_issuer_needs_certificate_and_key_readable_by_caddy(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            certs = Path(directory) / "certs"
+            certs.mkdir()
+            (certs / "tls.crt").write_text("certificate")
+            settings = bootstrap.settings_for({"PE_TLS_ISSUER": "files", "PE_TLS_DIR": str(certs)})
+            with self.assertRaises(bootstrap.Refused) as caught:
+                bootstrap.check_tls_inputs(FakeRunner(), settings, ROOT)
+            self.assertEqual(caught.exception.code, "invalid_settings")
+            self.assertIn("tls.key", caught.exception.detail)
+            (certs / "tls.key").write_text("key")
+            with patch.object(bootstrap.shutil, "which", return_value=None), self.assertRaises(bootstrap.Refused) as caught:
+                bootstrap.check_tls_inputs(FakeRunner(), settings, ROOT)
+            self.assertEqual(caught.exception.code, "openssl_missing")
+            public = {"PE_ACCESS_MODE": "public", "PE_PUBLIC_DOMAIN": "example.com",
+                      "PE_ACME_CA": "https://ca.example.com/acme/acme/directory"}
+            pem = certs / "ca.pem"
+            pem.write_text(TEST_CA)
+            for key, value in (("PE_TLS_CA", str(certs / "absent.pem")), ("PE_TLS_CA", str(certs)),
+                               ("PE_TLS_CA", str(certs / "tls.crt")), ("PE_ACME_CA_ROOT", str(certs / "tls.key"))):
+                with self.subTest(key=key, value=value), self.assertRaises(bootstrap.Refused) as caught:
+                    bootstrap.check_tls_inputs(FakeRunner(), bootstrap.settings_for(dict(public, **{key: value})), ROOT)
+                self.assertIn(key, caught.exception.detail)
+            bootstrap.check_tls_inputs(FakeRunner(), bootstrap.settings_for(dict(public, PE_TLS_CA=str(pem), PE_ACME_CA_ROOT=str(pem))), ROOT)
+            # Trust files are checked only when the effective issuer uses them.
+            bootstrap.check_tls_inputs(FakeRunner(), bootstrap.settings_for({"PE_TLS_CA": str(certs)}), ROOT)
+            bootstrap.check_tls_inputs(FakeRunner(), bootstrap.settings_for({"PE_ACCESS_MODE": "proxy", "PE_TLS_CA": str(certs)}), ROOT)
+            bootstrap.check_tls_inputs(SanRunner("DNS:example.com, DNS:*.example.com"),
+                                       bootstrap.settings_for(dict(public, PE_TLS_ISSUER="files", PE_TLS_DIR=str(certs), PE_ACME_CA_ROOT=str(certs))), ROOT)
+            # The state-check container reads the mounted files as Caddy's uid; a refusal names them.
+            runner = SanRunner("DNS:localhost, DNS:*.localhost")
+            runner.state = "unreadable\n"
+            with self.assertRaises(bootstrap.Refused) as caught:
+                start_bootstrap(runner, {"PE_TLS_ISSUER": "files", "PE_TLS_DIR": str(certs)}, directory)
+            self.assertEqual(caught.exception.code, "tls_files_unreadable")
+            self.assertIn("/certs/tls.key", caught.exception.detail)
+            command = next(argv for argv in runner.calls if "run" in argv)[-1]
+            self.assertIn("cat /certs/tls.crt /certs/tls.key >/dev/null", command)
+            self.assertFalse(any("up" in argv for argv in runner.calls))
+
+    def test_files_issuer_refuses_certificates_that_do_not_cover_every_hostname(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            certs = Path(directory) / "certs"
+            certs.mkdir()
+            (certs / "tls.crt").write_text("certificate")
+            (certs / "tls.key").write_text("key")
+            settings = bootstrap.settings_for({"PE_TLS_ISSUER": "files", "PE_TLS_DIR": str(certs), "PE_PUBLIC_DOMAIN": "example.test"})
+            partial = "DNS:example.test, DNS:litellm.example.test, DNS:langfuse.example.test, DNS:s3.example.test, " \
+                      "DNS:rustfs.example.test, DNS:backplane.example.test"
+            with self.assertRaises(bootstrap.Refused) as caught:
+                bootstrap.check_tls_inputs(SanRunner(partial), settings, ROOT)
+            self.assertEqual(caught.exception.code, "invalid_settings")
+            self.assertIn("grafana.example.test", caught.exception.detail)
+            self.assertNotIn("litellm.example.test;", caught.exception.detail)
+            for names in ("DNS:example.test, DNS:*.example.test", partial + ", DNS:GRAFANA.example.test"):
+                runner = SanRunner(names)
+                bootstrap.check_tls_inputs(runner, settings, ROOT)
+                self.assertEqual(runner.calls, [["openssl", "x509", "-in", str(certs / "tls.crt"), "-noout", "-ext", "subjectAltName"]])
+            with self.assertRaises(bootstrap.Refused) as caught:
+                bootstrap.check_tls_inputs(SanRunner("DNS:*.example.test"), settings, ROOT)
+            self.assertIn("tls.crt does not cover example.test;", caught.exception.detail)
+
+    def test_readiness_probe_trusts_the_configured_ca_file(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            ca = Path(directory) / "corporate.pem"
+            ca.write_text("-----BEGIN CERTIFICATE-----\ncorporate\n-----END CERTIFICATE-----\n")
+            calls = []
+            def runner(argv):
+                calls.append(argv)
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            for issuer, key, expected in (("files", "PE_TLS_CA", ca.read_text()), ("acme", "PE_ACME_CA_ROOT", ca.read_text()),
+                                          ("acme", "PE_ACME_EMAIL", ""), ("files", "PE_ACME_CA_ROOT", "")):
+                settings = dict(bootstrap.DEFAULTS, PE_ACCESS_MODE="public", PE_SCHEME="https", PE_TLS_ISSUER=issuer, **{key: str(ca)})
+                with self.subTest(issuer=issuer, key=key), \
+                        patch.object(bootstrap, "probe", return_value={"not_after_seconds": 2000000000}) as probe:
+                    result = bootstrap.wait_ready(settings, ROOT, ROOT / "absent-env", runner)
+                    self.assertEqual(probe.call_args.args[2], expected)
+                    self.assertNotIn("ca_sha256", result)
+            self.assertFalse(any("cat" in argv for argv in calls))
 
     def test_proxy_does_not_claim_https_port_and_selects_override(self):
         settings = dict(bootstrap.DEFAULTS, PE_ACCESS_MODE="proxy")

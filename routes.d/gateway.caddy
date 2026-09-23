@@ -34,29 +34,9 @@
 		}
 	}
 }
-(gateway-root-local) {
-	http://{$PE_PUBLIC_DOMAIN} {
-		import gateway-root-routes
-	}
-	https://{$PE_PUBLIC_DOMAIN} {
-		tls internal
-		import gateway-root-routes
-	}
-}
-(gateway-root-public) {
-	https://{$PE_PUBLIC_DOMAIN} {
-		import ca-acme
-		import gateway-root-routes
-	}
-}
-(gateway-root-proxy) {
-	http://{$PE_PUBLIC_DOMAIN} {
-		import gateway-root-routes
-	}
-}
-import gateway-root-{$PE_ACCESS_MODE:local}
+import site {$PE_PUBLIC_DOMAIN} gateway-root-routes
 
-(gateway-litellm-routes) {
+(gateway-app-routes) {
 	import access-log
 	import access-headers-{$PE_ACCESS_MODE:local}
 	reverse_proxy lg-gateway:80 {
@@ -65,117 +45,7 @@ import gateway-root-{$PE_ACCESS_MODE:local}
 		import forwarded-proto-{$PE_ACCESS_MODE:local}
 	}
 }
-(gateway-litellm-local) {
-	http://litellm.{$PE_PUBLIC_DOMAIN} {
-		import gateway-litellm-routes
-	}
-	https://litellm.{$PE_PUBLIC_DOMAIN} {
-		tls internal
-		import gateway-litellm-routes
-	}
-}
-(gateway-litellm-public) {
-	https://litellm.{$PE_PUBLIC_DOMAIN} {
-		import ca-acme
-		import gateway-litellm-routes
-	}
-}
-(gateway-litellm-proxy) {
-	http://litellm.{$PE_PUBLIC_DOMAIN} {
-		import gateway-litellm-routes
-	}
-}
-import gateway-litellm-{$PE_ACCESS_MODE:local}
-
-(gateway-langfuse-routes) {
-	import access-log
-	import access-headers-{$PE_ACCESS_MODE:local}
-	reverse_proxy lg-gateway:80 {
-		header_up X-Forwarded-For {http.request.remote.host}
-		header_up Host {host}
-		import forwarded-proto-{$PE_ACCESS_MODE:local}
-	}
-}
-(gateway-langfuse-local) {
-	http://langfuse.{$PE_PUBLIC_DOMAIN} {
-		import gateway-langfuse-routes
-	}
-	https://langfuse.{$PE_PUBLIC_DOMAIN} {
-		tls internal
-		import gateway-langfuse-routes
-	}
-}
-(gateway-langfuse-public) {
-	https://langfuse.{$PE_PUBLIC_DOMAIN} {
-		import ca-acme
-		import gateway-langfuse-routes
-	}
-}
-(gateway-langfuse-proxy) {
-	http://langfuse.{$PE_PUBLIC_DOMAIN} {
-		import gateway-langfuse-routes
-	}
-}
-import gateway-langfuse-{$PE_ACCESS_MODE:local}
-
-(gateway-s3-routes) {
-	import access-log
-	import access-headers-{$PE_ACCESS_MODE:local}
-	reverse_proxy lg-gateway:80 {
-		header_up X-Forwarded-For {http.request.remote.host}
-		header_up Host {host}
-		import forwarded-proto-{$PE_ACCESS_MODE:local}
-	}
-}
-(gateway-s3-local) {
-	http://s3.{$PE_PUBLIC_DOMAIN} {
-		import gateway-s3-routes
-	}
-	https://s3.{$PE_PUBLIC_DOMAIN} {
-		tls internal
-		import gateway-s3-routes
-	}
-}
-(gateway-s3-public) {
-	https://s3.{$PE_PUBLIC_DOMAIN} {
-		import ca-acme
-		import gateway-s3-routes
-	}
-}
-(gateway-s3-proxy) {
-	http://s3.{$PE_PUBLIC_DOMAIN} {
-		import gateway-s3-routes
-	}
-}
-import gateway-s3-{$PE_ACCESS_MODE:local}
-
-(gateway-rustfs-routes) {
-	import access-log
-	import access-headers-{$PE_ACCESS_MODE:local}
-	reverse_proxy lg-gateway:80 {
-		header_up X-Forwarded-For {http.request.remote.host}
-		header_up Host {host}
-		import forwarded-proto-{$PE_ACCESS_MODE:local}
-	}
-}
-(gateway-rustfs-local) {
-	http://rustfs.{$PE_PUBLIC_DOMAIN} {
-		import gateway-rustfs-routes
-	}
-	https://rustfs.{$PE_PUBLIC_DOMAIN} {
-		tls internal
-		import gateway-rustfs-routes
-	}
-}
-(gateway-rustfs-public) {
-	https://rustfs.{$PE_PUBLIC_DOMAIN} {
-		import ca-acme
-		import gateway-rustfs-routes
-	}
-}
-(gateway-rustfs-proxy) {
-	http://rustfs.{$PE_PUBLIC_DOMAIN} {
-		import gateway-rustfs-routes
-	}
-}
-import gateway-rustfs-{$PE_ACCESS_MODE:local}
+import site litellm.{$PE_PUBLIC_DOMAIN} gateway-app-routes
+import site langfuse.{$PE_PUBLIC_DOMAIN} gateway-app-routes
+import site s3.{$PE_PUBLIC_DOMAIN} gateway-app-routes
+import site rustfs.{$PE_PUBLIC_DOMAIN} gateway-app-routes

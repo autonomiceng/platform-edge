@@ -112,7 +112,7 @@ Host journal persistence remains the operator's choice. Fresh installs provide H
 
 ## Public integration
 
-Point DNS for the root and six subdomains at the host and open TCP 80/443. Certificate issuance requires all seven names to be reachable. For private DNS, select `PE_ACCESS_MODE=local` with the private domain and distribute its public CA root.
+Point DNS for the root and six subdomains at the host and open TCP 80/443. Certificate issuance requires all seven names to be reachable. For private DNS, select `PE_ACCESS_MODE=local` with the private domain and distribute its public CA root. A private ACME CA or certificate files from your own PKI: set `PE_TLS_ISSUER` as described in [corporate certificates and private ACME](docs/operations/ingress.md#corporate-certificates-and-private-acme).
 
 Edge `.env`:
 

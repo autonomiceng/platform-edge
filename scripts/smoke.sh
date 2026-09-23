@@ -3,7 +3,7 @@
 set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
-for tool in docker python3 node curl; do
+for tool in docker python3 node curl openssl; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
 export COMPOSE_PROJECT_NAME="${SMOKE_PROJECT:-platform-edge-smoke}"
@@ -26,6 +26,7 @@ else
   export PE_PLATFORM_SUBNET="$subnet" PE_PLATFORM_IP_RANGE="$prefix.128/25" PE_EDGE_IP="$prefix.2"
 fi
 export PE_CADDY_IMAGE='' PE_ACCESS_MODE=local PE_SCHEME=http PE_ACME_EMAIL='' PE_BACKUP_KEEP=7 PE_TAILSCALE_HOST='' PE_TRUSTED_PROXIES=''
+export PE_TLS_ISSUER='' PE_TLS_DIR='' PE_TLS_CA='' PE_ACME_CA='' PE_ACME_CA_ROOT='' PE_ACME_EAB_KEY_ID='' PE_ACME_EAB_HMAC=''
 export PE_METRICS_ALLOW="127.0.0.0/8 ::1"
 export PE_VOLUME_PREFIX="$COMPOSE_PROJECT_NAME" PE_BACKUP_DIR=/tmp/unused-edge-smoke-backups
 export PE_BIND_HOST=127.0.0.1 PE_HTTP_PORT="${SMOKE_HTTP_PORT:-18280}" PE_HTTPS_PORT="${SMOKE_HTTPS_PORT:-18643}"
@@ -426,6 +427,42 @@ grep -q 'http.log.access' "$work/logs" || fail 'access logs unavailable through 
 grep -q '/health?REDACTED' "$work/logs" || fail 'query redaction was not observed'
 if grep -q 'edge-secret-header\|edge-secret-query' "$work/logs"; then fail 'access logs contain credentials'; fi
 ok 'journald access logs readable without Alloy; headers and query strings removed'
+# Operator certificate files: a throwaway CA signs one leaf covering all seven names.
+mkdir "$work/certs"
+# Strict X.509 verification (Python 3.13) needs the usage extensions a real PKI sets.
+printf 'keyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,DNS:litellm.localhost,DNS:langfuse.localhost,DNS:s3.localhost,DNS:rustfs.localhost,DNS:backplane.localhost,DNS:grafana.localhost\n' > "$work/san.cnf"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc -keyout "$work/ca.key" -out "$work/ca.crt" \
+  -subj '/CN=platform-edge smoke CA' -days 2 -addext 'basicConstraints=critical,CA:TRUE' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign' 2>/dev/null
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc -keyout "$work/certs/tls.key" -out "$work/leaf.csr" \
+  -subj '/CN=localhost' 2>/dev/null
+openssl x509 -req -in "$work/leaf.csr" -CA "$work/ca.crt" -CAkey "$work/ca.key" -CAcreateserial -out "$work/certs/tls.crt" \
+  -days 2 -extfile "$work/san.cnf" 2>/dev/null
+# Caddy reads the key as uid 0 without CAP_DAC_OVERRIDE; this throwaway key stays inside the private work directory.
+chmod 0644 "$work/certs/tls.key"
+export PE_TLS_ISSUER=files PE_TLS_DIR="$work/certs" PE_TLS_CA="$work/ca.crt" PE_SCHEME=https
+export COMPOSE_FILE="$root/compose.yaml:$root/compose.files.yaml"
+python3 scripts/bootstrap.py --env-file "$env_file" > "$work/files.json"
+python3 - "$work/files.json" <<'PYFILES'
+import json, sys
+ready = json.load(open(sys.argv[1]))
+assert ready["certificate"]["not_after_seconds"] > 0 and "ca_sha256" not in ready["certificate"], ready
+assert ready["trust"] is None, ready
+PYFILES
+ok 'files issuer: bootstrap verified HTTPS readiness against PE_TLS_CA'
+# Gateway and Observability stubs are stopped here; the root health route and Backplane still answer.
+for host in localhost backplane.localhost; do
+  path=/health expected=200
+  [ "$host" = localhost ] || { path=/ expected='bp-gateway|backplane.localhost|https'; }
+  body=$(curl --noproxy '*' --max-time 10 --cacert "$work/ca.crt" -fsS --resolve "$host:$PE_HTTPS_PORT:127.0.0.1" \
+    -H "Host: $host" -o "$work/body" -w '%{http_code}' "https://$host:$PE_HTTPS_PORT$path")
+  [ "$host" != backplane.localhost ] || body=$(cat "$work/body")
+  [ "$body" = "$expected" ] || fail "files issuer: $host answered '$body'"
+  if curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -sS --resolve "$host:$PE_HTTPS_PORT:127.0.0.1" -o /dev/null \
+      "https://$host:$PE_HTTPS_PORT$path" 2>/dev/null; then fail "files issuer: $host still serves the internal CA certificate"; fi
+  ok "files issuer: $host handshake verified by the operator CA only"
+done
+export PE_TLS_ISSUER='' PE_TLS_DIR='' PE_TLS_CA='' PE_SCHEME=http
 # Probe proxy mode through its explicit override; never publish its unused HTTPS port.
 export PE_ACCESS_MODE=proxy PE_SCHEME=https
 export COMPOSE_FILE="$root/compose.yaml:$root/compose.proxy.yaml"

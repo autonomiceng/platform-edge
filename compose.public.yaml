@@ -3,3 +3,4 @@ services:
   caddy:
     environment:
       PE_SCHEME: ${PE_SCHEME:-https}
+      PE_TLS_ISSUER: ${PE_TLS_ISSUER:-acme}
