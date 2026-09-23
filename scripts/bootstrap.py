@@ -165,7 +165,8 @@ def settings_for(values: dict[str, str]) -> dict[str, str]:
     if mode not in {"local", "public", "proxy"}:
         raise Refused("invalid_settings", "PE_ACCESS_MODE must be local, public, or proxy")
     settings["PE_TLS_ISSUER"] = tls_issuer(mode, settings["PE_TLS_ISSUER"])
-    if settings["PE_TLS_ISSUER"] not in {"local": ("internal", "files"), "public": ("acme", "files"), "proxy": ("none",)}[mode]:
+    # Compose interpolates the raw .env value, so only names with a Caddy snippet may pass.
+    if settings["PE_TLS_ISSUER"] not in {"local": ("internal", "files"), "public": ("acme", "files"), "proxy": ("",)}[mode]:
         raise Refused("invalid_settings", "PE_TLS_ISSUER must be internal or files in local mode and acme or files in public mode")
     if settings["PE_TLS_ISSUER"] == "files" and not settings["PE_TLS_DIR"]:
         raise Refused("invalid_settings", "PE_TLS_ISSUER=files needs PE_TLS_DIR, a directory holding tls.crt and tls.key")
@@ -174,6 +175,9 @@ def settings_for(values: dict[str, str]) -> dict[str, str]:
             raise Refused("invalid_settings", "PE_ACME_CA must be an https:// ACME directory URL")
         if bool(settings["PE_ACME_EAB_KEY_ID"]) != bool(settings["PE_ACME_EAB_HMAC"]):
             raise Refused("invalid_settings", "PE_ACME_EAB_KEY_ID and PE_ACME_EAB_HMAC must be set together")
+        # trusted_roots replaces Caddy's trust pool for the ACME server; the public default would fail.
+        if settings["PE_ACME_CA_ROOT"] and not settings["PE_ACME_CA"]:
+            raise Refused("invalid_settings", "PE_ACME_CA_ROOT needs PE_ACME_CA, the private ACME directory it trusts")
     configured_scheme = os.environ.get("PE_SCHEME", values.get("PE_SCHEME", ""))
     settings["PE_SCHEME"] = configured_scheme or ("http" if mode == "local" else "https")
     if settings["PE_SCHEME"] not in {"http", "https"} or (mode == "public" and settings["PE_SCHEME"] != "https"):
@@ -255,11 +259,10 @@ def settings_for(values: dict[str, str]) -> dict[str, str]:
 
 
 def tls_issuer(mode: str, configured: str) -> str:
-    """The effective issuer; behind another gateway the setting is unused."""
+    """The effective issuer; behind another gateway there is no HTTPS listener, so it is empty."""
     if mode == "proxy":
-        return "none"
-    # Derived settings are fed back through settings_for after a mode change; "none" re-derives.
-    return (configured if configured != "none" else "") or {"public": "acme"}.get(mode, "internal")
+        return ""
+    return configured or {"public": "acme"}.get(mode, "internal")
 
 
 def routed_hostnames(routes: Path, domain: str) -> list[str]:

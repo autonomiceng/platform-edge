@@ -315,14 +315,15 @@ class AccessModeTests(unittest.TestCase):
     def test_modes_derive_issuers_and_schemes(self):
         with patch.dict(os.environ, {}, clear=True):
             for mode, scheme, issuer in [("local", "http", "internal"), ("public", "https", "acme"),
-                                         ("proxy", "https", "none")]:
+                                         ("proxy", "https", "")]:
                 settings = bootstrap.settings_for({"PE_ACCESS_MODE": mode, "PE_PUBLIC_DOMAIN": "example.com"})
                 self.assertEqual((settings["PE_SCHEME"], settings["PE_TLS_ISSUER"]), (scheme, issuer))
             files = {"PE_TLS_ISSUER": "files", "PE_TLS_DIR": "/srv/certs", "PE_PUBLIC_DOMAIN": "example.com"}
-            for mode, issuer in (("local", "files"), ("public", "files"), ("proxy", "none")):
+            for mode, issuer in (("local", "files"), ("public", "files"), ("proxy", "")):
                 self.assertEqual(bootstrap.settings_for(dict(files, PE_ACCESS_MODE=mode))["PE_TLS_ISSUER"], issuer)
             for invalid in ({"PE_ACCESS_MODE": "typo"}, {"PE_PUBLIC_DOMAIN": "pe-edge"}, {"PE_TLS_ISSUER": "acme"},
-                            {"PE_TLS_ISSUER": "files"}, {"PE_TLS_ISSUER": "letsencrypt"},
+                            {"PE_TLS_ISSUER": "files"}, {"PE_TLS_ISSUER": "letsencrypt"}, {"PE_TLS_ISSUER": "none"},
+                            {"PE_ACCESS_MODE": "public", "PE_PUBLIC_DOMAIN": "example.com", "PE_TLS_ISSUER": "none"},
                             {"PE_ACCESS_MODE": "public", "PE_PUBLIC_DOMAIN": "example.com", "PE_TLS_ISSUER": "internal"}):
                 with self.subTest(invalid=invalid), self.assertRaises(bootstrap.Refused) as caught:
                     bootstrap.settings_for(invalid)
@@ -335,6 +336,7 @@ class AccessModeTests(unittest.TestCase):
             self.assertEqual((settings["PE_TLS_ISSUER"], settings["PE_ACME_EMAIL"]), ("acme", ""))
             bootstrap.settings_for(dict(public, PE_ACME_EAB_KEY_ID="kid", PE_ACME_EAB_HMAC="mac"))
             for invalid in (dict(public, PE_ACME_EAB_KEY_ID="kid"), dict(public, PE_ACME_EAB_HMAC="mac"),
+                            dict(public, PE_ACME_CA_ROOT="/srv/ca.crt"),
                             dict(public, PE_ACME_CA="http://ca.example.com/acme/acme/directory"),
                             dict(public, PE_ACME_CA="ca.example.com/acme/acme/directory")):
                 with self.subTest(invalid=invalid), self.assertRaises(bootstrap.Refused) as caught:
@@ -345,7 +347,7 @@ class AccessModeTests(unittest.TestCase):
         cases = (("PE_ACCESS_MODE=local\nPE_TLS_ISSUER=files\nPE_TLS_DIR=/srv/certs\n", ["compose.yaml", "compose.files.yaml"]),
                  ("PE_ACCESS_MODE=public\nPE_TLS_ISSUER=files\nPE_TLS_DIR=/srv/certs\n",
                   ["compose.yaml", "compose.public.yaml", "compose.files.yaml"]),
-                 ("PE_ACCESS_MODE=public\nPE_ACME_CA_ROOT=/srv/ca.crt\nPE_ACME_EAB_KEY_ID=kid\nPE_ACME_EAB_HMAC=mac\n",
+                 ("PE_ACCESS_MODE=public\nPE_ACME_CA=https://ca.example.com/acme/acme/directory\nPE_ACME_CA_ROOT=/srv/ca.crt\nPE_ACME_EAB_KEY_ID=kid\nPE_ACME_EAB_HMAC=mac\n",
                   ["compose.yaml", "compose.public.yaml", "compose.acme-ca-root.yaml", "compose.acme-eab.yaml"]),
                  ("PE_ACCESS_MODE=public\nPE_TLS_ISSUER=files\nPE_TLS_DIR=/srv/certs\nPE_ACME_CA_ROOT=/srv/ca.crt\n",
                   ["compose.yaml", "compose.public.yaml", "compose.files.yaml"]),
@@ -377,7 +379,8 @@ class AccessModeTests(unittest.TestCase):
             with patch.object(bootstrap.shutil, "which", return_value=None), self.assertRaises(bootstrap.Refused) as caught:
                 bootstrap.check_tls_inputs(FakeRunner(), settings, ROOT)
             self.assertEqual(caught.exception.code, "openssl_missing")
-            public = {"PE_ACCESS_MODE": "public", "PE_PUBLIC_DOMAIN": "example.com"}
+            public = {"PE_ACCESS_MODE": "public", "PE_PUBLIC_DOMAIN": "example.com",
+                      "PE_ACME_CA": "https://ca.example.com/acme/acme/directory"}
             pem = certs / "ca.pem"
             pem.write_text(TEST_CA)
             for key, value in (("PE_TLS_CA", str(certs / "absent.pem")), ("PE_TLS_CA", str(certs)),

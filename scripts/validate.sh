@@ -126,9 +126,12 @@ work = sys.argv[3]
 environment = acme['environment']
 assert (environment['PE_TLS_ISSUER'], environment['PE_ACME_TRUST'], environment['PE_ACME_ACCOUNT']) == ('acme', 'file', 'eab'), environment
 root = {m['target']: m for m in acme['volumes']}['/certs/acme-ca-root.crt']
-assert root['source'] == work + '/acme-ca-root.crt' and root['read_only'] and not root['bind'].get('create_host_path', True), root
+assert root['source'] == work + '/acme-ca-root.crt' and root['read_only'], root
 certs = {m['target']: m for m in files['volumes']}['/certs']
-assert certs['source'] == work + '/certs' and certs['read_only'] and not certs['bind'].get('create_host_path', True), certs
+assert certs['source'] == work + '/certs' and certs['read_only'], certs
+# Some Compose releases drop a false create_host_path from the rendered config; check the source.
+for overlay in ('compose.files.yaml', 'compose.acme-ca-root.yaml'):
+    assert 'create_host_path: false' in open(overlay).read(), overlay + ' must not create the host path'
 assert files['environment']['PE_TLS_ISSUER'] == 'files', files['environment']
 # Caddy applies snippet defaults only to unset variables; the base must not define these.
 assert not {'PE_ACME_TRUST', 'PE_ACME_ACCOUNT'} & set(files['environment']), 'ACME discriminators leak into the base'
