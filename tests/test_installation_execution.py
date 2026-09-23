@@ -52,6 +52,18 @@ class ExecutionTests(unittest.TestCase):
         self.assertNotIn("gateway", runner.started)
         self.assertEqual(report["enrollment"], "unverified")
 
+    def test_existing_network_with_another_allocation_is_a_named_conflict(self):
+        runner = FakeRunner()
+        runner.networks["platform"] = [{"Subnet": "172.18.0.0/16", "Gateway": "172.18.0.1"}]
+        before = self.snapshot()
+        code, plan = self.invoke("--stack", "observability", "--dry-run", runner=runner)
+        self.assertEqual((code, plan["executable"]), (1, False))
+        self.assertIn("platform_network_mismatch", {error["code"] for error in plan["conflicts"]})
+        self.assertEqual(self.snapshot(), before)
+        runner.networks["platform"] = [{"Subnet": "172.30.0.0/24", "IPRange": "172.30.0.128/25", "Gateway": "172.30.0.1"}]
+        code, plan = self.invoke("--stack", "observability", "--dry-run", runner=runner)
+        self.assertEqual((code, plan["executable"]), (0, True))
+
     def test_recorded_retired_overlay_is_dropped_from_the_edge_selection(self):
         runner = FakeRunner()
         env = self.root / ".env"

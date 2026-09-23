@@ -46,6 +46,8 @@ def main():
     existing = run("docker", "volume", "ls", "--format", "{{.Name}}").splitlines()
     if any(volume in existing for volume in volumes):
         raise ValueError("drill volumes already exist")
+    if env["PE_PLATFORM_NETWORK"] in run("docker", "network", "ls", "--format", "{{.Name}}").splitlines():
+        raise ValueError("drill network already exists")
     with tempfile.TemporaryDirectory(prefix="platform-edge-drill-") as work:
         env["PE_BACKUP_DIR"] = str(Path(work) / "backups")
         env_file = str(Path(work) / ".env")

@@ -36,6 +36,7 @@ class FakeRunner:
         self.fail = fail
         self.interrupted_backplane_services = None
         self.inventory_failed = False
+        self.networks = {}
 
     def render(self, root, values):
         name = next(name for name, (_, directory, _) in installation.STACKS.items() if root.name == directory)
@@ -137,7 +138,9 @@ class FakeRunner:
             rows += [{"ID": "foreign", "Ports": line} for line in self.publications.splitlines()]
             output = "\n".join(map(json.dumps, rows))
         elif argv[:3] == ["docker", "network", "ls"]:
-            output = ""
+            output = "\n".join(self.networks)
+        elif argv[:3] == ["docker", "network", "inspect"]:
+            output = json.dumps(self.networks[argv[-1]]) if "{{json .IPAM.Config}}" in argv else "bridge false"
         elif argv[:3] == ["docker", "image", "inspect"]:
             output = json.dumps(self.image_volumes.get(argv[-1], {})) if argv[4] == "{{json .Config.Volumes}}" else self.images[argv[-1]]
         elif argv[:2] == ["docker", "inspect"]:

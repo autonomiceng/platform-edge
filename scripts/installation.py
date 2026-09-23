@@ -142,6 +142,11 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                     connection["changes"]["edge"]["PE_TRUSTED_PROXIES"] = bridge
                 if network_type != "bridge false":
                     raise ValueError("Platform Network must be a non-internal local bridge.")
+                allocation = inspect(["docker", "network", "inspect", "--format", "{{json .IPAM.Config}}", network])
+                try:
+                    bootstrap.check_network_allocation(network, allocation, edge)
+                except bootstrap.Refused as mismatch:
+                    conflict("edge", mismatch.code, "Platform Network allocation differs; follow the network cutover in docs/operations/ingress.md.")
         except (ValueError, OSError, KeyError, TypeError, IndexError, bootstrap.Refused):
             conflict("edge", "network_unverified", "Cannot verify the existing Platform Network as a non-internal bridge.")
     if (args.tailscale or edge["PE_TAILSCALE_HOST"]) and (edge["PE_ACCESS_MODE"] == "public" or edge["PE_BIND_HOST"] != "127.0.0.1"):
