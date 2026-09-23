@@ -79,15 +79,8 @@ services:
 YAML
   export COMPOSE_FILE="$root/compose.yaml:$work/integration.yaml"
 fi
-# Status transport reads a frozen fixture owned by this smoke, never local observations.
+# Bootstrap publishes the Edge Status Document into this smoke-owned mount, never the checkout.
 mkdir "$work/status"
-printf '%s\n' '{"schemaVersion":1,"stack":"edge","generatedAt":"2026-09-20T00:00:00Z","configurationObservedAt":null,"configurationValidForSeconds":120,"telemetry":"unknown","components":[]}' > "$work/status/status.json"
-node - "$work/status/status.json" "$root/docker/console/status.js" <<'JSPARSE'
-const fs = require("node:fs");
-const status = require(process.argv[3]);
-const text = fs.readFileSync(process.argv[2], "utf8");
-status.parse(text, "edge", Date.parse("2026-09-20T00:00:00Z"));
-JSPARSE
 cat > "$work/status.yaml" <<YAML
 services:
   caddy:
@@ -134,8 +127,6 @@ cat > "$work/stub.caddy" <<'CADDY'
 			import {$STUB_STATUS_HANDLER:/etc/caddy/respond-status.caddy}
 		}
 	}
-	header /versions.json Content-Type application/json
-	respond /versions.json `{"images":{"litellm":"1.2.3"}}`
 	respond /authority "{$STUB_ALIAS}|{http.request.hostport}|{http.request.header.X-Forwarded-Proto}"
 	respond "{$STUB_ALIAS}|{host}|{http.request.header.X-Forwarded-Proto}"
 }
@@ -165,20 +156,24 @@ edge_started=1
 python3 scripts/bootstrap.py --env-file "$env_file"
 ok 'bootstrap reached readiness'
 
+curl --noproxy '*' --max-time 10 -fsS -H 'Host: localhost' \
+  "http://127.0.0.1:$PE_HTTP_PORT/stack-status/edge" > "$work/edge-status.json"
+node - "$work/edge-status.json" "$root/docker/console/status.js" "$caddy_image" <<'JSPARSE'
+const fs = require("node:fs");
+const assert = require("node:assert/strict");
+const status = require(process.argv[3]);
+const doc = status.parse(fs.readFileSync(process.argv[2], "utf8"), "edge");
+const tag = process.argv[4].split("@")[0].split(":").pop();
+assert.equal(status.view(doc, "caddy").state, "configured");
+assert.equal(status.view(doc, "caddy").version, tag);
+assert.ok(Date.now() - doc.configuredAt < 600000, "configuredAt is this bootstrap run");
+JSPARSE
+code=$(curl --noproxy '*' --max-time 10 -sS -H 'Host: localhost' -o "$work/body" -w '%{http_code}' \
+  "http://127.0.0.1:$PE_HTTP_PORT/health/caddy")
+[ "$code" = 200 ] && [ ! -s "$work/body" ] || fail "Edge health path returned $code or a body"
+ok 'bootstrap published a contract 2 Edge Status Document with the configured Caddy version and health path'
+
 if [ "$integration" != 1 ]; then
-  curl --noproxy '*' --max-time 10 -fsS -D "$work/version.headers" \
-    -H 'Host: private.test.ts.net' -H 'Authorization: Bearer smoke-token' -H 'Cookie: smoke-session=private' \
-    "http://127.0.0.1:$PE_HTTP_PORT/stack-versions/gateway" > "$work/versions.json"
-  python3 - "$work/versions.json" "$work/version.headers" <<'PYVERSIONS'
-import json, sys
-from pathlib import Path
-assert json.loads(Path(sys.argv[1]).read_text())["images"]["litellm"] == "1.2.3"
-headers = dict(line.lower().split(":", 1) for line in Path(sys.argv[2]).read_text().splitlines() if ":" in line)
-assert headers["cache-control"].strip() == "no-store"
-assert not headers.get("x-smoke-authorization", "").strip()
-assert not headers.get("x-smoke-cookie", "").strip()
-PYVERSIONS
-  ok 'console version metadata is uncached and forwards no browser credentials'
   python3 tests/status_proxy.py "http://127.0.0.1:$PE_HTTP_PORT" --edge-status
   ok 'status proxy methods, credential stripping, content type and body suppression'
 fi
@@ -308,33 +303,6 @@ for c in containers:
         assert not ports, f"stub {c['Name']} publishes ports"
 PY
 ok "only the healthy edge publishes ports; Edge holds $PE_EDGE_IP"
-
-docker compose --env-file "$env_file" config --format json > "$work/observer-config.json"
-python3 - "$work/observer-config.json" "$edge_id" <<'PYREAP'
-import json, sys, time
-sys.path.insert(0, 'scripts')
-from status_io import now, run
-from status_observer import inspect_caddy
-
-config = json.load(open(sys.argv[1]))
-for _ in range(20):
-    observed = inspect_caddy(config, run, now)
-    assert observed['state'] == 'healthy', observed
-    assert observed['observedVersion'] == observed['configuredVersion'], observed
-# BusyBox watchdogs outlive successful probes. Allow their three-second deadline
-# to expire, then read /proc directly: docker top omits zombie processes.
-time.sleep(4)
-zombies = run(['docker', 'exec', sys.argv[2], 'sh', '-c', '''
-for stat in /proc/[0-9]*/stat; do
-    { read -r pid comm state rest < "$stat"; } 2>/dev/null || continue
-    if [ "$comm" = '(timeout)' ] && [ "$state" = Z ]; then
-        printf '%s\\n' "$pid"
-    fi
-done
-''']).splitlines()
-assert not zombies, f'host status probes left {len(zombies)} timeout zombies'
-PYREAP
-ok '20 production observer cycles preserve readiness/version without timeout zombies'
 
 docker stop "$ob_stub" >/dev/null
 # Restart with an absent alias to prove lazy resolution does not block startup.

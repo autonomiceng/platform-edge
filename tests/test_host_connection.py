@@ -1,4 +1,4 @@
-"""Selected connection and timer recovery. All process and HTTPS calls are fakes."""
+"""Selected connection recovery. All process and HTTPS calls are fakes."""
 import copy
 import json
 from pathlib import Path
@@ -9,10 +9,7 @@ from unittest.mock import patch
 
 import test_installation as fixtures
 import installation
-import install_status_timer as timer
 import tailscale_serve as tailscale
-from status_io import Unavailable
-from test_status_publication import manager_response
 
 
 class ConnectionRunner(fixtures.FakeRunner):
@@ -301,72 +298,3 @@ class HostConnectionTests(unittest.TestCase):
                             tailscale.checked(['tailscale', 'serve', '--bg', '--https=8447', '--yes', 'http://127.0.0.1:80'])
                     self.assertEqual(caught.exception.permission, state == 'administrator_action')
                     self.assertNotIn('private-key', str(caught.exception))
-
-    def test_exact_timer_pair_retry_recovers_partial_activation_without_rewriting(self):
-        root, unit_dir = self.root, self.host / 'units'
-        (root / 'scripts/status_observer.py').touch()
-        env = root / '.env'
-        env.touch(mode=0o600)
-        calls = []
-        failing = True
-        def runner(argv, **options):
-            calls.append(argv)
-            if failing and 'is-active' in argv:
-                raise Unavailable()
-            return manager_response(argv, unit_dir)
-        with self.assertRaises(Unavailable):
-            timer.install(root, env, unit_dir, runner)
-        before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in unit_dir.iterdir()}
-        failing = False
-        timer.check(root, env, unit_dir, runner)
-        timer.install(root, env, unit_dir, runner)
-        self.assertEqual(before, {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in unit_dir.iterdir()})
-        self.assertEqual(calls[-2:], [['systemctl', '--user', 'is-enabled', timer.NAME + '.timer'],
-                                    ['systemctl', '--user', 'is-active', timer.NAME + '.timer']])
-
-    def test_foreign_partial_and_unsafe_timer_selection_refuses_without_writes(self):
-        root, unit_dir = self.root, self.host / 'units'
-        env = root / '.env'
-        env.touch(mode=0o600)
-        (root / 'scripts/status_observer.py').touch()
-        unit_dir.mkdir(mode=0o700)
-        expected = timer.units(root, env)
-        for name, contents in expected.items():
-            (unit_dir / name).write_text(contents)
-            (unit_dir / name).chmod(0o600)
-        service = unit_dir / (timer.NAME + '.service')
-        original = service.read_text()
-        for selection in ('foreign', 'partial', 'permissions', 'symlink'):
-            with self.subTest(selection=selection):
-                if selection == 'foreign':
-                    service.write_text(original.replace(str(env), str(root / 'another.env')))
-                elif selection == 'partial':
-                    service.unlink()
-                elif selection == 'permissions':
-                    service.chmod(0o644)
-                else:
-                    service.unlink()
-                    service.symlink_to(root / 'compose.yaml')
-                before = {path.name: (path.lstat().st_mode, path.read_bytes() if not path.is_symlink() else str(path.readlink())) for path in unit_dir.iterdir()}
-                calls = []
-                with self.assertRaises(Unavailable):
-                    timer.install(root, env, unit_dir, lambda *args, **kwargs: calls.append(args))
-                self.assertEqual(calls, [])
-                self.assertEqual(before, {path.name: (path.lstat().st_mode, path.read_bytes() if not path.is_symlink() else str(path.readlink())) for path in unit_dir.iterdir()})
-                service.unlink(missing_ok=True)
-                service.write_text(original)
-                service.chmod(0o600)
-        with self.assertRaises(Unavailable):
-            timer.check(root, env, unit_dir, lambda *args, **kwargs: 'FragmentPath=/foreign.service\nDropInPaths=\n')
-        absent = self.host / 'absent-units'
-        with self.assertRaises(Unavailable):
-            timer.install(root, env, absent, lambda *args, **kwargs: 'FragmentPath=/foreign.service\nDropInPaths=\n')
-        self.assertFalse(absent.exists())
-        before = self.snapshot()
-        runner = ConnectionRunner()
-        code, report = self.invoke('--stack', 'observability', '--status-timers', runner=runner)
-        self.assertEqual(code, 1)
-        self.assertEqual({error['code'] for error in report['conflicts']}, {'timer_preflight'})
-        self.assertEqual(runner.started, [])
-        self.assertEqual(self.snapshot(), before)
-        self.assertFalse(any('llm-gateway-stack' in str(argv) or 'agent-backplane' in str(argv) for argv in runner.calls))

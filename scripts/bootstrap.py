@@ -24,20 +24,9 @@ import subprocess
 import sys
 import time
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
-
-from status_io import Unavailable, directory, now, task_record
-
-
-def record_bootstrap(root, env_file, started, state):
-    try:
-        # Create the read-only mount source before Compose can create it as root.
-        with directory(root / "data/console"):
-            pass
-        task_record(root, env_file, started, state)
-    except (OSError, Unavailable):
-        print("Status execution record unavailable; check data directory ownership and permissions.", file=sys.stderr)
 
 PROJECT = "platform-edge"
 NETWORK = "platform"
@@ -51,6 +40,10 @@ ENV_LINE = re.compile(r"^(?:export\s+)?(?P<key>[A-Z][A-Z0-9_]*)=(?P<value>.*)$")
 ROUTE_LINE = re.compile(r"^\s*(?:import site (?P<site>HOST) [a-z0-9-]+|https?://(?P<address>HOST)\s*\{)$"
                         .replace("HOST", r"(?:[a-z0-9-]+\.)*\{\$PE_PUBLIC_DOMAIN\}"))
 SAN_NAME = re.compile(r"DNS:([^,\s]+)")
+STATUS_MOUNT = "/srv/state"
+# Caddy release tags; anything else is not a recognized release and publishes a null version.
+CADDY_RELEASE = re.compile(r"(v?\d+\.\d+\.\d+)(?:-alpine)?")
+CHECKPOINT_NAME = re.compile(r"\d{8}T\d{12}Z")
 PORT = re.compile(r"(?P<host>\[[^]]+\]|[^, ]+):(?P<first>\d+)(?:-(?P<last>\d+))?->[^, ]+/tcp")
 DEFAULTS = {
     "PE_CADDY_IMAGE": "",
@@ -425,6 +418,75 @@ def drop_retired_overlay(handle) -> None:
         return
 
 
+def rendered_caddy(root: Path, env_file: Path, runner: Runner) -> tuple[str, Path]:
+    """The configured Caddy image and the host directory Caddy serves as its Status Document root."""
+    result = runner(compose_command(root, env_file) + ["config", "--format", "json"])
+    try:
+        if result.returncode:
+            raise ValueError(result.returncode)
+        service = json.loads(result.stdout)["services"]["caddy"]
+        (source,) = [volume["source"] for volume in service["volumes"] if volume.get("target") == STATUS_MOUNT]
+        return service["image"], Path(source)
+    except (ValueError, KeyError, TypeError):
+        raise Refused("compose_config_failed", (result.stderr or "").strip()[-2000:]) from None
+
+
+def utc(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def last_checkpoint(root: Path, settings: dict[str, str]) -> str | None:
+    repository = Path(settings["PE_BACKUP_DIR"])
+    repository = repository if repository.is_absolute() else root / repository
+    newest = None
+    try:
+        manifests = [path for path in repository.glob("*/manifest.json") if CHECKPOINT_NAME.fullmatch(path.parent.name)]
+    except OSError:
+        return None
+    for path in manifests:
+        try:
+            created = datetime.fromisoformat(json.loads(path.read_text(encoding="utf-8"))["created_at"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if created.tzinfo is not None and (newest is None or created > newest):
+            newest = created
+    return utc(newest) if newest else None
+
+
+def status_document(image: str, configured_at: str, root: Path, settings: dict[str, str]) -> dict:
+    """Contract 2: configuration only, never an observation of what is running."""
+    reference = image.partition("@")[0]
+    release = CADDY_RELEASE.fullmatch(reference.rsplit("/", 1)[-1].partition(":")[2])
+    return {
+        "contract": 2,
+        "stack": "edge",
+        "configuredAt": configured_at,
+        "components": [{"id": "caddy", "name": "Caddy", "kind": "gateway", "enabled": True,
+                        "image": reference, "version": release[1] if release else None,
+                        "health": "/health/caddy"}],
+        "features": {"backups": {"configured": bool(settings["PE_BACKUP_DIR"]),
+                                 "lastCheckpointAt": last_checkpoint(root, settings)}},
+    }
+
+
+def publish_status(directory: Path, document: dict) -> None:
+    # Caddy reads as uid 0 without CAP_DAC_OVERRIDE, so the document must be world-readable.
+    handle, temporary = tempfile.mkstemp(prefix=".status-", dir=directory)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(document, separators=(",", ":")) + "\n")
+            stream.flush()
+            os.fchmod(stream.fileno(), 0o644)
+            os.fsync(stream.fileno())
+        os.replace(temporary, directory / "status.json")
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def compose_up(root: Path, env_file: Path, runner: Runner) -> None:
     result = runner(compose_command(root, env_file) + [
         "up", "--detach", "--wait", "--wait-timeout", "300",
@@ -581,7 +643,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
     template = (root / args.template).resolve()
     selected_options = any((args.gateway_dir, args.backplane_dir, args.observability_dir,
                             args.gateway_backup_dir, args.gateway_email, args.backplane_backup_dir,
-                            args.capability_file, args.backplane_mode, args.tailscale, args.status_timers))
+                            args.capability_file, args.backplane_mode, args.tailscale))
     if selected_options and not args.stack:
         parser.error("selected installation options require --stack")
     if (args.stack or args.dry_run) and (args.render_only or args.probe_only):
@@ -626,48 +688,43 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         check_tls_inputs(runner, settings, root)
         if not args.probe_only:
             check_ports(runner, settings, project)
-            started = now()
-            record_bootstrap(root, env_file, started, "unknown")
+            configured_at = utc(datetime.now(timezone.utc))
+            image, status_root = rendered_caddy(root, env_file, runner)
+            # Create the read-only mount source before Docker can create it as root.
+            status_root.mkdir(parents=True, exist_ok=True)
+            ensure_network(runner, settings)
+            check_proxy_peer(runner, settings)
+            ensure_volumes(runner, settings, project)
+            # The read-only state check must not contend for the running Edge's fixed address.
+            # Caddy runs as uid 0 without CAP_DAC_OVERRIDE, so mounted certificate files are read
+            # here under the same identity; busybox `test -r` would wrongly pass for root.
+            mounted = mounted_tls_files(settings)
+            unreadable = f"elif ! cat {' '.join(mounted)} >/dev/null 2>&1; then echo unreadable; " if mounted else ""
+            with tempfile.NamedTemporaryFile("w", suffix=".yaml") as isolated:
+                isolated.write("services:\n  caddy:\n    networks: !reset []\n    network_mode: none\n")
+                isolated.flush()
+                result = runner(compose_command(root, env_file) + ["-f", isolated.name,
+                    "run", "--rm", "--no-deps", "--entrypoint", "sh", "caddy", "-ec",
+                    f"if test -e /data/{RESTORE_MARKER} || test -e /config/{RESTORE_MARKER}; then echo marker; "
+                    f"{unreadable}else ls /data /config >/dev/null && echo clean; fi",
+                ])
+            state = result.stdout.strip().splitlines()[-1:]
+            if result.returncode or state not in (["clean"], ["marker"], ["unreadable"]):
+                raise Refused("state_check_failed", (result.stderr or result.stdout).strip()[-2000:])
+            if state == ["marker"]:
+                raise Refused("restore_incomplete", "restore markers present; preserve volumes and restore into a fresh prefix")
+            if state == ["unreadable"]:
+                raise Refused("tls_files_unreadable", "Caddy (uid 0 without CAP_DAC_OVERRIDE) cannot read "
+                              + ", ".join(mounted) + "; own tls.key by root with mode 0600, and keep certificates readable")
+            compose_up(root, env_file, runner)
+            certificate = wait_ready(settings, root, env_file, runner)
             try:
-                ensure_network(runner, settings)
-                check_proxy_peer(runner, settings)
-                ensure_volumes(runner, settings, project)
-                # The read-only state check must not contend for the running Edge's fixed address.
-                # Caddy runs as uid 0 without CAP_DAC_OVERRIDE, so mounted certificate files are read
-                # here under the same identity; busybox `test -r` would wrongly pass for root.
-                mounted = mounted_tls_files(settings)
-                unreadable = f"elif ! cat {' '.join(mounted)} >/dev/null 2>&1; then echo unreadable; " if mounted else ""
-                with tempfile.NamedTemporaryFile("w", suffix=".yaml") as isolated:
-                    isolated.write("services:\n  caddy:\n    networks: !reset []\n    network_mode: none\n")
-                    isolated.flush()
-                    result = runner(compose_command(root, env_file) + ["-f", isolated.name,
-                        "run", "--rm", "--no-deps", "--entrypoint", "sh", "caddy", "-ec",
-                        f"if test -e /data/{RESTORE_MARKER} || test -e /config/{RESTORE_MARKER}; then echo marker; "
-                        f"{unreadable}else ls /data /config >/dev/null && echo clean; fi",
-                    ])
-                state = result.stdout.strip().splitlines()[-1:]
-                if result.returncode or state not in (["clean"], ["marker"], ["unreadable"]):
-                    raise Refused("state_check_failed", (result.stderr or result.stdout).strip()[-2000:])
-                if state == ["marker"]:
-                    raise Refused("restore_incomplete", "restore markers present; preserve volumes and restore into a fresh prefix")
-                if state == ["unreadable"]:
-                    raise Refused("tls_files_unreadable", "Caddy (uid 0 without CAP_DAC_OVERRIDE) cannot read "
-                                  + ", ".join(mounted) + "; own tls.key by root with mode 0600, and keep certificates readable")
-                compose_up(root, env_file, runner)
-                certificate = wait_ready(settings, root, env_file, runner)
-            except BaseException:
-                record_bootstrap(root, env_file, started, "unavailable")
-                raise
-            record_bootstrap(root, env_file, started, "healthy")
+                publish_status(status_root, status_document(image, configured_at, root, settings))
+            except OSError as error:
+                print(f"Status Document not written to {status_root}: {error.strerror}; "
+                      "check that directory's ownership and rerun bootstrap.", file=sys.stderr)
         else:
             certificate = wait_ready(settings, root, env_file, runner)
-        try:
-            observed = runner([sys.executable, str(root / "scripts/status_observer.py"),
-                               "--checkout", str(root), "--env-file", str(env_file)], timeout=120)
-            if observed.returncode:
-                raise subprocess.SubprocessError()
-        except (OSError, subprocess.SubprocessError, Refused):
-            print("Status observation failed; inspect publication permissions and retry the observer.", file=sys.stderr)
         print(json.dumps({
             "project": project,
             "access_mode": settings["PE_ACCESS_MODE"],

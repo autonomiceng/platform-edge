@@ -659,6 +659,9 @@ class CheckpointTests(unittest.TestCase):
                 for suffix, volume in zip(("data", "config"), volumes.values()):
                     command = command.replace("/" + suffix, shlex.quote(str(volume)))
                 return subprocess.run(["sh", "-ec", command], capture_output=True, text=True)
+            if argv[-3:] == ["config", "--format", "json"]:
+                state = {"target": "/srv/state", "source": str(self.repository / "console")}
+                return subprocess.CompletedProcess(argv, 0, json.dumps({"services": {"caddy": {"image": "caddy:2", "volumes": [state]}}}), "")
             if "up" in argv:
                 self.fail("bootstrap started Caddy with an incomplete restore")
             if argv[:3] == ["docker", "network", "inspect"]:

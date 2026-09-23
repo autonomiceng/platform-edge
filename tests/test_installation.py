@@ -119,8 +119,6 @@ class FakeRunner:
                 json.dumps({"BackendState": "Running", "Self": {"DNSName": "machine.tailnet.ts.net.", "TailscaleIPs": ["100.64.0.2"]}}), "")
         if argv[:3] == ["tailscale", "serve", "status"]:
             return subprocess.CompletedProcess(argv, 0, "{}", "")
-        if len(argv) > 1 and argv[1].endswith("scripts/install_status_timer.py"):
-            return subprocess.CompletedProcess(argv, 1, "", "unsupported owning --check")
         if argv == ["ss", "-H", "-ltn"]:
             output = self.listeners
         elif argv[:3] == ["docker", "context", "inspect"]:
@@ -176,7 +174,7 @@ class InstallationTests(unittest.TestCase):
         self.root = self.host / "platform-edge"
         for name, (_, directory, entrypoint) in installation.STACKS.items():
             checkout = self.host / directory
-            for filename in {entrypoint, "scripts/install_status_timer.py", ".env.example", "compose.yaml", "compose.proxy.yaml",
+            for filename in {entrypoint, ".env.example", "compose.yaml", "compose.proxy.yaml",
                              "compose.edge.yaml", "compose.gateway.yaml", "compose.blobs.yaml", "compose.compute.yaml", "compose.public.yaml", "package.json", "bun.lock", "Caddyfile"}:
                 path = checkout / filename
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -326,12 +324,11 @@ class InstallationTests(unittest.TestCase):
         route.write_text("# existing operator routing\n")
         (self.root / ".env").chmod(0o600)
         before = self.snapshot()
-        code, plan = self.invoke("--stack", "observability", "--tailscale", "--status-timers", "--dry-run")
-        self.assertEqual(code, 1)  # Old owners refuse the read-only timer contract before mutation.
+        code, plan = self.invoke("--stack", "observability", "--tailscale", "--dry-run")
+        self.assertEqual(code, 0)
         self.assertEqual(plan["selected"], ["edge", "observability"])
         self.assertEqual(plan["actions"][1]["origin"], "https://machine.tailnet.ts.net:8447")
         self.assertIn("preserve existing PE_TAILSCALE_APPS", plan["actions"][2]["action"])
-        self.assertEqual(plan["actions"][3]["depends_on"], plan["selected"])
         self.assertTrue(plan["execution_supported"])
         self.assertEqual(self.snapshot(), before)
 

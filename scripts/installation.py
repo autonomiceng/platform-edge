@@ -33,7 +33,6 @@ def add_arguments(parser: bootstrap.ArgumentParser) -> None:
     parser.add_argument("--gateway-email")
     parser.add_argument("--backplane-mode", choices=("full", "minimal"))
     parser.add_argument("--tailscale", action="store_true")
-    parser.add_argument("--status-timers", action="store_true")
 
 
 def read_settings(path: Path) -> dict[str, str]:
@@ -53,18 +52,6 @@ def read_settings(path: Path) -> dict[str, str]:
             value = value[1:-1]
         result[match["key"]] = value
     return result
-
-
-def timer_command(item):
-    command = [sys.executable, str(item["root"] / "scripts/install_status_timer.py"),
-               "--checkout", str(item["root"]), "--env-file", str(item["env"])]
-    if item["name"] == "backplane":
-        command += ["--compose-project", item["action"]["project"]]
-        for filename in item["files"]:
-            command += ["--compose-file", str((item["root"] / filename).resolve())]
-        for profile in item["profiles"]:
-            command += ["--profile", profile]
-    return command
 
 
 def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused, prepared=None):
@@ -91,7 +78,7 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
         conflict("edge", "shell_settings", "Unset selected stack and Compose exports; use the installation env files.")
         return result
     commands = ["docker", "ss"] + (["bun"] if "backplane" in selected else [])
-    commands += (["tailscale"] if args.tailscale else []) + (["systemctl"] if args.status_timers else [])
+    commands += ["tailscale"] if args.tailscale else []
     missing = [name for name in commands if shutil.which(name) is None]
     for name in missing:
         conflict("edge", "command_missing", "Required command: " + name)
@@ -181,8 +168,6 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                 required.append("compose.proxy.yaml")
             if name == "backplane":
                 required += ["compose.gateway.yaml", "compose.edge.yaml", "package.json", "bun.lock"]
-            if args.status_timers:
-                required.append("scripts/install_status_timer.py")
             if any(not (directory / filename).is_file() for filename in required):
                 raise ValueError("Selected checkout is missing an owning entrypoint or required configuration file.")
             custody(env)
@@ -437,14 +422,6 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
         except (ValueError, KeyError, TypeError):
             conflict("edge", "tailscale_conflict", "Selected Tailscale endpoint or host listener is foreign; nothing changed.")
         result["actions"].append({"stack": "edge", "action": "connect selected Tailscale applications; preserve existing PE_TAILSCALE_APPS", "depends_on": selected})
-
-    if args.status_timers:
-        result["actions"].append({"action": "install/resume owning status timers for selected stacks", "depends_on": selected})
-        for item in prepared:
-            try:
-                inspect(timer_command(item) + ["--check"], cwd=str(item["root"]))
-            except (OSError, ValueError, bootstrap.Refused):
-                conflict(item["name"], "timer_preflight", "Owning timer must support --check and exact-pair retry for this native selection; preserve existing units. See docs/operations/status-observer.md.")
     result["executable"] = result["execution_supported"] and not result["conflicts"]
     return result
 
@@ -470,15 +447,4 @@ def install(root, env_file, template, args, runner, refused=bootstrap.Refused):
         except (OSError, ValueError, KeyError, TypeError, KeyboardInterrupt, refused):
             report.update(stopped_at="tailscale", connection={"state": "unverified"},
                           next="Correct private HTTPS access and rerun the same selection; completed installations are retained.")
-    if report["stopped_at"] is None and args.status_timers:
-        report["timers"] = []
-        for item in prepared:
-            try:
-                response = runner(timer_command(item) + ["--install"], cwd=str(item["root"]), quiet=True, timeout=120)
-                if response.returncode:
-                    raise ValueError("Owning timer failed")
-            except (OSError, ValueError, KeyboardInterrupt, refused):
-                report.update(stopped_at=item["name"] + "-timer", next="Preserve installed units and rerun the same selection after correcting the owning timer failure.")
-                break
-            report["timers"].append(item["name"])
     return (3 if report["stopped_at"] else 0), report

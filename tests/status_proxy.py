@@ -55,8 +55,8 @@ for host in ('localhost', 'private.test.ts.net'):
         status, body = request(edge, host=host)
         if edge_present:
             assert status == 200
-            assert json.loads(body)['stack'] == 'edge'
-            assert json.loads(body)['generatedAt'] == '2026-09-20T00:00:00Z'
+            document = json.loads(body)
+            assert (document['contract'], document['stack']) == (2, 'edge'), document
         else:
             assert (status, body) == (404, b'')
         assert request(edge, method='HEAD', host=host) == (200 if edge_present else 404, b'')

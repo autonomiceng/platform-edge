@@ -8,7 +8,7 @@ Multiple standalone stacks each ship an ingress, but only one ingress can own a 
 
 ## Guarantees, stated exactly
 
-- `/status.json` and `/stack-status/edge` are unauthenticated in every access mode, including public internet access, and expose allowlisted version and image digest metadata.
+- `/status.json` and `/stack-status/edge` are unauthenticated in every access mode, including public internet access, and expose the configured Caddy image (without digest), its version and the bootstrap time.
 - Caddy is the only service and publisher in this project. Defaults bind HTTP and HTTPS ports to loopback.
 - All seven hostnames are configured even when some stacks are absent. An unavailable alias produces a request failure, independent of other aliases.
 - `/health` returns 200 independently of upstream readiness. It is available on the root site and over HTTP in every access mode.
@@ -26,7 +26,7 @@ owning env state atomically, and invokes each owning bootstrap after all selecte
 checks pass. Edge's fixed address is verified before sibling trust is written. No lifecycle
 logic or secret generation moves out of the owning stacks. The
 [installation contract](operations/ingress.md#selected-installation) describes recovery,
-owner-interface limits, selected private Tailscale connection, and owning status-timer opt-in. Aggregate completion does
+owner-interface limits and selected private Tailscale connection. Aggregate completion does
 not claim host acceptance or enrollment.
 
 ## Shape
@@ -41,7 +41,7 @@ flowchart TD
 
 Caddy joins only the external Platform Network, under alias `pe-edge` at the fixed address `PE_EDGE_IP` (`172.30.0.2`, outside the network's dynamic range). There is no project-default network and no dependency on a stack's container lifecycle. The external volumes `${PE_VOLUME_PREFIX}_edge-data` and `${PE_VOLUME_PREFIX}_edge-config` keep TLS state and Caddy configuration state; routine Compose teardown preserves them. There is no Docker socket mount.
 
-The root `Caddyfile` holds the shared global block, the issuer snippets (`tls-internal`, `tls-acme`, `tls-files`) and the `site` snippet, which expands one `import site <host> <routes>` line into the listeners of the access mode with the selected issuer. `routes.d/gateway.caddy`, `backplane.caddy` and `observability.caddy` own the route snippets and declare each hostname once. The root `/` serves the console even without Gateway; other Gateway paths retain their proxy routes. The console uses static HTML, CSS and JavaScript in `docker/console/`, mounted read-only, with no build step. Project cards, search, service details and an architecture map share one catalog. It refreshes access settings and health at load, on request, and every 30 seconds while visible, without continuous animation. Cards link their titles to application interfaces and provide copyable endpoints. HTTP probes report reachability only. Component health requires fresh, component-specific public status evidence. Optional components and map connections describe the stack architecture, not detected installation state or live traffic. The bounded status consumer reads independent `/stack-status/{stack}` documents with three concurrent requests, four-second deadlines and 64 KiB/32-component limits. Optional `/stack-versions/gateway` metadata supplies explicitly configured versions when current status configuration is unavailable. Missing producers leave health unknown and preserve trusted console navigation. `routes.d/00-stack-probes.caddy` owns these credential-free metadata routes; its prefix makes shared snippets available before application Route Files are expanded. Project icons are bundled locally. The uncached `/edge-config.json` endpoint keeps already-open pages current after access setup changes.
+The root `Caddyfile` holds the shared global block, the issuer snippets (`tls-internal`, `tls-acme`, `tls-files`) and the `site` snippet, which expands one `import site <host> <routes>` line into the listeners of the access mode with the selected issuer. `routes.d/gateway.caddy`, `backplane.caddy` and `observability.caddy` own the route snippets and declare each hostname once. The root `/` serves the console even without Gateway; other Gateway paths retain their proxy routes. The console uses static HTML, CSS and JavaScript in `docker/console/`, mounted read-only, with no build step. Project cards, search, service details and an architecture map share one catalog. It refreshes access settings and health at load, on request, and every 30 seconds while visible, without continuous animation. Cards link their titles to application interfaces and provide copyable endpoints. HTTP probes report reachability only. Components show what each stack's contract 2 Status Document says was configured: Configured with its version, Not enabled, or Unknown when the document or component is missing or invalid. Optional components and map connections describe the stack architecture, not detected installation state or live traffic. The bounded status consumer reads independent `/stack-status/{stack}` documents with three concurrent requests, four-second deadlines and 64 KiB/32-component limits. Missing producers leave components unknown and preserve trusted console navigation. `routes.d/00-stack-probes.caddy` owns these credential-free metadata routes; its prefix makes shared snippets available before application Route Files are expanded. Project icons are bundled locally. The uncached `/edge-config.json` endpoint keeps already-open pages current after access setup changes.
 
 ## Access modes
 
@@ -55,9 +55,10 @@ The [public stack status contract](operations/status-contract.md) defines a vers
 interface for independent status producers and console consumers. Its fixtures describe
 compatibility and freshness requirements; they do not attest deployed producer support.
 
-The [Edge host observer](operations/status-observer.md) publishes bounded Caddy
-readiness and version observations through a read-only public file mount. Bootstrap
-attempts an initial observation; periodic publication is an explicit user-timer opt-in.
+After readiness, bootstrap writes Edge's own Status Document from `docker compose config`
+into the directory mounted read-only at `/srv/state`, atomically. There is no host
+observer, timer or `docker exec` status probe;
+[the upgrade step](operations/ingress.md#status-version-2-upgrade) retires the version 1 timer.
 
 The ingress runbook contains exact per-stack settings and rollout order. Only move ports or restart services as an authorized installation action. Port conflict checks include overlapping TCP bindings and port ranges, and ignore this project's existing Caddy for idempotent reruns. Host-process conflicts and races after preflight remain Compose startup errors.
 
