@@ -1,1 +1,1 @@
-{"domain": {{env "PE_PUBLIC_DOMAIN" | toJson}}, "mode": {{env "PE_ACCESS_MODE" | toJson}}, "scheme": {{env "PE_SCHEME" | toJson}}, "tailnet": {{env "PE_TAILNET_DOMAIN" | toJson}}, "root": {{env "PE_ROOT_HOST" | toJson}}}
+{"domain": {{env "PE_PUBLIC_DOMAIN" | toJson}}, "mode": {{env "PE_ACCESS_MODE" | toJson}}, "scheme": {{env "PE_SCHEME" | toJson}}, "tailnet": {{env "PE_TAILNET_DOMAIN" | toJson}}, "root": {{env "PE_ROOT_HOST" | toJson}}, "apps": {{env "PE_TS_APPS" | toJson}}}

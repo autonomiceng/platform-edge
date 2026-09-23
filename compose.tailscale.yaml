@@ -39,6 +39,8 @@ services:
       PE_TAILNET: "on"
       PE_TAILNET_DOMAIN: ${PE_TAILNET_DOMAIN:-}
       PE_ROOT_HOST: ${PE_ROOT_HOST:-platform}
+      # The console links only the nodes that exist.
+      PE_TS_APPS: ${PE_TS_APPS:-console,litellm,langfuse,s3,rustfs,backplane,grafana}
       # Peers in the dynamic range are the sidecars; only their requests carry the HTTPS scheme upstream.
       PE_PLATFORM_IP_RANGE: ${PE_PLATFORM_IP_RANGE:-172.30.0.128/25}
   ts-console:

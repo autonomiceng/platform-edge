@@ -42,7 +42,7 @@ function ui() {
   );
   const run = (code) => vm.runInContext(code, context);
   run(
-    `config = validateConfig({domain:'localhost', tailnet:'', root:'', scheme:'http'});`,
+    `config = validateConfig({domain:'localhost', tailnet:'', root:'', apps:'console,litellm,langfuse,s3,rustfs,backplane,grafana', scheme:'http'});`,
   );
   return run;
 }
@@ -82,6 +82,12 @@ test("trusted links survive missing producers and failed HTTP reachability", () 
   assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === 'bp')).Console`), undefined);
   run(`location.hostname = 'edge.private.ts.net';`);
   assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === 'bp')).Console`), "https://backplane.private.ts.net/dashboard/");
+  // An application without a node keeps its public link locally and has none on the Tailnet console.
+  run(`config.apps = ['console', 'litellm'];`);
+  assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === 'bp')).Console`), undefined);
+  assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === 'lite')).API`), "https://litellm.private.ts.net");
+  run(`location.hostname = 'localhost';`);
+  assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === 'bp')).Console`), "http://backplane.localhost/dashboard/");
   // Optional storage consoles are never linked; they are not Tailnet Origins.
   for (const service of ["b-rust", "o-rust"])
     assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === '${service}')).Console`), undefined);

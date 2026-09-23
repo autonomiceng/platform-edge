@@ -27,6 +27,7 @@ const assert = require("node:assert/strict");
       scheme: "http",
       tailnet: "",
       root: "",
+      apps: "console,litellm,langfuse,s3,rustfs,backplane,grafana",
     };
     let backplaneReady = true;
     await page.route("https://platform.test.ts.net/**", (route) => {

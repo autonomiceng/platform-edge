@@ -332,6 +332,8 @@ function validateConfig(value) {
     (value.tailnet && !hostname.test(value.tailnet)) ||
     typeof value.root !== "string" ||
     (value.root && !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(value.root)) ||
+    typeof value.apps !== "string" ||
+    !/^[a-z0-9,]*$/.test(value.apps) ||
     !["http", "https"].includes(value.scheme)
   )
     throw new Error("Invalid access settings");
@@ -340,14 +342,16 @@ function validateConfig(value) {
     domain: value.domain.toLowerCase(),
     tailnet: value.tailnet.toLowerCase(),
     root: (value.root || "platform").toLowerCase(),
+    apps: value.apps.split(",").filter(Boolean),
   };
 }
 // The console's own Tailnet Origin.
 function tailnetHost() {
   return config?.tailnet ? `${config.root}.${config.tailnet}` : "";
 }
-// Links are trusted only on the console's own addresses; with a tailnet recorded, the Tailnet
-// Origins are the applications' browser URLs wherever the page was opened.
+// Links are trusted only on the console's own addresses. With a tailnet recorded, the Tailnet
+// Origin of a selected node is the application's browser URL wherever the page was opened; an
+// application without a node keeps its public-domain link, which the Tailnet console cannot offer.
 function appOrigin(id, prefix) {
   if (!config) return null;
   if (
@@ -356,7 +360,9 @@ function appOrigin(id, prefix) {
     !(config.domain === "localhost" && location.hostname === "127.0.0.1")
   )
     return null;
-  if (config.tailnet) return `https://${prefix || config.root}.${config.tailnet}`;
+  if (config.tailnet && config.apps.includes(prefix || "console"))
+    return `https://${prefix || config.root}.${config.tailnet}`;
+  if (location.hostname === tailnetHost()) return null;
   return `${location.protocol}//${prefix ? prefix + "." : ""}${config.domain}${location.port ? ":" + location.port : ""}`;
 }
 function serviceState(s) {

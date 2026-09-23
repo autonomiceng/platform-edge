@@ -95,8 +95,9 @@ local certificates; `127.0.0.1` also has an HTTPS console and health endpoint.
 
 The HTTP console accepts arbitrary hostnames. Unknown-host `/health` is 200; other unknown
 paths remain 404, including `/metrics`. Application routes still require their configured
-hostnames. Console links use the configured application domain, or the Tailnet Origins when
-the console is opened at its own Tailnet address, instead of inventing subdomains under an IP.
+hostnames. Console links use the Tailnet Origins of the selected nodes once a tailnet is
+recorded, and the configured application domain otherwise, instead of inventing subdomains
+under an IP.
 The configured root hostname serves the Edge console independently of Gateway. Other
 Gateway paths still proxy to the Gateway and report upstream failures. Bootstrap does
 not require any sibling stack.
@@ -157,23 +158,25 @@ do not install. `PE_TS_TAG` must be one of the key's tags; the template sets `ta
 and an empty or absent value omits `--advertise-tags` so the key's tags apply. Leave
 `PE_TAILNET_DOMAIN` empty on the first run.
 
-What bootstrap does with `--tailscale`: it refuses without the key, records the selection in
-`.env` (`COMPOSE_FILE` gains `compose.tailscale.yaml`, `COMPOSE_PROFILES` gains one
-`ts-<name>` per selected node, other files and profiles untouched), creates one external
+What bootstrap does with `--tailscale`: it refuses without the key, creates one external
 volume per node (`${PE_VOLUME_PREFIX}_ts-<name>`, the node's identity), starts the nodes and
 waits up to 120 s until every node reports `Running` under its expected MagicDNS name. A
 name already taken on the tailnet enrolls as `<name>-1` and is refused
 (`tailscale_name_taken`): remove or rename the other machine, remove the new one, and rerun.
-It then records the tailnet domain in `PE_TAILNET_DOMAIN`, starts Edge with the overlay so
-the Tailnet hosts are routed, and probes `https://<name>.<tailnet>.ts.net/health` for every
+It then records the tailnet domain in `PE_TAILNET_DOMAIN` and the selection in `.env`
+(`COMPOSE_FILE` gains `compose.tailscale.yaml`, `COMPOSE_PROFILES` gains one `ts-<name>` per
+selected node, other files and profiles untouched; a failed enrollment records nothing),
+starts Edge with the overlay so the Tailnet hosts are routed, and probes `https://<name>.<tailnet>.ts.net/health` for every
 node from this host with the system trust store (the first handshake waits for the
 certificate). When MagicDNS on this host does not resolve the names to Tailscale addresses
 the probe is skipped with a message; verify from a tailnet member instead. The result lists
 the origins, the probe statuses and, without `--with`, the sibling settings to set by hand.
 
 Because the selection is recorded, plain `docker compose up` and ordinary `bootstrap.py`
-reruns keep the nodes and Edge's Tailnet routes; only `--tailscale` enrolls, re-selects
-after a `PE_TS_APPS` change, and probes. Reruns are idempotent: enrolled nodes stay enrolled
+reruns keep the nodes and Edge's Tailnet routes, and still require local or proxy mode with
+the loopback bind; only `--tailscale` enrolls, re-selects after a `PE_TS_APPS` change, and
+probes. A recorded selection without a recorded domain is refused (`tailnet_not_enrolled`)
+until `--tailscale` completes. Reruns are idempotent: enrolled nodes stay enrolled
 (`TS_AUTH_ONCE`), and a recorded domain that differs from the enrolled one is refused.
 
 The origins are the applications' browser URLs, and the bundle owns the settings that hold

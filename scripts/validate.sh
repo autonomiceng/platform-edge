@@ -172,6 +172,7 @@ assert node['logging'] == {'driver': 'journald', 'options': {'cache-disabled': '
 assert config['volumes']['ts-litellm'] == {'external': True, 'name': 'platform-edge_ts-litellm'}, config['volumes']
 caddy = config['services']['caddy']['environment']
 assert (caddy['PE_TAILNET'], caddy['PE_TAILNET_DOMAIN'], caddy['PE_ROOT_HOST']) == ('on', 'example.ts.net', 'platform'), caddy
+assert caddy['PE_TS_APPS'] == 'console,litellm,langfuse,s3,rustfs,backplane,grafana', caddy
 serve = json.loads(Path('docker/tailscale/serve.json').read_text())
 assert serve == {'TCP': {'443': {'HTTPS': True}}, 'Web': {'${TS_CERT_DOMAIN}:443': {'Handlers': {'/': {'Proxy': 'http://pe-edge:80'}}}}}, serve
 PYCODE

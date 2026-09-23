@@ -638,6 +638,11 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
     if args.tailscale:
         tailnet.check_ready(settings)
         apps = tailnet.selected(settings)
+    elif apps and not settings["PE_TAILNET_DOMAIN"]:
+        raise Refused("tailnet_not_enrolled", "the Tailnet selection is recorded but PE_TAILNET_DOMAIN is empty; "
+                      "rerun python3 scripts/bootstrap.py --tailscale")
+    if apps:
+        tailnet.check_listener(settings)
     # Behind Edge, browser URLs are HTTPS unless PE_SCHEME is configured; Edge's local-mode
     # default of http must not leak into the siblings.
     edge = dict(settings, PE_SCHEME=os.environ.get("PE_SCHEME", values.get("PE_SCHEME", "")) or "https")
@@ -675,8 +680,6 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         os.fchmod(handle.fileno(), 0o600)
         values = read_env(env_file)
         settings = settings_for(values)
-        if args.tailscale:
-            tailnet.record(handle, values, apps)
         project = os.environ.get("COMPOSE_PROJECT_NAME") or values.get("COMPOSE_PROJECT_NAME") or PROJECT
         if args.render_only:
             print(json.dumps({"env": str(env_file), "project": project, "generated": []}))
@@ -730,6 +733,8 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
                     record_env(handle, "PE_TAILNET_DOMAIN", domain)
                     settings["PE_TAILNET_DOMAIN"] = edge["PE_TAILNET_DOMAIN"] = domain
                     plans = bundle.plan(args, root, edge, apps)
+                # Recorded only now: a failed enrollment leaves no selection for ordinary reruns to start.
+                tailnet.record(handle, values, apps)
             compose_up(root, env_file, runner, apps)
             certificate = wait_ready(settings, root, env_file, runner, apps=apps)
             try:

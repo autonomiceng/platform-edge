@@ -345,7 +345,7 @@ python3 - "$work/edge-config.json" <<'PYCONFIG'
 import json, sys
 config = json.load(open(sys.argv[1]))
 assert config["domain"] == "localhost"
-assert config["tailnet"] == "" and config["root"] == "", config
+assert (config["tailnet"], config["root"], config["apps"]) == ("", "", ""), config
 PYCONFIG
 grep -qi 'Cache-Control: no-store' "$work/config.headers" || fail 'console settings may be cached'
 ok 'console settings remain available and uncached when the gateway is absent'
@@ -478,7 +478,7 @@ curl --noproxy '*' --max-time 10 -fsS -H 'Host: platform.example.ts.net' "http:/
 python3 - "$work/edge-config.json" <<'PYCONFIG'
 import json, sys
 config = json.load(open(sys.argv[1]))
-assert (config["tailnet"], config["root"]) == ("example.ts.net", "platform"), config
+assert (config["tailnet"], config["root"], config["apps"]) == ("example.ts.net", "platform", "console,litellm,langfuse,s3,rustfs,backplane,grafana"), config
 PYCONFIG
 ok 'Tailnet console serves the fallback page and publishes the tailnet domain and root name'
 echo "SMOKE CONTRACT PASSED ($pass checks)"

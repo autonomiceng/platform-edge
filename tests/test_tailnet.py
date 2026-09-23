@@ -159,6 +159,14 @@ class TailnetTests(unittest.TestCase):
             env.write_text("PE_TS_AUTHKEY=tskey-auth-test\nPE_TS_APPS=console\nPE_TAILNET_DOMAIN=other.ts.net\n")
             code, _, err = run_main(["--env-file", str(env), "--tailscale"], TailnetRunner({"ts-console": "platform"}))
             self.assertEqual((code, json.loads(err)["error"]), (1, "tailscale_domain_mismatch"))
+            # A failed enrollment records nothing; a recorded selection without a domain is refused.
+            self.assertNotIn("COMPOSE_", env.read_text())
+            env.write_text("PE_TS_APPS=console\nCOMPOSE_FILE=compose.yaml:compose.tailscale.yaml\nCOMPOSE_PROFILES=ts-console\n")
+            code, _, err = run_main(["--env-file", str(env)], TailnetRunner())
+            self.assertEqual((code, json.loads(err)["error"]), (1, "tailnet_not_enrolled"))
+            env.write_text("PE_TS_APPS=console\nPE_TAILNET_DOMAIN=tail1234.ts.net\nPE_BIND_HOST=0.0.0.0\nCOMPOSE_FILE=compose.yaml:compose.tailscale.yaml\nCOMPOSE_PROFILES=ts-console\n")
+            code, _, err = run_main(["--env-file", str(env)], TailnetRunner())
+            self.assertEqual((code, json.loads(err)["error"]), (1, "invalid_settings"))
             settings = bootstrap.settings_for({"PE_TS_APPS": "console,grafana"})
             timeouts = []
             def stalled(argv, timeout):

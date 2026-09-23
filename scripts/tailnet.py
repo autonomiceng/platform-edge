@@ -57,9 +57,12 @@ def check_ready(settings: dict[str, str]) -> None:
     if not settings["PE_TS_AUTHKEY"]:
         raise bootstrap.Refused("tailscale_auth_key", "set PE_TS_AUTHKEY in .env to a reusable, non-ephemeral, tagged auth key; "
                                 "see docs/operations/ingress.md#access-everything-through-tailscale")
-    # A public bind would serve the plain-HTTP Tailnet hosts to anyone who forges the Host header.
+
+
+def check_listener(settings: dict[str, str]) -> None:
+    """A public bind would serve the plain-HTTP Tailnet hosts to anyone who forges the Host header."""
     if settings["PE_ACCESS_MODE"] not in {"local", "proxy"} or settings["PE_BIND_HOST"] != "127.0.0.1":
-        raise bootstrap.Refused("invalid_settings", "--tailscale needs local or proxy mode with PE_BIND_HOST=127.0.0.1")
+        raise bootstrap.Refused("invalid_settings", "Tailnet Origins need local or proxy mode with PE_BIND_HOST=127.0.0.1")
 
 
 def selected(settings: dict[str, str]) -> tuple[str, ...]:
