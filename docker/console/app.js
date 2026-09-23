@@ -342,19 +342,21 @@ function validateConfig(value) {
     root: (value.root || "platform").toLowerCase(),
   };
 }
-// The console's own Tailnet Origin; application links follow the address the page was opened on.
+// The console's own Tailnet Origin.
 function tailnetHost() {
   return config?.tailnet ? `${config.root}.${config.tailnet}` : "";
 }
+// Links are trusted only on the console's own addresses; with a tailnet recorded, the Tailnet
+// Origins are the applications' browser URLs wherever the page was opened.
 function appOrigin(id, prefix) {
   if (!config) return null;
-  if (tailnetHost() && location.hostname === tailnetHost())
-    return `https://${prefix || config.root}.${config.tailnet}`;
   if (
+    location.hostname !== tailnetHost() &&
     location.hostname !== config.domain &&
     !(config.domain === "localhost" && location.hostname === "127.0.0.1")
   )
     return null;
+  if (config.tailnet) return `https://${prefix || config.root}.${config.tailnet}`;
   return `${location.protocol}//${prefix ? prefix + "." : ""}${config.domain}${location.port ? ":" + location.port : ""}`;
 }
 function serviceState(s) {

@@ -75,7 +75,10 @@ test("trusted links survive missing producers and failed HTTP reachability", () 
     run(`serviceLinks(DATA.services.find(s => s.id === 'lite')).API`),
     "https://litellm.private.ts.net",
   );
-  run(`config.root = 'edge';`);
+  // A recorded tailnet makes the Tailnet Origins the browser URLs from the local address too.
+  run(`location.hostname = 'localhost';`);
+  assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === 'lite')).Console`), "https://litellm.private.ts.net/ui/");
+  run(`config.root = 'edge'; location.hostname = 'platform.private.ts.net';`);
   assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === 'bp')).Console`), undefined);
   run(`location.hostname = 'edge.private.ts.net';`);
   assert.equal(run(`serviceLinks(DATA.services.find(s => s.id === 'bp')).Console`), "https://backplane.private.ts.net/dashboard/");

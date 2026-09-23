@@ -105,6 +105,23 @@ class TailnetTests(unittest.TestCase):
             created = [argv[-1] for argv in runner.calls if argv[:3] == ["docker", "volume", "create"]]
             self.assertEqual(created, ["platform-edge_edge-data", "platform-edge_edge-config", "platform-edge_ts-console",
                                        "platform-edge_ts-litellm", "platform-edge_ts-backplane"])
+            # The selection is recorded, so plain Compose and ordinary reruns keep the nodes and the routes.
+            self.assertTrue(env.read_text().endswith("COMPOSE_FILE=compose.yaml:compose.tailscale.yaml\nCOMPOSE_PROFILES=ts-console,ts-litellm,ts-backplane\n"))
+            rerun = TailnetRunner()
+            code, out2, err = run_main(["--env-file", str(env)], rerun)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(sum(1 for argv in rerun.calls if argv[-3:] == ["tailscale", "status", "--json"]), 0)
+            [up] = [argv for argv in rerun.calls if "up" in argv]
+            self.assertEqual(up[up.index("--env-file") + 2:up.index("up")][-2:], ["-f", str(ROOT / "compose.tailscale.yaml")])
+            self.assertEqual([argv[-1] for argv in rerun.calls if argv[:3] == ["docker", "volume", "create"]][2:],
+                             ["platform-edge_ts-console", "platform-edge_ts-litellm", "platform-edge_ts-backplane"])
+            self.assertEqual(json.loads(out2)["tailnet"]["origins"]["backplane"], "https://backplane.tail1234.ts.net")
+            # A changed selection replaces the recorded ts- profiles and keeps the operator's own.
+            env.write_text(env.read_text().replace("PE_TS_APPS=console,litellm,backplane", "PE_TS_APPS=console")
+                           .replace("COMPOSE_PROFILES=ts-console,ts-litellm,ts-backplane", "COMPOSE_PROFILES=custom,ts-console,ts-litellm,ts-backplane"))
+            code, _, err = run_main(["--env-file", str(env), "--tailscale"], TailnetRunner({"ts-console": "edge"}))
+            self.assertEqual(code, 0, err)
+            self.assertTrue(env.read_text().endswith("COMPOSE_FILE=compose.yaml:compose.tailscale.yaml\nCOMPOSE_PROFILES=custom,ts-console\n"))
             report = json.loads(out)["tailnet"]
             self.assertEqual(report["nodes"], ["ts-console", "ts-litellm", "ts-backplane"])
             self.assertEqual(report["probes"], "skipped: test")
@@ -131,7 +148,8 @@ class TailnetTests(unittest.TestCase):
             runner = TailnetRunner({"ts-console": "platform"})
             code, out, err = run_main(["--env-file", str(env), "--tailscale"], runner)
             self.assertEqual(code, 0, err)
-            self.assertEqual(env.read_text(), "# keep\nPE_TS_AUTHKEY='tskey-auth-test'\nPE_TS_APPS=console,grafana\nPE_TAILNET_DOMAIN=tail1234.ts.net\nCUSTOM=1\n")
+            self.assertEqual(env.read_text(), "# keep\nPE_TS_AUTHKEY='tskey-auth-test'\nPE_TS_APPS=console,grafana\nPE_TAILNET_DOMAIN=tail1234.ts.net\nCUSTOM=1\n"
+                                              "COMPOSE_FILE=compose.yaml:compose.tailscale.yaml\nCOMPOSE_PROFILES=ts-console,ts-grafana\n")
             self.assertEqual(json.loads(out)["tailnet"]["domain"], "tail1234.ts.net")
             self.assertEqual(sum(1 for argv in runner.calls if argv[-3:] == ["tailscale", "status", "--json"]), 4)
             modified = env.stat().st_mtime_ns
@@ -141,11 +159,17 @@ class TailnetTests(unittest.TestCase):
             env.write_text("PE_TS_AUTHKEY=tskey-auth-test\nPE_TS_APPS=console\nPE_TAILNET_DOMAIN=other.ts.net\n")
             code, _, err = run_main(["--env-file", str(env), "--tailscale"], TailnetRunner({"ts-console": "platform"}))
             self.assertEqual((code, json.loads(err)["error"]), (1, "tailscale_domain_mismatch"))
-            settings = bootstrap.settings_for({"PE_TS_APPS": "console"})
-            with patch.object(tailnet.time, "monotonic", side_effect=[0, 0, 200, 200]), patch.object(tailnet.time, "sleep"), \
+            settings = bootstrap.settings_for({"PE_TS_APPS": "console,grafana"})
+            timeouts = []
+            def stalled(argv, timeout):
+                timeouts.append(timeout)
+                return subprocess.CompletedProcess(argv, 1, "", "")
+            # The deadline bounds every poll: the last exec gets the remaining budget and nothing runs after it.
+            with patch.object(tailnet.time, "monotonic", side_effect=[0, 0, 100, 115, 116, 130, 130]), patch.object(tailnet.time, "sleep"), \
                     self.assertRaises(bootstrap.Refused) as caught:
-                tailnet.wait_enrolled(lambda argv: subprocess.CompletedProcess(argv, 1, "", ""), ["dc"], settings, ("console",))
+                tailnet.wait_enrolled(stalled, ["dc"], settings, ("console", "grafana"))
             self.assertEqual(caught.exception.code, "not_ready")
+            self.assertEqual(timeouts, [30.0, 20.0, 4.0])
 
 
 if __name__ == "__main__":

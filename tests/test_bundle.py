@@ -22,6 +22,8 @@ from test_bootstrap import FakeRunner
 EDGE = dict(bootstrap.settings_for({"PE_PUBLIC_DOMAIN": "example.com"}), PE_SCHEME="https")
 GATEWAY_ENV = ("# Default public domain.\r\nLG_PUBLIC_DOMAIN=localhost\r\n\nLG_ACCESS_MODE=local\nexport LG_SCHEME=''\n"
                "LITELLM_MASTER_KEY='sk-secret$1'\nLG_HTTP_PORT=80\nCUSTOM=kept")
+# Without Tailnet Origins the gateway derives its browser URLs from its public domain.
+EMPTY_ORIGINS = {key: "" for key in bundle.ORIGIN_KEYS["gateway"]}
 
 
 def checkout(root, stack, env=None):
@@ -76,12 +78,13 @@ class BundleTests(unittest.TestCase):
                              "# Default public domain.\r\nLG_PUBLIC_DOMAIN=example.com\r\n\nLG_ACCESS_MODE=proxy\nexport LG_SCHEME=https\n"
                              "LITELLM_MASTER_KEY='sk-secret$1'\nLG_HTTP_PORT=18080\nCUSTOM=kept\n"
                              "LG_BIND_HOST=127.0.0.1\nLG_PUBLIC_PORT_SUFFIX=\nLG_PLATFORM_NETWORK=platform\nLG_PLATFORM_SUBNET=172.30.0.0/24\n"
-                             "LG_PLATFORM_IP_RANGE=172.30.0.128/25\nLG_TRUSTED_PROXIES=172.30.0.2/32\n")
+                             "LG_PLATFORM_IP_RANGE=172.30.0.128/25\nLG_TRUSTED_PROXIES=172.30.0.2/32\nLG_CONSOLE_URL=\nLG_LITELLM_URL=\n"
+                             "LG_LANGFUSE_URL=\nLG_S3_URL=\nLG_RUSTFS_URL=\nLG_GRAFANA_URL=\nLG_BACKPLANE_URL=\n")
             created = observability / ".env"
             self.assertEqual(created.stat().st_mode & 0o777, 0o600)
             self.assertTrue(created.read_text().startswith("# template\nOB_ACCESS_MODE=proxy\n"))
             for line in ("OB_HTTP_PORT=18180", "OB_GATEWAY_HEALTH_HOST=example.com", "OB_GATEWAY_URL=https://example.com",
-                         "OB_BACKPLANE_URL=https://backplane.example.com", "OB_TRUSTED_PROXIES=172.30.0.2/32"):
+                         "OB_BACKPLANE_URL=https://backplane.example.com", "OB_TRUSTED_PROXIES=172.30.0.2/32", "OB_GRAFANA_URL="):
                 self.assertIn(line + "\n", created.read_text())
             self.assertEqual([(argv, directory.name) for argv, directory in runs.calls],
                              [([sys.executable, "scripts/bootstrap.py"], "llm-gateway-stack"),
@@ -97,7 +100,7 @@ class BundleTests(unittest.TestCase):
             with patch.object(bundle, "run_bootstrap", Runs()), contextlib.redirect_stdout(output):
                 [item] = bundle.plan(arguments(root, "gateway"), root, EDGE)
                 self.assertEqual(item["writes"], {"LG_PUBLIC_DOMAIN": "example.com", "LG_BIND_HOST": "127.0.0.1", "LG_HTTP_PORT": "18080",
-                                                  "LG_PUBLIC_PORT_SUFFIX": "", "LG_TRUSTED_PROXIES": "172.30.0.2/32"})
+                                                  "LG_PUBLIC_PORT_SUFFIX": "", "LG_TRUSTED_PROXIES": "172.30.0.2/32", **EMPTY_ORIGINS})
                 bundle.install([item], [])
                 text = (gateway / ".env").read_text()
                 self.assertTrue(text.startswith("LG_ACCESS_MODE=proxy\nLG_SCHEME='https'\nLG_PUBLIC_DOMAIN=example.com\n"
@@ -169,7 +172,7 @@ class BundleTests(unittest.TestCase):
                 self.assertEqual(plan["writes"], {"LG_ACCESS_MODE": "proxy", "LG_SCHEME": "https",
                                                   "LG_BIND_HOST": "127.0.0.1", "LG_HTTP_PORT": "18080", "LG_PUBLIC_PORT_SUFFIX": "",
                                                   "LG_PLATFORM_NETWORK": "platform", "LG_PLATFORM_SUBNET": "172.30.0.0/24",
-                                                  "LG_PLATFORM_IP_RANGE": "172.30.0.128/25", "LG_TRUSTED_PROXIES": "172.30.0.2/32"})
+                                                  "LG_PLATFORM_IP_RANGE": "172.30.0.128/25", "LG_TRUSTED_PROXIES": "172.30.0.2/32", **EMPTY_ORIGINS})
                 self.assertEqual(plan["command"], [sys.executable, "scripts/bootstrap.py"])
                 self.assertFalse(edge_env.exists())
                 self.assertEqual((gateway / ".env").read_bytes().decode(), GATEWAY_ENV)
@@ -244,12 +247,19 @@ class BundleTests(unittest.TestCase):
                 self.assertEqual({key: value for key, value in plan["writes"].items() if key.endswith("_URL")},
                                  {"LG_CONSOLE_URL": "https://platform.tail1234.ts.net", "LG_LITELLM_URL": "https://litellm.tail1234.ts.net",
                                   "LG_LANGFUSE_URL": "https://langfuse.tail1234.ts.net", "LG_S3_URL": "https://s3.tail1234.ts.net",
-                                  "LG_RUSTFS_URL": "https://rustfs.tail1234.ts.net", "LG_GRAFANA_URL": "https://grafana.tail1234.ts.net"})
+                                  "LG_RUSTFS_URL": "https://rustfs.tail1234.ts.net", "LG_GRAFANA_URL": "https://grafana.tail1234.ts.net",
+                                  "LG_BACKPLANE_URL": ""})
                 # The public domain stays the routing domain; only the browser origins move to the tailnet.
                 self.assertEqual((plan["writes"]["LG_SCHEME"], "LG_PUBLIC_DOMAIN" in plan["writes"]), ("https", False))
                 code, out, err = run_main(["--env-file", str(edge_env), "--dry-run", "--with", "gateway", "--gateway-dir", str(gateway)], runner)
                 self.assertEqual(code, 0, err)
-                self.assertFalse(any(key.endswith("_URL") for key in json.loads(out.splitlines()[1])["writes"]))
+                self.assertEqual({key: value for key, value in json.loads(out.splitlines()[1])["writes"].items() if key.endswith("_URL")}, EMPTY_ORIGINS)
+                # A recorded selection keeps the Tailnet Origins on ordinary bundle reruns.
+                edge_env.write_text(edge_env.read_text() + "COMPOSE_FILE=compose.yaml:compose.tailscale.yaml\nCOMPOSE_PROFILES=ts-litellm\n")
+                code, out, err = run_main(["--env-file", str(edge_env), "--dry-run", "--with", "gateway", "--gateway-dir", str(gateway)], runner)
+                self.assertEqual(code, 0, err)
+                writes = json.loads(out.splitlines()[1])["writes"]
+                self.assertEqual((writes["LG_LITELLM_URL"], writes["LG_LANGFUSE_URL"]), ("https://litellm.tail1234.ts.net", ""))
             origins = {"console": "https://platform.tail1234.ts.net", "backplane": "https://backplane.tail1234.ts.net", "grafana": "https://grafana.tail1234.ts.net"}
             self.assertEqual(bundle.tailnet_settings("observability", origins),
                              {"OB_GRAFANA_URL": "https://grafana.tail1234.ts.net", "OB_GATEWAY_URL": "https://platform.tail1234.ts.net",

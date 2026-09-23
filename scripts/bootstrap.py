@@ -134,7 +134,7 @@ def read_env(path: Path) -> dict[str, str]:
         if not match:
             continue
         key, value = match.group("key"), match.group("value").strip()
-        if key not in DEFAULTS and key not in LEGACY and key not in {"COMPOSE_PROJECT_NAME", "COMPOSE_FILE"}:
+        if key not in DEFAULTS and key not in LEGACY and key not in {"COMPOSE_PROJECT_NAME", "COMPOSE_FILE", "COMPOSE_PROFILES"}:
             continue
         if key in values:
             raise Refused("env_repair_required", f"{key} is set twice in {path}")
@@ -633,7 +633,8 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
     source = env_file if env_file.is_file() and env_file.stat().st_size else template
     values = read_env(source)
     settings = settings_for(values)
-    apps = ()
+    # Once recorded, the nodes stay part of the project; --tailscale (re)selects, enrolls and probes them.
+    apps = tailnet.recorded(values)
     if args.tailscale:
         tailnet.check_ready(settings)
         apps = tailnet.selected(settings)
@@ -674,6 +675,8 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         os.fchmod(handle.fileno(), 0o600)
         values = read_env(env_file)
         settings = settings_for(values)
+        if args.tailscale:
+            tailnet.record(handle, values, apps)
         project = os.environ.get("COMPOSE_PROJECT_NAME") or values.get("COMPOSE_PROJECT_NAME") or PROJECT
         if args.render_only:
             print(json.dumps({"env": str(env_file), "project": project, "generated": []}))
@@ -719,7 +722,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             if state == ["unreadable"]:
                 raise Refused("tls_files_unreadable", "Caddy (uid 0 without CAP_DAC_OVERRIDE) cannot read "
                               + ", ".join(mounted) + "; own tls.key by root with mode 0600, and keep certificates readable")
-            if apps:
+            if args.tailscale:
                 # The nodes enroll before Edge reads the overlay, so Caddy never sees an empty domain.
                 compose_up(root, env_file, runner, apps, tuple(f"ts-{app}" for app in apps))
                 domain = tailnet.wait_enrolled(runner, compose_command(root, env_file, apps), settings, apps)
@@ -734,7 +737,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             except OSError as error:
                 raise Refused("status_write_failed", f"cannot write {status_root / 'status.json'}: {error.strerror}; "
                               "fix that directory's ownership and rerun bootstrap") from None
-            if apps:
+            if args.tailscale:
                 probes = tailnet.probe_origins(tailnet.origins(settings, apps))
         else:
             certificate = wait_ready(settings, root, env_file, runner)

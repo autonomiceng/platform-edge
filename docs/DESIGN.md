@@ -80,13 +80,15 @@ with every capability dropped, with its identity in the external volume
 `${PE_VOLUME_PREFIX}_ts-<name>`. One static serve config (`docker/tailscale/serve.json`)
 makes every node terminate `https://<name>.<tailnet>.ts.net` with a Tailscale-issued
 certificate and proxy to `pe-edge:80` with the original Host. `python3 scripts/bootstrap.py
---tailscale` requires `PE_TS_AUTHKEY`, starts the nodes named in `PE_TS_APPS`, waits until
-each reports Running under its expected name, records `PE_TAILNET_DOMAIN` in `.env` once,
-starts Edge with the overlay, and probes each origin over HTTPS from the host (skipped with a
-message when the host is not on the tailnet). Route Files add one `import tailnet-site <name>
+--tailscale` requires `PE_TS_AUTHKEY`, records the overlay and one profile per node named in
+`PE_TS_APPS` in `.env` (`COMPOSE_FILE`, `COMPOSE_PROFILES`) so plain Compose and ordinary
+reruns keep them, starts the nodes, waits until each reports Running under its expected
+name, records `PE_TAILNET_DOMAIN` once, starts Edge with the overlay, and probes each origin
+over HTTPS from the host (skipped with a message when MagicDNS does not resolve the names
+here). Route Files add one `import tailnet-site <name>
 <routes>` line per hostname; the snippet expands only when the overlay sets `PE_TAILNET` and
 sets `X-Forwarded-Proto: https` for requests from the Platform Network's dynamic range, where
 the nodes live, while loopback requests keep their own scheme and no forwarded header is
-trusted. With `--with`, the bundle writes the Tailnet Origins into the sibling browser-origin
-settings. See [ADR-0004](adr/0004-tailscale-sidecars.md) for the trade-offs, including the
+trusted. The bundle owns the sibling browser-origin settings: the Tailnet Origin of each
+selected node while the selection is recorded, the public-domain origin otherwise. See [ADR-0004](adr/0004-tailscale-sidecars.md) for the trade-offs, including the
 single authorization domain the nodes form.

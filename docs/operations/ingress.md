@@ -153,30 +153,38 @@ PE_TAILNET_DOMAIN=
 `PE_TS_AUTHKEY` is a secret: keep `.env` at mode 0600 and never commit it. `--tailscale`
 needs local or proxy mode with the loopback bind, because the Tailnet hosts are plain-HTTP
 sites on Edge's listener. `PE_TS_APPS` lists the nodes to run; drop the names of stacks you
-do not install. `PE_TS_TAG` must be one of the key's tags; empty omits `--advertise-tags`
-and the key's tags apply. Leave `PE_TAILNET_DOMAIN` empty on the first run.
+do not install. `PE_TS_TAG` must be one of the key's tags; the template sets `tag:platform`,
+and an empty or absent value omits `--advertise-tags` so the key's tags apply. Leave
+`PE_TAILNET_DOMAIN` empty on the first run.
 
-What bootstrap does with `--tailscale`: it refuses without the key, creates one external
-volume per selected node (`${PE_VOLUME_PREFIX}_ts-<name>`, the node's identity), starts the
-nodes from `compose.tailscale.yaml` with one `--profile ts-<name>` each, and waits up to
-120 s until every node reports `Running` under its expected MagicDNS name. A name already
-taken on the tailnet enrolls as `<name>-1` and is refused (`tailscale_name_taken`): remove or
-rename the other machine, remove the new one, and rerun. It then records the tailnet domain
-in `PE_TAILNET_DOMAIN`, starts Edge with the overlay so the Tailnet hosts are routed, and
-probes `https://<name>.<tailnet>.ts.net/health` for every node from this host with the
-system trust store (the first handshake waits for the certificate). When this host is not
-on the tailnet the probe is skipped with a message; verify from a tailnet member instead.
-The result lists the origins, the probe statuses and, without `--with`, the sibling
-settings to set by hand. Reruns are idempotent: enrolled nodes stay enrolled
+What bootstrap does with `--tailscale`: it refuses without the key, records the selection in
+`.env` (`COMPOSE_FILE` gains `compose.tailscale.yaml`, `COMPOSE_PROFILES` gains one
+`ts-<name>` per selected node, other files and profiles untouched), creates one external
+volume per node (`${PE_VOLUME_PREFIX}_ts-<name>`, the node's identity), starts the nodes and
+waits up to 120 s until every node reports `Running` under its expected MagicDNS name. A
+name already taken on the tailnet enrolls as `<name>-1` and is refused
+(`tailscale_name_taken`): remove or rename the other machine, remove the new one, and rerun.
+It then records the tailnet domain in `PE_TAILNET_DOMAIN`, starts Edge with the overlay so
+the Tailnet hosts are routed, and probes `https://<name>.<tailnet>.ts.net/health` for every
+node from this host with the system trust store (the first handshake waits for the
+certificate). When MagicDNS on this host does not resolve the names to Tailscale addresses
+the probe is skipped with a message; verify from a tailnet member instead. The result lists
+the origins, the probe statuses and, without `--with`, the sibling settings to set by hand.
+
+Because the selection is recorded, plain `docker compose up` and ordinary `bootstrap.py`
+reruns keep the nodes and Edge's Tailnet routes; only `--tailscale` enrolls, re-selects
+after a `PE_TS_APPS` change, and probes. Reruns are idempotent: enrolled nodes stay enrolled
 (`TS_AUTH_ONCE`), and a recorded domain that differs from the enrolled one is refused.
 
-The origins are the applications' browser URLs. With `--with`, the bundle writes them into
-the siblings before running their bootstraps: `LG_CONSOLE_URL`, `LG_LITELLM_URL`,
-`LG_LANGFUSE_URL`, `LG_S3_URL`, `LG_RUSTFS_URL`, `LG_GRAFANA_URL`, `LG_BACKPLANE_URL`,
-`OB_GRAFANA_URL`, `OB_GATEWAY_URL`, `OB_BACKPLANE_URL` and `BP_PUBLIC_URL`, each only when
-its node is selected. The public-domain settings stay as they are, so the public hostnames
-keep working beside the Tailnet Origins. Without `--tailscale` the bundle leaves these keys
-alone; clear them by hand to return an application to its public-domain origin.
+The origins are the applications' browser URLs, and the bundle owns the settings that hold
+them: `LG_CONSOLE_URL`, `LG_LITELLM_URL`, `LG_LANGFUSE_URL`, `LG_S3_URL`, `LG_RUSTFS_URL`,
+`LG_GRAFANA_URL`, `LG_BACKPLANE_URL`, `OB_GRAFANA_URL`, `OB_GATEWAY_URL`, `OB_BACKPLANE_URL`
+and `BP_PUBLIC_URL`. While the selection is recorded, every `--with` run writes the Tailnet
+Origin of each selected node into them; a key whose node is not selected, or any run after
+the selection is removed, gets the public-domain origin (`BP_PUBLIC_URL`, `OB_GATEWAY_URL`,
+`OB_BACKPLANE_URL`) or an empty value that the stack derives from its public domain. The
+public-domain settings stay as they are, so the public hostnames keep working beside the
+Tailnet Origins.
 
 How a request flows: the node terminates TLS, keeps the original Host and proxies to
 `pe-edge:80` over the Platform Network. Edge routes the Tailnet host to the same stack as the
@@ -188,29 +196,36 @@ headers pass through unverified and must not be trusted behind Edge. Every node 
 every Tailnet host through Edge, so the nodes form one authorization domain: the tailnet
 policy grants the tag as a whole.
 
-Direct Compose commands need the overlay and the profiles bootstrap passes:
+With the selection recorded in `.env`, plain Compose commands see the nodes:
 
 ```sh
-docker compose -f compose.yaml -f compose.tailscale.yaml --profile ts-litellm logs ts-litellm
+docker compose logs ts-litellm
 ```
 
-Or record `COMPOSE_FILE=compose.yaml:compose.tailscale.yaml` and
-`COMPOSE_PROFILES=ts-console,ts-litellm,...` in `.env` so plain `docker compose up` and
-`down` include the nodes.
-
-Removing a node: drop its name from `PE_TS_APPS`, rerun `bootstrap --tailscale`, remove the
-container with `docker compose -f compose.yaml -f compose.tailscale.yaml --profile ts-<name>
-rm -sf ts-<name>`, delete the machine in the admin console, and only then delete the volume
-`${PE_VOLUME_PREFIX}_ts-<name>` if you want the identity gone. Restore the name to
-`PE_TS_APPS` and rerun to add it back; the kept volume re-enrolls without the key.
+Removing a node: drop its name from `PE_TS_APPS`, rerun `bootstrap --tailscale` (which
+rewrites `COMPOSE_PROFILES`), remove the now orphaned container with `docker compose
+--profile ts-<name> rm -sf ts-<name>`, delete the machine in the admin console, and only
+then delete the volume `${PE_VOLUME_PREFIX}_ts-<name>` if you want the identity gone.
+Restore the name to `PE_TS_APPS` and rerun to add it back; the kept volume re-enrolls
+without the key. Turning Tailscale off entirely: remove the nodes the same way, delete
+`compose.tailscale.yaml` from `COMPOSE_FILE` and the `ts-` entries from `COMPOSE_PROFILES`,
+clear `PE_TAILNET_DOMAIN`, then rerun bootstrap with `--with` so the siblings return to
+their public-domain origins.
 
 Rotating the key: create the new key, replace `PE_TS_AUTHKEY`, revoke the old one. Enrolled
 nodes are unaffected; the key is used only when a node has no identity yet. An expired key
 shows up as a node that never reaches `Running`; the bootstrap error names the log command.
 
-The optional RustFS consoles of Backplane and Observability are not Tailnet Origins. To reach
-one for a session, publish it on loopback in that stack (its `*_RUSTFS_CONSOLE` settings)
-and open an SSH tunnel to the host; do not add it to the Platform Network.
+The optional RustFS consoles of Backplane and Observability are not Tailnet Origins. For a
+session, enable the console in that stack and reach it over loopback through an SSH tunnel;
+never add RustFS to the Platform Network. Observability: set `OB_RUSTFS_CONSOLE=true`, run
+its bootstrap, then `ssh -L 18180:127.0.0.1:18180 <host>` and open
+`http://127.0.0.1:18180/rustfs/console/` with a hosts entry mapping `rustfs.<domain>` to
+`127.0.0.1` (its gateway routes the console by that host). Backplane's internal gateway
+publishes no host port: set `BP_RUSTFS_CONSOLE=true`, add a private overlay that publishes
+`127.0.0.1:9001:9001` on its `rustfs` service, run its bootstrap, then
+`ssh -L 9001:127.0.0.1:9001 <host>` and open `http://127.0.0.1:9001/`. Remove the overlay
+after the session.
 
 For `PE_ACCESS_MODE=proxy`, bootstrap automatically selects `compose.proxy.yaml` to
 publish only HTTP. Direct Compose commands must use both files:

@@ -50,8 +50,9 @@ def check_usage(parser, args) -> None:
         parser.error("--capability-file requires --with backplane")
 
 
-# Browser origin settings per stack, keyed by the Tailnet node that serves them (ADR-0004).
-TAILNET_KEYS = {
+# Browser origin settings per stack, keyed by the Tailnet node that serves them (ADR-0004). The
+# bundle owns these keys: a selected node's Tailnet Origin, else the public-domain origin.
+ORIGIN_KEYS = {
     "gateway": {"LG_CONSOLE_URL": "console", "LG_LITELLM_URL": "litellm", "LG_LANGFUSE_URL": "langfuse", "LG_S3_URL": "s3",
                 "LG_RUSTFS_URL": "rustfs", "LG_GRAFANA_URL": "grafana", "LG_BACKPLANE_URL": "backplane"},
     "observability": {"OB_GRAFANA_URL": "grafana", "OB_GATEWAY_URL": "console", "OB_BACKPLANE_URL": "backplane"},
@@ -61,7 +62,7 @@ TAILNET_KEYS = {
 
 def tailnet_settings(stack: str, origins: dict[str, str]) -> dict[str, str]:
     """The origin keys one stack receives for the selected Tailnet nodes."""
-    return {key: origins[app] for key, app in TAILNET_KEYS[stack].items() if app in origins}
+    return {key: origins[app] for key, app in ORIGIN_KEYS[stack].items() if app in origins}
 
 
 def settings(stack: str, edge: dict[str, str], origins: dict[str, str] | None = None) -> dict[str, str]:
@@ -69,9 +70,7 @@ def settings(stack: str, edge: dict[str, str], origins: dict[str, str] | None = 
     prefix = STACKS[stack][0]
     domain, scheme = edge["PE_PUBLIC_DOMAIN"], edge["PE_SCHEME"]
     values = {"ACCESS_MODE": "proxy"}
-    if stack == "backplane":
-        values["PUBLIC_URL"] = f"{scheme}://backplane.{domain}"
-    else:
+    if stack != "backplane":
         values.update(PUBLIC_DOMAIN=domain, SCHEME=scheme)
     values["BIND_HOST"] = "127.0.0.1"
     if stack == "backplane":
@@ -84,10 +83,13 @@ def settings(stack: str, edge: dict[str, str], origins: dict[str, str] | None = 
         values[key] = edge["PE_" + key]
     values["TRUSTED_PROXIES"] = edge["PE_EDGE_IP"] + "/32"
     if stack == "observability":
-        values.update(GATEWAY_HEALTH_HOST=domain, GATEWAY_URL=f"{scheme}://{domain}",
-                      BACKPLANE_URL=f"{scheme}://backplane.{domain}")
+        values["GATEWAY_HEALTH_HOST"] = domain
     keys = {prefix + "_" + key: value for key, value in values.items()}
-    keys.update(tailnet_settings(stack, origins or {}))
+    # Backplane requires its origin and Observability its companion links; the other siblings derive
+    # an empty origin from their public domain themselves.
+    public = {"BP_PUBLIC_URL": f"{scheme}://backplane.{domain}", "OB_GATEWAY_URL": f"{scheme}://{domain}",
+              "OB_BACKPLANE_URL": f"{scheme}://backplane.{domain}"}
+    keys.update({key: (origins or {}).get(app, public.get(key, "")) for key, app in ORIGIN_KEYS[stack].items()})
     return keys
 
 

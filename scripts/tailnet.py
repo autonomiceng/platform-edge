@@ -1,22 +1,29 @@
-"""Tailnet Origins: one Tailscale node per routed hostname, started by `bootstrap.py --tailscale`.
+"""Tailnet Origins: one Tailscale node per routed hostname, enabled by `bootstrap.py --tailscale`.
 
-Bootstrap starts the selected sidecars of `compose.tailscale.yaml`, waits until each reports
-Running under its expected MagicDNS name, records the tailnet domain once in `.env`, then probes
-every origin over HTTPS from this host. The auth key is read only to check that it is set.
+Bootstrap records the overlay and one profile per selected node in `.env` (`COMPOSE_FILE`,
+`COMPOSE_PROFILES`), so ordinary reruns and plain `docker compose up` keep the nodes and Edge's
+Tailnet routes. It starts the nodes, waits until each reports Running under its expected MagicDNS
+name, records the tailnet domain once, then probes every origin over HTTPS from this host. The
+auth key is read only to check that it is set.
 """
 
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import json
+import os
 import re
 import socket
 import ssl
 import time
+from pathlib import Path
 
 import bootstrap
 
 OVERLAY = "compose.tailscale.yaml"
+# Tailscale node addresses; a name resolving elsewhere did not come from MagicDNS.
+TAILSCALE_RANGES = (ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48"))
 # Node names; `console` is the root site and takes PE_ROOT_HOST as its name.
 APPS = ("console", "litellm", "langfuse", "s3", "rustfs", "backplane", "grafana")
 DOMAIN = re.compile(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*\.ts\.net")
@@ -57,6 +64,27 @@ def check_ready(settings: dict[str, str]) -> None:
 
 def selected(settings: dict[str, str]) -> tuple[str, ...]:
     return tuple(app for app in APPS if app in settings["PE_TS_APPS"].split(","))
+
+
+def recorded(values: dict[str, str]) -> tuple[str, ...]:
+    """The nodes an earlier --tailscale run recorded in the env file's Compose selection."""
+    files = [Path(name).name for name in values.get("COMPOSE_FILE", "").split(os.pathsep)]
+    if OVERLAY not in files:
+        return ()
+    profiles = values.get("COMPOSE_PROFILES", "").split(",")
+    return tuple(app for app in APPS if f"ts-{app}" in profiles)
+
+
+def record(handle, values: dict[str, str], apps: tuple[str, ...]) -> None:
+    """Record the overlay and the selected profiles; other files and profiles stay as they were."""
+    files = [name for name in values.get("COMPOSE_FILE", "compose.yaml").split(os.pathsep) if name]
+    if OVERLAY not in [Path(name).name for name in files]:
+        files.append(OVERLAY)
+    profiles = [name for name in values.get("COMPOSE_PROFILES", "").split(",") if name and not name.startswith("ts-")]
+    profiles += [f"ts-{app}" for app in apps]
+    for key, value in (("COMPOSE_FILE", os.pathsep.join(files)), ("COMPOSE_PROFILES", ",".join(profiles))):
+        if values.get(key) != value:
+            bootstrap.record_env(handle, key, value)
 
 
 def node_name(app: str, settings: dict[str, str]) -> str:
@@ -100,18 +128,21 @@ def wait_enrolled(runner, dc: list[str], settings: dict[str, str], apps: tuple[s
     pending = list(apps)
     while pending:
         for app in list(pending):
-            result = runner(dc + ["exec", "-T", f"ts-{app}", "tailscale", "status", "--json"])
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            result = runner(dc + ["exec", "-T", f"ts-{app}", "tailscale", "status", "--json"], timeout=min(30.0, remaining))
             domain = enrolled(result.stdout, node_name(app, settings)) if result.returncode == 0 else None
             if domain:
                 domains[app] = domain
                 pending.remove(app)
         if pending:
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise bootstrap.Refused("not_ready", f"Tailscale nodes {', '.join('ts-' + app for app in pending)} did not reach "
-                                        "Running within the deadline; check `docker compose -f compose.yaml -f "
-                                        f"{OVERLAY} --profile ts-{pending[0]} logs ts-{pending[0]}` for an expired or "
-                                        "untagged auth key")
-            time.sleep(3)
+                                        f"Running within {timeout:.0f} s; check `docker compose logs ts-{pending[0]}` for an "
+                                        "expired or untagged auth key")
+            time.sleep(min(3.0, remaining))
     if len(set(domains.values())) != 1:
         raise bootstrap.Refused("tailscale_domain_mismatch", "the nodes enrolled in different tailnets: "
                                 + ", ".join(f"ts-{app}={domain}" for app, domain in sorted(domains.items())))
@@ -133,13 +164,20 @@ def probe(host: str, timeout: float) -> int:
         connection.close()
 
 
+def on_tailnet(host: str) -> bool:
+    """Whether MagicDNS on this host resolves `host` to a Tailscale address."""
+    try:
+        addresses = {ipaddress.ip_address(item[4][0]) for item in socket.getaddrinfo(host, 443)}
+    except (OSError, ValueError):
+        return False
+    return any(address in network for address in addresses for network in TAILSCALE_RANGES)
+
+
 def probe_origins(urls: dict[str, str], timeout: float = PROBE_TIMEOUT) -> dict[str, int] | str:
     """Status per origin, or the reason the probe was skipped when this host is not on the tailnet."""
     hosts = {app: url.removeprefix("https://") for app, url in urls.items()}
-    try:
-        socket.getaddrinfo(next(iter(hosts.values())), 443)
-    except OSError:
-        return "skipped: this host does not resolve the tailnet names; verify the origins from a tailnet member"
+    if not on_tailnet(next(iter(hosts.values()))):
+        return "skipped: this host does not resolve the Tailnet names through MagicDNS; verify the origins from a tailnet member"
     deadline = time.monotonic() + timeout
     statuses: dict[str, int] = {}
     last = ""
