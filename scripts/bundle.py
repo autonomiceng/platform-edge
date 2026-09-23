@@ -119,10 +119,17 @@ def command(stack: str, args, values: dict[str, str], source: str) -> list[str]:
         return [sys.executable, "scripts/bootstrap.py"]
     argv = ["bun", "infra/bootstrap/prepare.ts", "--capability-file", str(args.capability_file.resolve()),
             "--access-mode", "proxy", "--public-url", values["BP_PUBLIC_URL"]]
-    # A recorded selection is authoritative for prepare.ts; repeating --profile conflicts with it.
-    recorded = any(match and match.group("key") == "COMPOSE_PROFILES"
-                   for match in map(bootstrap.ENV_LINE.match, source.splitlines()))
-    return argv if recorded else argv + ["--profile", "gateway"]
+    # A recorded selection is authoritative for prepare.ts: repeating --profile conflicts with it,
+    # and one without the gateway profile would leave Edge's bp-gateway:80 alias unserved.
+    recorded = next((unquoted(match.group("value")) for match in map(bootstrap.ENV_LINE.match, source.splitlines())
+                     if match and match.group("key") == "COMPOSE_PROFILES"), None)
+    if recorded is None:
+        return argv + ["--profile", "gateway"]
+    if "gateway" not in recorded.split(","):
+        raise bootstrap.Refused("bundle_gateway_profile_required",
+                                f"Backplane records COMPOSE_PROFILES={recorded}; Edge needs its gateway profile, so change the "
+                                "selection through Backplane's own upgrade procedure first")
+    return argv
 
 
 def plan(args, root: Path, edge: dict[str, str]) -> list[dict]:

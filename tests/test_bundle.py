@@ -199,6 +199,10 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(item["writes"], {"BP_ACCESS_MODE": "proxy", "BP_PUBLIC_URL": "https://backplane.example.com", "BP_BIND_HOST": "127.0.0.1",
                                               "BP_PORT": "3000", "BP_PLATFORM_NETWORK": "platform", "BP_PLATFORM_SUBNET": "172.30.0.0/24",
                                               "BP_PLATFORM_IP_RANGE": "172.30.0.128/25", "BP_TRUSTED_PROXIES": "172.30.0.2/32"})
+            (backplane / ".env").write_text("COMPOSE_PROFILES=blobs,compute\nBP_AUTH_SECRET=s\n")
+            with self.assertRaises(bootstrap.Refused) as refused:
+                bundle.plan(arguments(root, "backplane", capability=capability), root, EDGE)
+            self.assertEqual(refused.exception.code, "bundle_gateway_profile_required")
             (backplane / ".env").write_text("BP_AUTH_SECRET=s\n")
             [fresh] = bundle.plan(arguments(root, "backplane", capability=capability), root, EDGE)
             self.assertEqual(fresh["command"][-2:], ["--profile", "gateway"])
