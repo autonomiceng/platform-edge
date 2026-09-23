@@ -173,9 +173,11 @@ the probe is skipped with a message; verify from a tailnet member instead. The r
 the origins, the probe statuses and, without `--with`, the sibling settings to set by hand.
 
 Because the selection is recorded, plain `docker compose up` and ordinary `bootstrap.py`
-reruns keep the nodes and Edge's Tailnet routes, and still require local or proxy mode with
-the loopback bind; only `--tailscale` enrolls, re-selects after a `PE_TS_APPS` change, and
-probes. A recorded selection without a recorded domain is refused (`tailnet_not_enrolled`)
+reruns keep the nodes and Edge's Tailnet routes; only `--tailscale` enrolls, re-selects
+after a `PE_TS_APPS` change, and probes. Bootstrap refuses a recorded selection unless the
+mode is local or proxy and `PE_BIND_HOST` is `127.0.0.1`; plain Compose enforces nothing,
+so never change `PE_BIND_HOST` while the selection is recorded without running bootstrap,
+which would otherwise publish the plain-HTTP Tailnet hosts on that interface. A recorded selection without a recorded domain is refused (`tailnet_not_enrolled`)
 until `--tailscale` completes. Reruns are idempotent: enrolled nodes stay enrolled
 (`TS_AUTH_ONCE`), and a recorded domain that differs from the enrolled one is refused.
 
