@@ -7,6 +7,7 @@ import signal
 import sys
 import subprocess
 import tempfile
+import ipaddress
 import time
 import zlib
 from pathlib import Path
@@ -28,10 +29,13 @@ def main():
                PE_HTTPS_PORT=os.environ.get("SMOKE_HTTPS_PORT", "18743"),
                PE_PLATFORM_NETWORK=f"{project}-platform", PE_ACME_EMAIL="")
     # Bootstrap creates the drill network; a /24 under 172.16 keeps it clear of installed
-    # and Docker-created networks, and the project name picks the octet.
-    octet = zlib.crc32(project.encode()) % 256
-    env.update(PE_PLATFORM_SUBNET=f"172.16.{octet}.0/24", PE_PLATFORM_IP_RANGE=f"172.16.{octet}.128/25",
-               PE_EDGE_IP=f"172.16.{octet}.2")
+    # and Docker-created networks, and the project name picks the octet. SMOKE_PLATFORM_SUBNET
+    # moves it when 172.16.0.0/16 is taken on the host.
+    subnet = ipaddress.IPv4Network(os.environ.get("SMOKE_PLATFORM_SUBNET", f"172.16.{zlib.crc32(project.encode()) % 256}.0/24"))
+    if subnet.prefixlen != 24:
+        raise ValueError("SMOKE_PLATFORM_SUBNET must be an IPv4 /24")
+    env.update(PE_PLATFORM_SUBNET=str(subnet), PE_PLATFORM_IP_RANGE=str(list(subnet.subnets(prefixlen_diff=1))[1]),
+               PE_EDGE_IP=str(subnet.network_address + 2))
 
     def run(*argv, input=None):
         result = subprocess.run(argv, cwd=ROOT, env=env, text=True, input=input,

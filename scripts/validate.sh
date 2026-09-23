@@ -5,7 +5,7 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 # Validate the shipped default independently of operator image and Compose overrides.
 export PE_CADDY_IMAGE=''
-unset COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PROFILES
+unset COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PROFILES PE_PLATFORM_SUBNET PE_PLATFORM_IP_RANGE PE_EDGE_IP
 for tool in python3 shellcheck node; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done

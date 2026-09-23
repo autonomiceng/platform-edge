@@ -467,7 +467,9 @@ routes when a sibling is absent; a skip is **not acceptance**. The test starts i
 edge on spare loopback ports, uses its project name as its disposable volume prefix,
 and leaves sibling containers and volumes alone. Compose 2.24.4+ is required for the
 integration override that prevents shadowing the installed `pe-edge` alias. Set
-`SMOKE_HTTP_PORT`, `SMOKE_HTTPS_PORT` or `SMOKE_PROJECT` to avoid existing resources.
+`SMOKE_HTTP_PORT`, `SMOKE_HTTPS_PORT` or `SMOKE_PROJECT` to avoid existing resources;
+the stub smoke and the backup drill take `SMOKE_PLATFORM_SUBNET` (a /24) when their
+default `172.16.x.0/24` overlaps a host network.
 `SMOKE_DOMAIN` must equal the siblings' configured public domain (default `localhost`);
 these controls are explicit shell settings, not inferred from the installed `.env`.
 

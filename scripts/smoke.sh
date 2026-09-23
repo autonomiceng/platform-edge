@@ -18,9 +18,12 @@ if [ "$integration" = 1 ]; then
 else
   # A /24 under 172.16, which Docker never auto-assigns, keeps the disposable network clear of
   # an installed platform network and of Docker-created ones; the octet follows the project name.
-  octet=${SMOKE_SUBNET_OCTET:-$(( $(printf '%s' "$COMPOSE_PROJECT_NAME" | cksum | cut -d' ' -f1) % 256 ))}
+  # SMOKE_PLATFORM_SUBNET (a /24) moves it when 172.16.0.0/16 is taken on the host.
+  subnet=${SMOKE_PLATFORM_SUBNET:-172.16.$(( $(printf '%s' "$COMPOSE_PROJECT_NAME" | cksum | cut -d' ' -f1) % 256 )).0/24}
+  prefix=${subnet%.0/24}
+  [ "$prefix" != "$subnet" ] || { echo 'SMOKE_PLATFORM_SUBNET must be an IPv4 /24 written as A.B.C.0/24' >&2; exit 2; }
   export PE_PUBLIC_DOMAIN=localhost PE_PLATFORM_NETWORK="$COMPOSE_PROJECT_NAME-platform"
-  export PE_PLATFORM_SUBNET="172.16.$octet.0/24" PE_PLATFORM_IP_RANGE="172.16.$octet.128/25" PE_EDGE_IP="172.16.$octet.2"
+  export PE_PLATFORM_SUBNET="$subnet" PE_PLATFORM_IP_RANGE="$prefix.128/25" PE_EDGE_IP="$prefix.2"
 fi
 export PE_CADDY_IMAGE='' PE_ACCESS_MODE=local PE_SCHEME=http PE_ACME_EMAIL='' PE_BACKUP_KEEP=7 PE_TAILSCALE_HOST='' PE_TRUSTED_PROXIES=''
 export PE_METRICS_ALLOW="127.0.0.0/8 ::1"
@@ -61,7 +64,7 @@ if [ "$integration" = 1 ]; then
   [ "$result" = 0 ] || exit "$result"
 else
   docker network create --driver bridge --subnet "$PE_PLATFORM_SUBNET" --ip-range "$PE_PLATFORM_IP_RANGE" \
-    --gateway "172.16.$octet.1" "$PE_PLATFORM_NETWORK" >/dev/null
+    --gateway "$prefix.1" "$PE_PLATFORM_NETWORK" >/dev/null
   network_created=1
 fi
 if [ "$integration" = 1 ]; then
