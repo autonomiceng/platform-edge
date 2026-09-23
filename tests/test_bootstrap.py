@@ -160,13 +160,15 @@ class BootstrapTests(unittest.TestCase):
     def test_existing_network_with_different_allocation_is_refused_with_both_values(self):
         for ipam, observed in (([{"Subnet": "172.18.0.0/16", "Gateway": "172.18.0.1"}], "172.18.0.0/16"),
                                ([{"Subnet": "172.30.0.0/24", "IPRange": "172.30.0.0/25", "Gateway": "172.30.0.1"}], "172.30.0.0/25"),
+                               ([{"Subnet": "172.30.0.0/24", "IPRange": "172.30.0.128/25", "Gateway": "172.30.0.2"}], "gateway 172.30.0.2"),
+                               ([{"Subnet": "172.30.0.0/24", "IPRange": "172.30.0.128/25"}], "gateway none"),
                                ([], "none"), (None, "none")):
             with self.subTest(ipam=ipam), tempfile.TemporaryDirectory() as directory:
                 runner = FakeRunner(ipam=ipam)
                 with self.assertRaises(bootstrap.Refused) as caught:
                     self.start(runner, {"PE_PLATFORM_NETWORK": "isolated"}, directory)
                 self.assertEqual(caught.exception.code, "platform_network_mismatch")
-                for text in (observed, "172.30.0.0/24", "172.30.0.128/25", "docker network rm isolated"):
+                for text in (observed, "172.30.0.0/24", "172.30.0.128/25", "gateway 172.30.0.1", "docker network rm isolated"):
                     self.assertIn(text, caught.exception.detail)
                 self.assertFalse(any("up" in call for call in runner.calls))
 
@@ -208,6 +210,10 @@ class BootstrapTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as log:
                 self.assertEqual(bootstrap.bootstrap(["--env-file", str(env), "--render-only"], FakeRunner()), 0)
             self.assertEqual(log.getvalue(), "")
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"COMPOSE_FILE": "compose.yaml:compose.tailscale.yaml"}, clear=True), \
+                contextlib.redirect_stdout(io.StringIO()), self.assertRaises(bootstrap.Refused) as caught:
+            bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env"), "--render-only"], FakeRunner())
+        self.assertEqual(caught.exception.code, "legacy_setting")
 
     def test_network_created_only_when_missing(self):
         for exists in (True, False):

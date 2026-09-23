@@ -287,21 +287,24 @@ def platform_gateway(subnet: ipaddress.IPv4Network) -> ipaddress.IPv4Address:
 
 
 def check_network_allocation(name: str, observed: str, settings: dict[str, str]) -> None:
-    expected = (settings["PE_PLATFORM_SUBNET"], settings["PE_PLATFORM_IP_RANGE"])
+    subnet = ipaddress.IPv4Network(settings["PE_PLATFORM_SUBNET"])
+    expected = (str(subnet), str(ipaddress.IPv4Network(settings["PE_PLATFORM_IP_RANGE"])), str(platform_gateway(subnet)))
     try:
         configs = [item for item in (json.loads(observed) or []) if item.get("Subnet")
                    and ipaddress.ip_network(item["Subnet"]).version == 4]
-        actual = ("none", "none")
+        actual = ("none", "none", "none")
         if configs:
+            # A gateway elsewhere in the subnet could sit on the fixed Edge address.
             actual = (str(ipaddress.IPv4Network(configs[0]["Subnet"])),
-                      str(ipaddress.IPv4Network(configs[0]["IPRange"])) if configs[0].get("IPRange") else "none")
+                      str(ipaddress.IPv4Network(configs[0]["IPRange"])) if configs[0].get("IPRange") else "none",
+                      str(ipaddress.IPv4Address(configs[0]["Gateway"])) if configs[0].get("Gateway") else "none")
     except (ValueError, TypeError, KeyError):
-        actual = ("unreadable", "unreadable")
-    if actual != tuple(str(ipaddress.IPv4Network(value)) for value in expected):
+        actual = ("unreadable", "unreadable", "unreadable")
+    if actual != expected:
         raise Refused("platform_network_mismatch",
-                      f"network {name} has subnet {actual[0]} and ip-range {actual[1]}; expected subnet {expected[0]} "
-                      f"and ip-range {expected[1]}. Stop every stack on the network, run `docker network rm {name}`, "
-                      "then rerun each bootstrap (Edge first).")
+                      f"network {name} has subnet {actual[0]}, ip-range {actual[1]} and gateway {actual[2]}; expected subnet "
+                      f"{expected[0]}, ip-range {expected[1]} and gateway {expected[2]}. Stop every stack on the network, "
+                      f"run `docker network rm {name}`, then rerun each bootstrap (Edge first).")
 
 
 def ensure_network(runner: Runner, settings: dict[str, str]) -> None:
@@ -511,6 +514,9 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             os.fsync(handle.fileno())
         os.fchmod(handle.fileno(), 0o600)
         drop_retired_overlay(handle)
+        exported = os.environ.get("COMPOSE_FILE", "")
+        if any(Path(name).name == RETIRED_OVERLAY for name in exported.split(os.pathsep)):
+            raise Refused("legacy_setting", f"the exported COMPOSE_FILE lists the retired {RETIRED_OVERLAY}; unset it or drop that entry")
         values = read_env(env_file)
         settings = settings_for(values)
         project = os.environ.get("COMPOSE_PROJECT_NAME") or values.get("COMPOSE_PROJECT_NAME") or PROJECT

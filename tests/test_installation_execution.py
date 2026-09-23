@@ -52,6 +52,20 @@ class ExecutionTests(unittest.TestCase):
         self.assertNotIn("gateway", runner.started)
         self.assertEqual(report["enrollment"], "unverified")
 
+    def test_recorded_retired_overlay_is_dropped_from_the_edge_selection(self):
+        runner = FakeRunner()
+        env = self.root / ".env"
+        env.write_text("PE_ACCESS_MODE=local\nPE_TAILSCALE_EDGE_IP=\nCOMPOSE_FILE=compose.yaml:operator.yaml:compose.tailscale.yaml\n")
+        env.chmod(0o600)
+        (self.root / "operator.yaml").write_text("# operator overlay\n")
+        code, plan = self.invoke("--stack", "observability", "--dry-run", runner=runner)
+        self.assertEqual((code, plan["executable"]), (0, True))
+        self.assertEqual(plan["actions"][0]["compose_selection"]["COMPOSE_FILE"], "compose.yaml:operator.yaml")
+        code, report = self.invoke("--stack", "observability", runner=runner)
+        self.assertEqual((code, report["completed"]), (0, ["edge", "observability"]))
+        self.assertEqual(installation.read_settings(env)["COMPOSE_FILE"], "compose.yaml:operator.yaml")
+        self.assertIn("PE_TAILSCALE_EDGE_IP=\n", env.read_text())
+
     def test_matching_rerun_preserves_recorded_secrets_selection_and_stopped_mounts(self):
         runner = FakeRunner()
         self.assertEqual(self.invoke(*self.bp_arguments(), runner=runner)[0], 0)

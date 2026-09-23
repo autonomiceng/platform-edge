@@ -182,6 +182,13 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                 raise ValueError("Selected checkout is missing an owning entrypoint or required configuration file.")
             custody(env)
             recorded = read_settings(env) if env.exists() else {}
+            selection_repair = None
+            if name == "edge" and recorded.get("COMPOSE_FILE"):
+                # The retired peer-pinning overlay no longer exists; the recorded selection is repaired in place.
+                kept = [file for file in recorded["COMPOSE_FILE"].split(":") if Path(file).name != bootstrap.RETIRED_OVERLAY]
+                if len(kept) != len(recorded["COMPOSE_FILE"].split(":")):
+                    selection_repair = ":".join(kept)
+                    recorded = dict(recorded, COMPOSE_FILE=selection_repair)
             if recorded.get("COMPOSE_ENV_FILES") or recorded.get("COMPOSE_PATH_SEPARATOR", ":") != ":":
                 raise ValueError("Alternate Compose env files or separators require owning configuration repair.")
             values = read_settings(template if name == "edge" else directory / ".env.example") | recorded
@@ -237,6 +244,8 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                 connection_changes = selected_connection["changes"][name]
                 action["origin"] = selected_connection["endpoints"][tail_app or "Platform Edge"]["url"].rstrip("/")
             changes = dict(connection_changes) if name == "edge" else {}
+            if selection_repair is not None:
+                changes["COMPOSE_FILE"] = selection_repair
             if name == "edge":
                 ports = [edge["PE_HTTP_PORT"]] + ([edge["PE_HTTPS_PORT"]] if edge["PE_ACCESS_MODE"] != "proxy" else [])
                 bind = edge["PE_BIND_HOST"]
@@ -345,9 +354,6 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                 default_files = ["compose.yaml"] + (["compose.proxy.yaml"] if name == "gateway" else [])
             configured_files = recorded.get("COMPOSE_FILE", values.get("COMPOSE_FILE", ":".join(default_files)) if name in {"edge", "gateway"} else ":".join(default_files))
             files = configured_files.replace("${LG_ACCESS_MODE:-local}", "proxy" if name == "gateway" else "local").split(":")
-            if name == "edge":
-                # The retired peer-pinning overlay is dropped from a recorded selection; the address is fixed.
-                files = [file for file in files if Path(file).name != bootstrap.RETIRED_OVERLAY]
             if (directory / files[0]).resolve() != directory / "compose.yaml" or any(not (directory / f).is_file() for f in files):
                 raise ValueError("Native Compose selection must retain its base file first and all ordered overlays.")
             if name == "observability":

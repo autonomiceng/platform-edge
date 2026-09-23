@@ -425,14 +425,16 @@ Docker-assigned `172.18.0.0/16`) is refused by every bootstrap with
 `platform_network_mismatch`. The one-time fix recreates the network; certificate volumes,
 data and env files are untouched:
 
-1. Stop every stack on the network with its own `docker compose down` (containers only,
+1. Repair the Edge `.env` before anything stops: remove any `PE_TAILSCALE_EDGE_IP` value,
+   then run `python3 scripts/bootstrap.py --render-only`, which drops the retired
+   `compose.tailscale.yaml` entry from `COMPOSE_FILE` (an unrepaired selection cannot be
+   loaded by Compose, not even for `down`). Set every sibling's `*_TRUSTED_PROXIES` to
+   `172.30.0.2/32`.
+2. Stop every stack on the network with its own `docker compose down` (containers only,
    never `-v`): siblings first, Edge last.
-2. `docker network rm platform` (the configured `PE_PLATFORM_NETWORK`). Docker refuses
+3. `docker network rm platform` (the configured `PE_PLATFORM_NETWORK`). Docker refuses
    overlapping subnets, so remove any other unused network that overlaps `172.30.0.0/24`
    as well (`docker network inspect <name> --format '{{len .Containers}}'` must print 0).
-3. Remove any `PE_TAILSCALE_EDGE_IP` value from the Edge `.env`; bootstrap drops the
-   retired `compose.tailscale.yaml` entry from `COMPOSE_FILE` itself. Set every sibling's
-   `*_TRUSTED_PROXIES` to `172.30.0.2/32`.
 4. Run `python3 scripts/bootstrap.py` in platform-edge; it creates the network with the
    contract allocation and starts Edge at `172.30.0.2`. Then run each sibling's bootstrap.
 5. Verify: `docker network inspect platform --format '{{json .IPAM.Config}}'` shows the
