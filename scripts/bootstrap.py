@@ -28,6 +28,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+# bundle.py raises this module's Refused; when this file runs as a script, `import bootstrap`
+# must resolve to the same module object instead of loading a second copy.
+if __name__ == "__main__":
+    sys.modules["bootstrap"] = sys.modules[__name__]
+
 PROJECT = "platform-edge"
 NETWORK = "platform"
 RETIRED_OVERLAY = "compose.tailscale.yaml"
@@ -633,35 +638,47 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
     parser.add_argument("--template", default=".env.example")
     parser.add_argument("--render-only", action="store_true", help="write only the env file, start nothing")
     parser.add_argument("--probe-only", action="store_true", help="refresh readiness and expiry without starting services")
-    from installation import add_arguments, install
-    add_arguments(parser)
+    parser.add_argument("--dry-run", action="store_true", help="validate the settings and print the bundle plan, write nothing")
+    import bundle
+    bundle.add_arguments(parser)
     args = parser.parse_args(argv)
     if args.render_only and args.probe_only:
         parser.error("--render-only and --probe-only are mutually exclusive")
+    if (args.dry_run or args.stacks) and (args.render_only or args.probe_only):
+        parser.error("--dry-run and --with cannot be combined with --render-only or --probe-only")
+    bundle.check_usage(parser, args)
     root = Path(__file__).resolve().parent.parent
     env_file = (root / args.env_file).resolve()
     template = (root / args.template).resolve()
-    selected_options = any((args.gateway_dir, args.backplane_dir, args.observability_dir,
-                            args.gateway_backup_dir, args.gateway_email, args.backplane_backup_dir,
-                            args.capability_file, args.backplane_mode, args.tailscale))
-    if selected_options and not args.stack:
-        parser.error("selected installation options require --stack")
-    if (args.stack or args.dry_run) and (args.render_only or args.probe_only):
-        parser.error("--stack/--dry-run cannot be combined with --render-only/--probe-only")
-    for stack in ("gateway", "backplane", "observability"):
-        names = {"gateway": ("gateway_dir", "gateway_backup_dir", "gateway_email"),
-                 "backplane": ("backplane_dir", "backplane_backup_dir", "capability_file", "backplane_mode"),
-                 "observability": ("observability_dir",)}[stack]
-        if any(getattr(args, name) for name in names) and stack not in args.stack:
-            parser.error("options for " + stack + " require --stack " + stack)
-    if args.stack or args.dry_run:
-        if (root / args.env_file).is_symlink():
-            raise Refused("installation_env_custody", "Selected installation env files must not be symlinks.")
-        code, report = install(root, env_file, template, args, runner, Refused)
-        print(json.dumps(report))
-        return code
     if shutil.which("docker") is None and not args.render_only:
         raise Refused("docker_missing", "install Docker with the Compose plugin")
+
+    # The bundle is planned from the settings Edge will use, before Edge changes anything.
+    # An empty env is filled from the template below, so the bundle plans from the template too.
+    source = env_file if env_file.is_file() and env_file.stat().st_size else template
+    values = read_env(source)
+    settings = settings_for(values)
+    # Behind Edge, browser URLs are HTTPS unless PE_SCHEME is configured; Edge's local-mode
+    # default of http must not leak into the siblings.
+    edge = dict(settings, PE_SCHEME=os.environ.get("PE_SCHEME", values.get("PE_SCHEME", "")) or "https")
+    plans = bundle.plan(args, root, edge)
+    if args.dry_run:
+        project = os.environ.get("COMPOSE_PROJECT_NAME") or values.get("COMPOSE_PROJECT_NAME") or PROJECT
+        check_tls_inputs(runner, settings, root)
+        check_ports(runner, settings, project)
+        image, _ = rendered_caddy(root, source, runner)
+        print(json.dumps({
+            "project": project,
+            "env": str(env_file),
+            "access_mode": settings["PE_ACCESS_MODE"],
+            "scheme": settings["PE_SCHEME"],
+            "image": image,
+            "hostnames": routed_hostnames(root / "routes.d", settings["PE_PUBLIC_DOMAIN"]),
+            "bundle": [item["stack"] for item in plans],
+        }))
+        for item in plans:
+            print(json.dumps(bundle.describe(item)))
+        return 0
 
     # Lock the env inode itself: render-only creates no lock file or console state.
     fd = os.open(env_file, os.O_RDWR | os.O_CREAT, 0o600)
@@ -743,9 +760,11 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             "listener_urls": access_urls(settings),
             "trust": "Install the public CA root for direct HTTPS" if settings["PE_TLS_ISSUER"] == "internal" else None,
             "hostnames": routed_hostnames(root / "routes.d", settings["PE_PUBLIC_DOMAIN"]),
-            "next": "Configure each stack for the shared edge; see docs/operations/ingress.md.",
+            "next": ("Bundle stacks follow: " + ", ".join(item["stack"] for item in plans)) if plans
+                    else "Configure each stack for the shared edge; see docs/operations/ingress.md.",
         }))
-        return 0
+    bundle.install(plans, argv)
+    return 0
 
 
 def main() -> int:
@@ -753,7 +772,7 @@ def main() -> int:
         return bootstrap(sys.argv[1:])
     except Refused as refused:
         print(json.dumps({"error": refused.code, "detail": refused.detail}), file=sys.stderr)
-        return 3 if refused.code in ("not_ready", "compose_up_failed") else 1
+        return 3 if refused.code in ("not_ready", "compose_up_failed", "sibling_bootstrap_failed") else 1
     except OSError as error:
         print(json.dumps({"error": "io_error", "detail": str(error)}), file=sys.stderr)
         return 1

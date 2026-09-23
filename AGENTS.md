@@ -40,7 +40,7 @@ For delegated work, read `docs/agents/model-routing.md` for model choices and br
 - `Caddyfile`: global policy, issuer snippets and route imports. Its root location is the Edge mount contract.
 - `routes.d/`: one Route File per stack. `docker/console/index.html`: one fallback page.
 - `scripts/bootstrap.py`: env locking, port checks, network, readiness and the Edge Status Document in `data/console/status.json`.
-- `scripts/installation.py`: read-only prerequisite planning for selected stacks.
+- `scripts/bundle.py`: the `--with` bundle: sibling env rewrites under the sibling's lock and its bootstrap hand-off.
 - `scripts/retire-status-timer.sh`: one-time upgrade step removing the version 1 status timer.
 - `scripts/validate.sh`, `scripts/smoke.sh`: static gates and the Smoke Contract.
 - `tests/`: Python unittest with a fake runner; no Docker calls.
