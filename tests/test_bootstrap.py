@@ -345,8 +345,11 @@ class BootstrapTests(unittest.TestCase):
             private = Path(directory) / "private"
             private.mkdir(mode=0o700)
             private.chmod(0o700)
+            occupied = Path(directory) / "file"
+            occupied.touch()
             for volumes, code in (([], "compose_config_failed"),
-                                  ([{"target": "/srv/state", "source": str(private)}], "status_write_failed")):
+                                  ([{"target": "/srv/state", "source": str(private)}], "status_write_failed"),
+                                  ([{"target": "/srv/state", "source": str(occupied)}], "status_write_failed")):
                 runner = FakeRunner()
                 def rendering(argv, **options):
                     if argv[-3:] == ["config", "--format", "json"]:
