@@ -13,8 +13,14 @@ integration=${SMOKE_INTEGRATION:-0}
 if [ "$integration" = 1 ]; then
   export PE_PUBLIC_DOMAIN="${SMOKE_DOMAIN:-${PE_PUBLIC_DOMAIN:-localhost}}"
   export PE_PLATFORM_NETWORK="${PE_PLATFORM_NETWORK:-platform}"
+  # The installed Edge holds the contract address; this second Edge needs another reserved one.
+  export PE_EDGE_IP="${SMOKE_EDGE_IP:-172.30.0.3}"
 else
+  # A /24 under 172.16, which Docker never auto-assigns, keeps the disposable network clear of
+  # an installed platform network and of Docker-created ones; the octet follows the project name.
+  octet=${SMOKE_SUBNET_OCTET:-$(( $(printf '%s' "$COMPOSE_PROJECT_NAME" | cksum | cut -d' ' -f1) % 256 ))}
   export PE_PUBLIC_DOMAIN=localhost PE_PLATFORM_NETWORK="$COMPOSE_PROJECT_NAME-platform"
+  export PE_PLATFORM_SUBNET="172.16.$octet.0/24" PE_PLATFORM_IP_RANGE="172.16.$octet.128/25" PE_EDGE_IP="172.16.$octet.2"
 fi
 export PE_CADDY_IMAGE='' PE_ACCESS_MODE=local PE_SCHEME=http PE_ACME_EMAIL='' PE_BACKUP_KEEP=7 PE_TAILSCALE_HOST='' PE_TRUSTED_PROXIES=''
 export PE_METRICS_ALLOW="127.0.0.0/8 ::1"
@@ -54,7 +60,8 @@ if [ "$integration" = 1 ]; then
   if [ "$result" = 77 ]; then exit 0; fi
   [ "$result" = 0 ] || exit "$result"
 else
-  docker network create "$PE_PLATFORM_NETWORK" >/dev/null
+  docker network create --driver bridge --subnet "$PE_PLATFORM_SUBNET" --ip-range "$PE_PLATFORM_IP_RANGE" \
+    --gateway "172.16.$octet.1" "$PE_PLATFORM_NETWORK" >/dev/null
   network_created=1
 fi
 if [ "$integration" = 1 ]; then
@@ -274,7 +281,7 @@ ok 'stable internal metrics hostname serves the allowlisted scraper'
 
 edge_id=$(docker compose --env-file "$env_file" ps -q caddy)
 docker inspect "$edge_id" "$lg_stub" "$bp_stub" "$ob_stub" > "$work/containers.json"
-python3 - "$work/containers.json" "$edge_id" <<'PY'
+python3 - "$work/containers.json" "$edge_id" "$PE_PLATFORM_NETWORK" "$PE_EDGE_IP" <<'PY'
 import json, sys
 containers = json.load(open(sys.argv[1]))
 assert len(containers) == 4
@@ -283,6 +290,7 @@ for c in containers:
     if c['Id'] == sys.argv[2]:
         assert set(ports) == {'80/tcp', '443/tcp'}, ports
         assert c['State']['Health']['Status'] == 'healthy'
+        assert c['NetworkSettings']['Networks'][sys.argv[3]]['IPAddress'] == sys.argv[4], 'Edge address differs from PE_EDGE_IP'
         limits = c['HostConfig']
         assert limits['ReadonlyRootfs']
         assert limits['Memory'] == 256 * 1024 * 1024
@@ -295,7 +303,7 @@ for c in containers:
     else:
         assert not ports, f"stub {c['Name']} publishes ports"
 PY
-ok 'only the healthy edge publishes ports'
+ok "only the healthy edge publishes ports; Edge holds $PE_EDGE_IP"
 
 docker compose --env-file "$env_file" config --format json > "$work/observer-config.json"
 python3 - "$work/observer-config.json" "$edge_id" <<'PYREAP'

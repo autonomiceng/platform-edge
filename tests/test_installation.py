@@ -49,7 +49,7 @@ class FakeRunner:
             {"type": "bind", "source": str(root / "Caddyfile"), "target": "/config", "read_only": True}],
             "ports": [{"host_ip": "127.0.0.1", "published": str(port), "target": port} for port in ports]}}
         if name == "edge":
-            services["caddy"]["networks"] = {"platform": {"ipv4_address": values.get("PE_TAILSCALE_EDGE_IP", "")}}
+            services["caddy"]["networks"] = {"platform": {"ipv4_address": values.get("PE_EDGE_IP", "172.30.0.2")}}
         if name == "backplane":
             profiles = values.get("COMPOSE_PROFILES", "blobs,compute,gateway").split(",")
             services["server"]["image"] = values.get("BP_SERVER_IMAGE") or "fixture/backplane:1"
@@ -174,7 +174,7 @@ class InstallationTests(unittest.TestCase):
         for name, (_, directory, entrypoint) in installation.STACKS.items():
             checkout = self.host / directory
             for filename in {entrypoint, "scripts/install_status_timer.py", ".env.example", "compose.yaml", "compose.proxy.yaml",
-                             "compose.edge.yaml", "compose.gateway.yaml", "compose.blobs.yaml", "compose.compute.yaml", "compose.public.yaml", "compose.tailscale.yaml", "package.json", "bun.lock", "Caddyfile"}:
+                             "compose.edge.yaml", "compose.gateway.yaml", "compose.blobs.yaml", "compose.compute.yaml", "compose.public.yaml", "package.json", "bun.lock", "Caddyfile"}:
                 path = checkout / filename
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("")

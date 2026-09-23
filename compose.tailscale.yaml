@@ -1,6 +1,0 @@
-# Keep the peer trusted by sibling gateways stable across recreations.
-services:
-  caddy:
-    networks:
-      platform:
-        ipv4_address: ${PE_TAILSCALE_EDGE_IP:?reserve the Edge peer with scripts/bootstrap.py --stack or scripts/tailscale_serve.py}

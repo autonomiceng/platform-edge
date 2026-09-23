@@ -661,6 +661,8 @@ class CheckpointTests(unittest.TestCase):
                 return subprocess.run(["sh", "-ec", command], capture_output=True, text=True)
             if "up" in argv:
                 self.fail("bootstrap started Caddy with an incomplete restore")
+            if argv[:3] == ["docker", "network", "inspect"]:
+                return subprocess.CompletedProcess(argv, 0, json.dumps([{"Subnet": "172.30.0.0/24", "IPRange": "172.30.0.128/25"}]), "")
             return subprocess.CompletedProcess(argv, 0, "", "")
 
         def extract(argv, path, restore):

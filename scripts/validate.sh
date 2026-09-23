@@ -36,6 +36,7 @@ assert {name for name, svc in services.items() if svc.get('ports')} == {'caddy'}
 caddy = services['caddy']
 assert set(caddy['networks']) == {'platform'}, 'caddy joins only platform'
 assert caddy['networks']['platform']['aliases'] == ['pe-edge'], 'edge alias changed'
+assert caddy['networks']['platform']['ipv4_address'] == '172.30.0.2', 'fixed Edge address changed'
 assert set(config['networks']) == {'platform'} and config['networks']['platform']['external'], 'external network required'
 assert set(config['volumes']) == {'edge-data', 'edge-config'}, 'volume names changed'
 assert all(v['external'] for v in config['volumes'].values()), 'durable volumes must be external'

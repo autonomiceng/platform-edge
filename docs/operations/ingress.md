@@ -95,10 +95,10 @@ bootstrap completes missing services and checks its database/storage binding.
 
 Execution rechecks qualification under owning locks, publishes only selected public
 settings atomically, and calls the owning bootstraps serially from their checkouts.
-Edge starts first, then its exact peer is reserved with the shipped
-`compose.tailscale.yaml` and `PE_TAILSCALE_EDGE_IP` setting. This reservation also works
-without Tailscale. Its address is verified before sibling proxy trust is written;
-network CIDRs are never trusted. Existing native overlays retain their order.
+Edge starts first at its fixed address `PE_EDGE_IP`, which is verified before sibling
+proxy trust is written; network CIDRs are never trusted. A recorded `COMPOSE_FILE` that
+still lists the retired `compose.tailscale.yaml` overlay loses that entry. Existing native
+overlays retain their order.
 
 Backplane retains native image defaults and any explicit operator image overrides.
 The installer does not write image overrides. Each present container's image ID must
@@ -112,8 +112,9 @@ so interruption before container creation also leaves verifiable ownership.
 Observability custom overlays retain the recorded order for both configuration validation
 and startup. The base must remain first, with the selected storage and proxy overlays
 present and no duplicate files. No installer shadow selection is used.
-A stopped, unpinned Edge needs its original peer recovered before reuse. Do not run
-independent lifecycle commands concurrently.
+A running Edge that does not hold `PE_EDGE_IP` is refused; recreate it on the fixed
+address first (see the network cutover below). Do not run independent lifecycle commands
+concurrently.
 
 Exit 0 means the requested owning bootstraps completed; exit 1 means preflight refused,
 2 means usage, and 3 means execution stopped. The bounded JSON result lists
@@ -267,7 +268,7 @@ clients. Application login and generated links use the selected Tailscale URLs; 
 local listeners does not give an application two separate canonical login URLs.
 
 The helper updates application URLs, keeps Edge in local mode, configures sibling
-gateways for HTTP behind Edge, pins Edge's current network address for proxy trust, and recreates the
+gateways for HTTP behind Edge, trusts Edge's fixed address for proxy trust, and recreates the
 services that need those settings. It preserves credentials, storage volumes and unrelated
 Compose overlays. It checks every Compose configuration before writing settings. It never
 enables Funnel and preserves unrelated Serve endpoints. Conflicting root handlers require
@@ -276,8 +277,8 @@ selected application's root handler.
 
 If setup fails partway, correct the reported error and rerun. Inspect `tailscale serve
 status` and the affected service's logs; partial setup is not reported as success. Rerun
-after installing another stack to connect it. Keep the generated `COMPOSE_FILE` setting
-when recreating Edge so its pinned address stays consistent with sibling proxy trust.
+after installing another stack to connect it. Edge's address is fixed by `PE_EDGE_IP`, so
+recreating Edge keeps sibling proxy trust valid.
 
 Serve endpoints created by this setup forward to Edge's **HTTP** port, usually `http://127.0.0.1:80`.
 Do not forward HTTP to local port 443, and do not use an HTTPS listener on port 80 when
@@ -320,28 +321,19 @@ Only public mode uses `PE_ACME_EMAIL`. Caddy stores and renews certificates in `
 ## Per-stack settings behind the edge
 
 The sibling host ports below are examples; choose unused loopback ports on your host.
-Start Edge first so its network exists. Reserve a free address on that network for Edge
-using a local `compose.override.yaml`, then run its bootstrap again. For example, if the
-network has subnet `172.30.0.0/24` and `172.30.0.10` is reserved and unused:
+The Platform Network has a known allocation, defined by the
+[platform contract](../conventions.md#platform-contract): whichever bootstrap runs first
+creates `platform` with `--subnet 172.30.0.0/24 --ip-range 172.30.0.128/25 --gateway
+172.30.0.1` (`PE_PLATFORM_SUBNET`, `PE_PLATFORM_IP_RANGE`; the gateway is derived), and
+every bootstrap refuses an existing network whose subnet or ip-range differs
+(`platform_network_mismatch`). Edge always holds `PE_EDGE_IP` (`172.30.0.2`), a fixed
+`ipv4_address` outside the dynamic range, so nothing is reserved by hand and no address is
+inspected before configuring the siblings. Change the three settings together, in every
+stack, only when the default subnet collides with your host's routing.
 
-```yaml
-services:
-  caddy:
-    networks:
-      platform:
-        ipv4_address: 172.30.0.10
-```
-
-Use the subnet and a reserved address from your own Docker network, not this example.
-Verify the assigned address before configuring the sibling trust lists:
-
-```sh
-docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$(docker compose ps -q caddy)"
-```
-
-Replace `192.0.2.2/32` below with that address followed by `/32`. The trust list lets the
-stack accept the browser's protocol and client address from Edge. It does not grant
-operator access to every request through Edge.
+`172.30.0.2/32` below is that fixed address. The trust list lets the stack accept the
+browser's protocol and client address from Edge. It does not grant operator access to
+every request through Edge.
 
 In the LLM gateway `.env`:
 
@@ -353,7 +345,7 @@ LG_BIND_HOST=127.0.0.1
 LG_HTTP_PORT=18080
 LG_PUBLIC_PORT_SUFFIX=
 LG_PLATFORM_NETWORK=platform
-LG_TRUSTED_PROXIES=192.0.2.2/32
+LG_TRUSTED_PROXIES=172.30.0.2/32
 ```
 
 In the observability stack `.env`:
@@ -366,13 +358,13 @@ OB_BIND_HOST=127.0.0.1
 OB_HTTP_PORT=18180
 OB_PUBLIC_PORT_SUFFIX=
 OB_PLATFORM_NETWORK=platform
-OB_TRUSTED_PROXIES=192.0.2.2/32
+OB_TRUSTED_PROXIES=172.30.0.2/32
 OB_GATEWAY_HEALTH_HOST=example.com
 OB_GATEWAY_URL=https://example.com
 OB_BACKPLANE_URL=https://backplane.example.com
 ```
 
-Replace `192.0.2.2/32` with Edge’s actual address on the shared Docker network. Reserve that address in a local Compose override so recreating Edge does not change it. Trust only that address, not the entire network. The public port suffix stays empty: the spare loopback HTTP port is for local diagnostics, while browsers use Edge on 443. Behind another gateway, stacks publish only their HTTP port.
+Trust only Edge's fixed address, not the entire network; recreating Edge does not change it. The public port suffix stays empty: the spare loopback HTTP port is for local diagnostics, while browsers use Edge on 443. Behind another gateway, stacks publish only their HTTP port.
 
 In the backplane `.env`:
 
@@ -410,9 +402,9 @@ must remain independently startable when Backplane is not installed.
 
 
 1. Render the edge settings with `python3 scripts/bootstrap.py --render-only`, then edit `.env` for the desired mode. This writes only the env file, with mode 0600.
-2. If an installed stack already owns ports 80 or 443, give its gateway spare loopback ports and run its bootstrap to release those ports. Keep its current access mode until Edge’s reserved address is known. For a new stack, prepare its env using its documented bootstrap. Keep the backplane’s optional `edge` profile off.
-3. Run `python3 scripts/bootstrap.py` in platform-edge. It creates the external network if missing, names a conflicting container before publishing, and starts Caddy with `docker compose up --wait`. It probes `127.0.0.1` on the selected HTTP or HTTPS port with the domain as Host. HTTPS uses that domain as SNI, validates the public certificate or trusts the installation’s self-signed root certificate read from the volume, and reports the root SHA-256 fingerprint and leaf `notAfter`. It never disables TLS verification. The publish address must accept loopback connections (use `127.0.0.1` or `0.0.0.0` for these host probes).
-4. Apply the per-stack settings above, including Edge’s reserved address in the trust lists. Run each stack’s bootstrap so it selects the matching Compose files and starts its services. Probe application hostnames through Edge. A missing stack must affect only its own hostnames. Edge `/health` proves only Edge readiness.
+2. If an installed stack already owns ports 80 or 443, give its gateway spare loopback ports and run its bootstrap to release those ports. For a new stack, prepare its env using its documented bootstrap. Keep the backplane’s optional `edge` profile off.
+3. Run `python3 scripts/bootstrap.py` in platform-edge. It creates the external network with the contract allocation if missing, or refuses one whose allocation differs (see the network cutover below), names a conflicting container before publishing, and starts Caddy with `docker compose up --wait`. It probes `127.0.0.1` on the selected HTTP or HTTPS port with the domain as Host. HTTPS uses that domain as SNI, validates the public certificate or trusts the installation’s self-signed root certificate read from the volume, and reports the root SHA-256 fingerprint and leaf `notAfter`. It never disables TLS verification. The publish address must accept loopback connections (use `127.0.0.1` or `0.0.0.0` for these host probes).
+4. Apply the per-stack settings above, including Edge’s fixed address in the trust lists. Run each stack’s bootstrap so it selects the matching Compose files and starts its services. Probe application hostnames through Edge. A missing stack must affect only its own hostnames. Edge `/health` proves only Edge readiness.
 
 Both sibling bootstraps must probe **their own local HTTP listener**, independently of
 public URLs: gateway uses `http://127.0.0.1:18080/health/<app>` and observability uses
@@ -425,6 +417,27 @@ curl -fsS -H 'Host: example.com' http://127.0.0.1:18180/health/grafana
 ```
 
 Inspect `docker compose logs caddy` for certificate or upstream errors. Caddy's admin API listens only on `localhost:2019` inside its container, with no published port; apply route changes with `docker compose restart caddy`. Bootstrap can be rerun safely; it allows its own existing Caddy to hold the requested ports. Unexpected host processes or a concurrent port claim cause a Compose error, reported with exit code 3. Other refusals are exit 1, bad CLI usage is exit 2, readiness is exit 0. Runtime failures and argparse usage errors are one JSON line on stderr with `error` and `detail`.
+
+### Network cutover
+
+An installation whose `platform` network predates the fixed allocation (for example a
+Docker-assigned `172.18.0.0/16`) is refused by every bootstrap with
+`platform_network_mismatch`. The one-time fix recreates the network; certificate volumes,
+data and env files are untouched:
+
+1. Stop every stack on the network with its own `docker compose down` (containers only,
+   never `-v`): siblings first, Edge last.
+2. `docker network rm platform` (the configured `PE_PLATFORM_NETWORK`). Docker refuses
+   overlapping subnets, so remove any other unused network that overlaps `172.30.0.0/24`
+   as well (`docker network inspect <name> --format '{{len .Containers}}'` must print 0).
+3. Remove any `PE_TAILSCALE_EDGE_IP` value from the Edge `.env`; bootstrap drops the
+   retired `compose.tailscale.yaml` entry from `COMPOSE_FILE` itself. Set every sibling's
+   `*_TRUSTED_PROXIES` to `172.30.0.2/32`.
+4. Run `python3 scripts/bootstrap.py` in platform-edge; it creates the network with the
+   contract allocation and starts Edge at `172.30.0.2`. Then run each sibling's bootstrap.
+5. Verify: `docker network inspect platform --format '{{json .IPAM.Config}}'` shows the
+   subnet and ip-range, `docker inspect --format '{{.NetworkSettings.Networks.platform.IPAddress}}' "$(docker compose ps -q caddy)"`
+   prints `172.30.0.2`, and every application hostname answers through Edge.
 
 To run a stack on its own again, select its local or public access mode, set its domain and free host ports, then run its bootstrap. Stop Edge first if you want to reuse ports 80 and 443. Preserve the Edge volumes unless explicitly retiring its certificates.
 
@@ -619,7 +632,7 @@ is adopted; Funnel must remain disabled on these listeners. These client ranges 
 Platform Network's IPv4 host gateway because Tailscale Serve reaches Edge through
 its loopback host port. Edge accepts forwarded client information only from that
 peer and sends one validated client address to the console gateways. Each sibling
-trusts only Edge's pinned Platform Network address. Arbitrary clients cannot supply
+trusts only Edge's fixed Platform Network address. Arbitrary clients cannot supply
 their own forwarded identity. The host and Docker administrators remain trusted;
 local host processes can reach the same loopback ingress. A different host networking
 layout needs explicit validation of its ingress peer before deployment.
