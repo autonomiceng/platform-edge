@@ -1,0 +1,36 @@
+{
+  "contract": 2,
+  "stack": "gateway",
+  "configuredAt": "2026-09-23T16:00:00Z",
+  "components": [
+    {"id": "caddy", "name": "Caddy", "kind": "gateway", "enabled": true,
+     "image": "caddy:2.11.4", "version": "2.11.4", "health": "/health/caddy"},
+    {"id": "litellm", "name": "LiteLLM", "kind": "app", "enabled": true,
+     "image": "ghcr.io/berriai/litellm:v1.101.0", "version": "1.101.0",
+     "health": "/health/litellm", "url": "https://litellm.example.com"},
+    {"id": "langfuse-web", "name": "Langfuse", "kind": "app", "enabled": true,
+     "image": "langfuse/langfuse:4.37.0", "version": "4.37.0",
+     "health": "/health/langfuse-web", "url": "https://langfuse.example.com"},
+    {"id": "langfuse-worker", "name": "Langfuse worker", "kind": "app", "enabled": true,
+     "image": "langfuse/langfuse-worker:4.37.0", "version": "4.37.0",
+     "health": "/health/langfuse-worker"},
+    {"id": "postgres", "name": "PostgreSQL", "kind": "datastore", "enabled": true,
+     "image": "postgres:18.6", "version": "18.6", "health": "/health/postgres"},
+    {"id": "clickhouse", "name": "ClickHouse", "kind": "datastore", "enabled": true,
+     "image": "clickhouse/clickhouse-server:26.8.6.5", "version": "26.8.6.5",
+     "health": "/health/clickhouse"},
+    {"id": "valkey", "name": "Valkey", "kind": "datastore", "enabled": true,
+     "image": "valkey/valkey:9.1.2", "version": "9.1.2", "health": "/health/valkey"},
+    {"id": "rustfs", "name": "RustFS", "kind": "datastore", "enabled": true,
+     "image": "rustfs/rustfs:1.0.0", "version": "1.0.0",
+     "health": "/health/rustfs", "url": "https://s3.example.com"},
+    {"id": "postgres-exporter", "name": "PostgreSQL exporter", "kind": "collector", "enabled": false,
+     "image": "prometheuscommunity/postgres-exporter:v0.19.0", "version": "0.19.0",
+     "health": null},
+    {"id": "valkey-exporter", "name": "Valkey exporter", "kind": "collector", "enabled": false,
+     "image": "oliver006/redis_exporter:v1.80.1", "version": "1.80.1", "health": null}
+  ],
+  "features": {
+    "backups": {"configured": true, "lastCheckpointAt": "2026-09-22T03:00:00Z"}
+  }
+}

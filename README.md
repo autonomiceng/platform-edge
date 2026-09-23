@@ -200,6 +200,7 @@ See [image overrides](docs/operations/ingress.md#image-overrides) for validation
 - [observability-stack](https://github.com/autonomiceng/observability-stack): Grafana, Loki, Tempo and Mimir.
 
 All four deploy the same way. Shared conventions are in [docs/conventions.md](docs/conventions.md).
+The [platform contract](docs/conventions.md#platform-contract) in that file fixes the network, ingress, TLS, status and bootstrap interfaces the four stacks share; it is canonical here and vendored into the siblings with `scripts/sync-conventions.sh`.
 
 ## Day two
 

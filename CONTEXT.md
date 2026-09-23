@@ -23,3 +23,15 @@ _Avoid_: Container name, public hostname
 **Checkpoint**:
 A recoverable copy of the Edge's certificate and configuration state at one stopped moment, with evidence of its integrity and CA identity.
 _Avoid_: Snapshot, certificate export
+
+**Platform Contract**:
+The versioned table of network, ingress, TLS, status, secrets and bootstrap interfaces shared by the four stacks, canonical in this repo's `docs/conventions.md` and vendored into the siblings.
+_Avoid_: Shared config, spec sheet
+
+**Status Document**:
+A stack's public `/status.json` under contract 2, listing its configured components and features without any claim about what is running.
+_Avoid_: Health report, inventory
+
+**Health Path**:
+A stack's same-origin `/health/<component>` route that answers with a status code only.
+_Avoid_: Healthcheck endpoint, readiness probe

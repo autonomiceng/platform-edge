@@ -20,6 +20,8 @@ python3 -m py_compile scripts/*.py tests/*.py
 echo 'python: PASS'
 python3 -c 'import json,sys; [json.load(open(path)) for path in sys.argv[1:]]' docs/operations/status-fixtures/*.json
 echo 'status fixtures parse: PASS'
+scripts/sync-conventions.sh --check >/dev/null
+echo 'conventions canonical (no vendoring header): PASS'
 node --test tests/status*.test.cjs
 command -v docker >/dev/null || { echo 'missing tool: docker' >&2; exit 1; }
 docker compose version >/dev/null
