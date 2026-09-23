@@ -58,28 +58,48 @@
 }
 
 # One line per hostname in a Route File: `import site <host> <routes-snippet>` expands to the
-# listeners of PE_ACCESS_MODE, with the selected issuer on the HTTPS listener.
+# listeners of PE_ACCESS_MODE, with the selected issuer on the HTTPS listener. The routes snippet
+# receives the forwarded-proto snippet to import inside its reverse_proxy as {args[0]}.
 (site) {
 	import site-{$PE_ACCESS_MODE:local} {args[0]} {args[1]}
 }
 (site-local) {
 	http://{args[0]} {
-		import {args[1]}
+		import {args[1]} forwarded-proto-local
 	}
 	https://{args[0]} {
 		import tls-{$PE_TLS_ISSUER:internal}
-		import {args[1]}
+		import {args[1]} forwarded-proto-local
 	}
 }
 (site-public) {
 	https://{args[0]} {
 		import tls-{$PE_TLS_ISSUER:acme}
-		import {args[1]}
+		import {args[1]} forwarded-proto-public
 	}
 }
 (site-proxy) {
 	http://{args[0]} {
-		import {args[1]}
+		import {args[1]} forwarded-proto-proxy
+	}
+}
+
+# Tailnet Origins (ADR-0004): `import tailnet-site <name> <routes-snippet>` serves
+# http://<name>.<tailnet> only when compose.tailscale.yaml sets PE_TAILNET. The node terminates
+# TLS and proxies plain HTTP over the Platform Network, so Edge sets the upstream scheme itself:
+# HTTPS for peers in the dynamic range (the nodes), the request scheme for everyone else.
+# No forwarded header is trusted. Every node reaches every Tailnet host: one authorization domain.
+(tailnet-site) {
+	import tailnet-site-{$PE_TAILNET:off} {args[0]} {args[1]}
+}
+(tailnet-site-off) {
+}
+(tailnet-site-on) {
+	http://{args[0]}.{$PE_TAILNET_DOMAIN} {
+		@node remote_ip {$PE_PLATFORM_IP_RANGE}
+		vars tailnet_scheme {scheme}
+		vars @node tailnet_scheme https
+		import {args[1]} forwarded-proto-tailnet
 	}
 }
 
@@ -163,7 +183,6 @@
 (console-handlers) {
 	import access-log
 	route {
-	import tailscale-apps
 	import stack-probes
 	import console-config
 	handle /health {
@@ -216,6 +235,9 @@
 (forwarded-proto-proxy) {
 	# The operator configures the external origin; never trust arbitrary headers.
 	header_up X-Forwarded-Proto {$PE_SCHEME}
+}
+(forwarded-proto-tailnet) {
+	header_up X-Forwarded-Proto {vars.tailnet_scheme}
 }
 
 # Internal scraping uses the stable network alias instead of an application domain.

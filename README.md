@@ -64,19 +64,20 @@ Set each stack's own required settings (`LG_BACKUP_DIR`, `LANGFUSE_INIT_USER_EMA
 touches them. See [Install the bundle](docs/operations/ingress.md#install-the-bundle).
 
 The console also opens at `http://127.0.0.1`; verified direct HTTPS requires installing
-Edge's public CA root. For private access from other computers through Tailscale,
-connect your installed stacks with:
+Edge's public CA root. For private access from other computers through Tailscale, put a
+reusable tagged auth key in `.env` as `PE_TS_AUTHKEY` and run:
 
 ```sh
-python3 scripts/tailscale_serve.py --dry-run
-python3 scripts/tailscale_serve.py
+python3 scripts/bootstrap.py --tailscale --with gateway --with observability --with backplane \
+  --capability-file ~/private/backplane-enrollment
 ```
 
-Use sudo if Tailscale requires it. The command configures application URLs and prints
-private HTTPS links on your machine's Tailscale name, through the same Edge Caddy.
-Localhost HTTP and self-signed HTTPS remain available. No custom DNS or client certificate
-installation is needed. See the [ingress guide](docs/operations/ingress.md#access-everything-through-tailscale)
-for prerequisites, ports, and installations in other directories.
+This starts one Tailscale node per hostname inside the Edge project and gives each
+application its own `https://<name>.<tailnet>.ts.net` origin with a Tailscale-issued
+certificate: no host `tailscale serve`, no sudo, no port table, no client CA install.
+Localhost HTTP and self-signed HTTPS remain available. See the
+[ingress guide](docs/operations/ingress.md#access-everything-through-tailscale) for the
+tailnet prerequisites, node removal and key rotation.
 
 Runtime logs go to stdout/stderr and Docker journald, without Docker log files or cache.
 Alloy collection is optional; `docker compose logs -f caddy` works without observability.

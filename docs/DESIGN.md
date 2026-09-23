@@ -9,7 +9,7 @@ Multiple standalone stacks each ship an ingress, but only one ingress can own a 
 ## Guarantees, stated exactly
 
 - `/status.json` and `/stack-status/edge` are unauthenticated in every access mode, including public internet access, and expose the configured Caddy image (without digest), its version, the bootstrap time, whether backups are configured and the newest Checkpoint time.
-- Caddy is the only service and publisher in this project. Defaults bind HTTP and HTTPS ports to loopback.
+- Caddy is the only publisher in this project; the optional Tailscale nodes publish nothing and exist only under their profiles. Defaults bind HTTP and HTTPS ports to loopback.
 - All seven hostnames are configured even when some stacks are absent. An unavailable alias produces a request failure, independent of other aliases.
 - `/health` returns 200 independently of upstream readiness. It is available on the root site and over HTTP in every access mode.
 - Every application route sets `Host` to the requested hostname and `X-Forwarded-Proto` to the scheme received by Edge, or the configured external scheme when another gateway handles HTTPS.
@@ -70,7 +70,23 @@ Adding a hostname requires updating its Route File and the console and extending
 Access logs are JSON on stdout; runtime diagnostics are on stderr. Docker sends both to
 journald without a Docker log cache. The host owns journal retention, and Alloy collection
 is optional. Local console aliases do not change application origins or grant metrics access.
-The optional Tailscale setup keeps Edge in local mode with both HTTP and self-signed
-HTTPS listeners, and forwards each Tailscale HTTPS endpoint created by this setup to Edge's loopback HTTP
-listener. It configures explicit application URLs and routes by hostname
-and port, preserving the complete Host for signed requests. See [ADR-0002](adr/0002-tailscale-application-ports.md).
+
+## Tailnet Origins
+
+`compose.tailscale.yaml` adds one `tailscale/tailscale` node per routed hostname
+(`ts-console`, `ts-litellm`, `ts-langfuse`, `ts-s3`, `ts-rustfs`, `ts-backplane`,
+`ts-grafana`), each under its own profile, on the Platform Network only, in userspace mode
+with every capability dropped, with its identity in the external volume
+`${PE_VOLUME_PREFIX}_ts-<name>`. One static serve config (`docker/tailscale/serve.json`)
+makes every node terminate `https://<name>.<tailnet>.ts.net` with a Tailscale-issued
+certificate and proxy to `pe-edge:80` with the original Host. `python3 scripts/bootstrap.py
+--tailscale` requires `PE_TS_AUTHKEY`, starts the nodes named in `PE_TS_APPS`, waits until
+each reports Running under its expected name, records `PE_TAILNET_DOMAIN` in `.env` once,
+starts Edge with the overlay, and probes each origin over HTTPS from the host (skipped with a
+message when the host is not on the tailnet). Route Files add one `import tailnet-site <name>
+<routes>` line per hostname; the snippet expands only when the overlay sets `PE_TAILNET` and
+sets `X-Forwarded-Proto: https` for requests from the Platform Network's dynamic range, where
+the nodes live, while loopback requests keep their own scheme and no forwarded header is
+trusted. With `--with`, the bundle writes the Tailnet Origins into the sibling browser-origin
+settings. See [ADR-0004](adr/0004-tailscale-sidecars.md) for the trade-offs, including the
+single authorization domain the nodes form.

@@ -93,10 +93,10 @@ HTTP stays usable without trust setup. Binding `127.0.0.1` does not bind every l
 LAN exposure is an explicit bind-address choice. Configured application hostnames receive
 local certificates; `127.0.0.1` also has an HTTPS console and health endpoint.
 
-The HTTP console accepts arbitrary hostnames, including a Tailscale machine name.
-Unknown-host `/health` is 200; other unknown paths remain 404, including `/metrics`.
-Application routes still require their configured hostnames. Console links use the
-configured application domain instead of inventing subdomains under an IP or Tailscale name.
+The HTTP console accepts arbitrary hostnames. Unknown-host `/health` is 200; other unknown
+paths remain 404, including `/metrics`. Application routes still require their configured
+hostnames. Console links use the configured application domain, or the Tailnet Origins when
+the console is opened at its own Tailnet address, instead of inventing subdomains under an IP.
 The configured root hostname serves the Edge console independently of Gateway. Other
 Gateway paths still proxy to the Gateway and report upstream failures. Bootstrap does
 not require any sibling stack.
@@ -108,69 +108,109 @@ accepts both HTTP and HTTPS. Give sibling Caddys spare loopback HTTP ports. Use 
 
 ## Access everything through Tailscale
 
-Start Edge and the stacks you want to use, then run from the Edge checkout:
+Every routed hostname gets its own Tailscale node inside the Edge project and its own
+`https://<name>.<tailnet>.ts.net` origin with a Tailscale-issued certificate: `platform`
+(the console, `PE_ROOT_HOST`), `litellm`, `langfuse`, `s3`, `rustfs`, `backplane` and
+`grafana`. Nothing runs on the host's own Tailscale daemon, nothing needs sudo, and clients
+install no certificate. [ADR-0004](../adr/0004-tailscale-sidecars.md) records the design.
+
+Prerequisites, once per tailnet in the Tailscale admin console:
+
+1. MagicDNS and HTTPS certificates enabled (DNS page). HTTPS publishes the node names in
+   public certificate transparency logs.
+2. A tag for the nodes, with an owner, in the policy file, and an access rule that lets your
+   users reach it on port 443. Every node shares the tag, so this rule grants every
+   application at once; application login remains the per-application boundary.
+
+   ```json
+   "tagOwners": { "tag:platform": ["autogroup:admin"] },
+   "grants": [{ "src": ["autogroup:member"], "dst": ["tag:platform"], "ip": ["443"] }]
+   ```
+
+3. An auth key (Settings, Keys): reusable, not ephemeral, tagged `tag:platform`, with the
+   expiry you want for enrollments. Tagged nodes have no key expiry of their own.
+
+Then, in the Edge checkout:
 
 ```sh
-python3 scripts/tailscale_serve.py --dry-run
-python3 scripts/tailscale_serve.py
+python3 scripts/bootstrap.py --tailscale --dry-run
+python3 scripts/bootstrap.py --tailscale --with gateway --with observability --with backplane \
+  --capability-file /home/operator/private/backplane-enrollment
 ```
 
-Log in to Tailscale and enable its HTTPS certificates first. Run the helper as the
-installation user. If a Serve change needs administrator permission, it prints the
-exact `sudo tailscale serve ...` command. Run that command, then rerun the helper to
-verify the actual HTTPS endpoints. Matching Serve endpoints require no rewrite. The helper connects existing installations; it does not install
-missing stacks or create credentials. By default it looks for `.env` in the sibling
-`llm-gateway-stack`, `observability-stack`, and `agent-backplane` checkouts. Use
-`--gateway-dir`, `--observability-dir`, or `--backplane-dir` for other locations.
-Use `--env-file` for a different Edge environment file. Every sibling with an env is
-considered, and missing envs are skipped.
+Edge `.env` settings:
 
-You get private HTTPS links on one machine name, without editing DNS or installing a
-certificate on your computer:
+```sh
+PE_ACCESS_MODE=local
+PE_BIND_HOST=127.0.0.1
+PE_TS_AUTHKEY=tskey-auth-...
+PE_TS_TAG=tag:platform
+PE_TS_APPS=console,litellm,langfuse,s3,rustfs,backplane,grafana
+PE_ROOT_HOST=
+PE_TAILNET_DOMAIN=
+```
 
-| Application | Default HTTPS port |
-| --- | --- |
-| Platform Edge | 443 |
-| LiteLLM | 8443 |
-| Langfuse | 8444 |
-| S3 object storage | 8445 |
-| LLM Gateway overview | 8446 |
-| Grafana | 8447 |
-| Agent Backplane | 8448 |
-| RustFS admin console | 8449 |
+`PE_TS_AUTHKEY` is a secret: keep `.env` at mode 0600 and never commit it. `--tailscale`
+needs local or proxy mode with the loopback bind, because the Tailnet hosts are plain-HTTP
+sites on Edge's listener. `PE_TS_APPS` lists the nodes to run; drop the names of stacks you
+do not install. `PE_TS_TAG` must be one of the key's tags; empty omits `--advertise-tags`
+and the key's tags apply. Leave `PE_TAILNET_DOMAIN` empty on the first run.
 
-Open the printed Platform Edge link to launch applications. S3 is an API endpoint;
-use an S3 client and your existing credentials. RustFS has a separate browser admin console, enabled by default in the gateway. Set `LG_RUSTFS_CONSOLE=off` to disable it; the helper only connects it when enabled. Each application keeps its own login.
-The LiteLLM operator pages become reachable through the private Edge connection;
-application authentication remains required. Your tailnet access rules must permit the
-chosen ports. Use `--https-port` for the landing page and `--port-base` to move the nine
-consecutive application ports together.
+What bootstrap does with `--tailscale`: it refuses without the key, creates one external
+volume per selected node (`${PE_VOLUME_PREFIX}_ts-<name>`, the node's identity), starts the
+nodes from `compose.tailscale.yaml` with one `--profile ts-<name>` each, and waits up to
+120 s until every node reports `Running` under its expected MagicDNS name. A name already
+taken on the tailnet enrolls as `<name>-1` and is refused (`tailscale_name_taken`): remove or
+rename the other machine, remove the new one, and rerun. It then records the tailnet domain
+in `PE_TAILNET_DOMAIN`, starts Edge with the overlay so the Tailnet hosts are routed, and
+probes `https://<name>.<tailnet>.ts.net/health` for every node from this host with the
+system trust store (the first handshake waits for the certificate). When this host is not
+on the tailnet the probe is skipped with a message; verify from a tailnet member instead.
+The result lists the origins, the probe statuses and, without `--with`, the sibling
+settings to set by hand. Reruns are idempotent: enrolled nodes stay enrolled
+(`TS_AUTH_ONCE`), and a recorded domain that differs from the enrolled one is refused.
 
-Each Tailscale listener created by this setup forwards to the configured Edge loopback
-HTTP endpoint at `http://127.0.0.1:<PE_HTTP_PORT>` (port 80 by default);
-Edge chooses the application by hostname and port. Services are not exposed directly.
-Edge retains localhost HTTP and self-signed HTTPS on its configured ports (80 and 443
-by default), using its existing certificate state. Tailscale adds trusted HTTPS for remote
-clients. Application login and generated links use the selected Tailscale URLs; keeping
-local listeners does not give an application two separate canonical login URLs.
+The origins are the applications' browser URLs. With `--with`, the bundle writes them into
+the siblings before running their bootstraps: `LG_CONSOLE_URL`, `LG_LITELLM_URL`,
+`LG_LANGFUSE_URL`, `LG_S3_URL`, `LG_RUSTFS_URL`, `LG_GRAFANA_URL`, `LG_BACKPLANE_URL`,
+`OB_GRAFANA_URL`, `OB_GATEWAY_URL`, `OB_BACKPLANE_URL` and `BP_PUBLIC_URL`, each only when
+its node is selected. The public-domain settings stay as they are, so the public hostnames
+keep working beside the Tailnet Origins. Without `--tailscale` the bundle leaves these keys
+alone; clear them by hand to return an application to its public-domain origin.
 
-The helper updates application URLs, keeps Edge in local mode, configures sibling
-gateways for HTTP behind Edge, trusts Edge's fixed address for proxy trust, and recreates the
-services that need those settings. It preserves credentials, storage volumes and unrelated
-Compose overlays. It checks every Compose configuration before writing settings. It never
-enables Funnel and preserves unrelated Serve endpoints. Conflicting root handlers require
-`--replace`; non-HTTPS listeners and Funnel endpoints are always refused. Ports with custom path handlers are also refused, since those paths could bypass the
-selected application's root handler.
+How a request flows: the node terminates TLS, keeps the original Host and proxies to
+`pe-edge:80` over the Platform Network. Edge routes the Tailnet host to the same stack as the
+public hostname and sets `X-Forwarded-Proto: https` because the request comes from the
+Platform Network's dynamic range; the same Host from the loopback listener keeps its own
+scheme, and no forwarded header from any client is trusted. Applications therefore see the
+node's Platform Network address as the client, not the tailnet member; Tailscale's identity
+headers pass through unverified and must not be trusted behind Edge. Every node can reach
+every Tailnet host through Edge, so the nodes form one authorization domain: the tailnet
+policy grants the tag as a whole.
 
-If setup fails partway, correct the reported error and rerun. Inspect `tailscale serve
-status` and the affected service's logs; partial setup is not reported as success. Rerun
-after installing another stack to connect it. Edge's address is fixed by `PE_EDGE_IP`, so
-recreating Edge keeps sibling proxy trust valid.
+Direct Compose commands need the overlay and the profiles bootstrap passes:
 
-Serve endpoints created by this setup forward to Edge's **HTTP** port, usually `http://127.0.0.1:80`.
-Do not forward HTTP to local port 443, and do not use an HTTPS listener on port 80 when
-expecting ordinary HTTP clients. Tailscale access is optional; each stack retains its
-standalone local and public-domain setup.
+```sh
+docker compose -f compose.yaml -f compose.tailscale.yaml --profile ts-litellm logs ts-litellm
+```
+
+Or record `COMPOSE_FILE=compose.yaml:compose.tailscale.yaml` and
+`COMPOSE_PROFILES=ts-console,ts-litellm,...` in `.env` so plain `docker compose up` and
+`down` include the nodes.
+
+Removing a node: drop its name from `PE_TS_APPS`, rerun `bootstrap --tailscale`, remove the
+container with `docker compose -f compose.yaml -f compose.tailscale.yaml --profile ts-<name>
+rm -sf ts-<name>`, delete the machine in the admin console, and only then delete the volume
+`${PE_VOLUME_PREFIX}_ts-<name>` if you want the identity gone. Restore the name to
+`PE_TS_APPS` and rerun to add it back; the kept volume re-enrolls without the key.
+
+Rotating the key: create the new key, replace `PE_TS_AUTHKEY`, revoke the old one. Enrolled
+nodes are unaffected; the key is used only when a node has no identity yet. An expired key
+shows up as a node that never reaches `Running`; the bootstrap error names the log command.
+
+The optional RustFS consoles of Backplane and Observability are not Tailnet Origins. To reach
+one for a session, publish it on loopback in that stack (its `*_RUSTFS_CONSOLE` settings)
+and open an SSH tunnel to the host; do not add it to the Platform Network.
 
 For `PE_ACCESS_MODE=proxy`, bootstrap automatically selects `compose.proxy.yaml` to
 publish only HTTP. Direct Compose commands must use both files:
@@ -391,11 +431,9 @@ Docker-assigned `172.18.0.0/16`) is refused by every bootstrap with
 `platform_network_mismatch`. The one-time fix recreates the network; certificate volumes,
 data and env files are untouched:
 
-1. Repair the Edge `.env` before anything stops: remove any `PE_TAILSCALE_EDGE_IP` value,
-   then run `python3 scripts/bootstrap.py --render-only`, which drops the retired
-   `compose.tailscale.yaml` entry from `COMPOSE_FILE` (an unrepaired selection cannot be
-   loaded by Compose, not even for `down`). Set every sibling's `*_TRUSTED_PROXIES` to
-   `172.30.0.2/32`.
+1. Repair the Edge `.env` before anything stops: remove any `PE_TAILSCALE_EDGE_IP` value
+   and any `COMPOSE_FILE` entry from the retired peer-pinning overlay. Set every sibling's
+   `*_TRUSTED_PROXIES` to `172.30.0.2/32`.
 2. Stop every stack on the network with its own `docker compose down` (containers only,
    never `-v`): siblings first, Edge last.
 3. `docker network rm platform` (the configured `PE_PLATFORM_NETWORK`). Docker refuses
@@ -537,8 +575,8 @@ The observability stack is optional. Its Alloy Docker discovery and `loki.source
 reader can collect this container through Docker's journal reader, labelling it with
 `compose_project=platform-edge` and `service=caddy`. Loki's retained data is observability
 product state, not a second local runtime log file. Without Alloy, Caddy continues running
-and the host journal remains available. Host `tailscaled` messages are not container logs;
-inspect them with `journalctl -u tailscaled` or configure a separate journal pipeline.
+and the host journal remains available. The Tailscale nodes log to journald the same way
+(`CONTAINER_NAME=platform-edge-ts-<name>-1`).
 
 Caddy removes request and response headers and query strings from access logs and
 request-bearing error diagnostics. Do not put credentials in URL paths. URLs and request
@@ -594,55 +632,3 @@ The Caddy status proxy separately limits connection setup, response headers and
 idle reads; its read timeout is not a total response-body deadline. Direct clients
 of these routes must apply their own total deadline and size limit. Producers are
 trusted stack services publishing bounded public metadata.
-
-### Optional private storage consoles
-
-Backplane and Observability can expose their already enabled native RustFS consoles
-at Tailscale ports 8450 and 8451. The Edge console adds links only for connected
-endpoints. Each service keeps its native login, and agents continue to use Backplane's
-Files API. The connector does not enable a storage backend or migrate any data.
-
-First deploy the reviewed sibling console feature and explicitly enable
-`BP_RUSTFS_CONSOLE=true` or `OB_RUSTFS_CONSOLE=true` in that installation. Backplane
-must persist its existing `compose.gateway.yaml` and `compose.blobs.yaml` in
-`COMPOSE_FILE` and their `gateway,blobs` profiles in `COMPOSE_PROFILES` (keep any
-other selected files and profiles). Observability requires its existing `s3`
-profile and `compose.s3.yaml`. Do not add these settings to a filesystem installation
-as a substitute for its migration procedure.
-
-Run `scripts/tailscale_serve.py --dry-run` to inspect the proposed links. Its optional
-`--console-allow '100.64.0.0/10 fd7a:115c:a1e0::/48'` explicitly permits Tailnet clients
-at enabled Backplane and Observability consoles. Supply narrower client IPs/CIDRs
-when required. Without this option, each existing `BP_RUSTFS_CONSOLE_ALLOW` or `OB_RUSTFS_CONSOLE_ALLOW` list is preserved. General monitoring allowlists are unchanged.
-Tailnet access policy and native application login still apply. No Funnel endpoint
-is adopted; Funnel must remain disabled on these listeners. These client ranges are never trusted proxy ranges.
-
-`PE_TRUSTED_PROXIES` contains only exact ingress peer IPs. The connector records the
-Platform Network's IPv4 host gateway because Tailscale Serve reaches Edge through
-its loopback host port. Edge accepts forwarded client information only from that
-peer and sends one validated client address to the console gateways. Each sibling
-trusts only Edge's fixed Platform Network address. Arbitrary clients cannot supply
-their own forwarded identity. The host and Docker administrators remain trusted;
-local host processes can reach the same loopback ingress. A different host networking
-layout needs explicit validation of its ingress peer before deployment.
-
-The whole console origin is proxied, including login, administrative requests and
-S3 requests. Host, port and HTTPS scheme are retained for native authentication and
-request signatures. RustFS has no published host port and stays off the Platform
-Network. The connector checks current images and persistent mounts before changing
-settings and recreates only the selected services. Keep a verified checkpoint before
-running it; a partial failure can be corrected and rerun without deleting volumes.
-
-With trusted peers configured, any additional host proxy must replace untrusted
-forwarded-client headers and must not forward Tailnet console authorities. Prefer
-per-operator `/32` or `/128` client entries. The broader Tailnet ranges also admit
-shared-in nodes allowed by Tailscale policy. Agents must not receive host networking
-or Docker administration authority if they are outside this trusted host boundary.
-
-The setup result reports console access from the setup host separately. A 401,
-403 or 404 from that exact HTTPS origin means access was denied or the console
-was unavailable to this host; it does not prove a working login. Complete the
-native login check from an explicitly allowed client. Existing application
-routes retain their previous peer-address forwarding; only the new console
-routes forward the validated client address. Docker configurations with
-`userland-proxy: false` require explicit ingress-peer validation before use.

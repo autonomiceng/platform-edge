@@ -230,6 +230,34 @@ class BundleTests(unittest.TestCase):
             self.assertFalse((backplane / ".env.lock").exists())
             self.assertTrue((backplane / ".env").read_text().startswith("BP_AUTH_SECRET=s\nBP_ACCESS_MODE=proxy\n"))
 
+    def test_bundle_keys_carry_the_tailnet_origins_only_with_both_flags(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {}, clear=True):
+            root = Path(temporary)
+            gateway = checkout(root, "gateway", GATEWAY_ENV)
+            edge_env = root / "edge.env"
+            edge_env.write_text("PE_TS_AUTHKEY=tskey-auth-test\nPE_TAILNET_DOMAIN=tail1234.ts.net\nPE_TS_APPS=console,litellm,langfuse,s3,rustfs,grafana\n")
+            runs, runner = Runs(), FakeRunner()
+            with patch.object(bundle, "run_bootstrap", runs):
+                code, out, err = run_main(["--env-file", str(edge_env), "--dry-run", "--tailscale", "--with", "gateway", "--gateway-dir", str(gateway)], runner)
+                self.assertEqual(code, 0, err)
+                plan = json.loads(out.splitlines()[1])
+                self.assertEqual({key: value for key, value in plan["writes"].items() if key.endswith("_URL")},
+                                 {"LG_CONSOLE_URL": "https://platform.tail1234.ts.net", "LG_LITELLM_URL": "https://litellm.tail1234.ts.net",
+                                  "LG_LANGFUSE_URL": "https://langfuse.tail1234.ts.net", "LG_S3_URL": "https://s3.tail1234.ts.net",
+                                  "LG_RUSTFS_URL": "https://rustfs.tail1234.ts.net", "LG_GRAFANA_URL": "https://grafana.tail1234.ts.net"})
+                # The public domain stays the routing domain; only the browser origins move to the tailnet.
+                self.assertEqual((plan["writes"]["LG_SCHEME"], "LG_PUBLIC_DOMAIN" in plan["writes"]), ("https", False))
+                code, out, err = run_main(["--env-file", str(edge_env), "--dry-run", "--with", "gateway", "--gateway-dir", str(gateway)], runner)
+                self.assertEqual(code, 0, err)
+                self.assertFalse(any(key.endswith("_URL") for key in json.loads(out.splitlines()[1])["writes"]))
+            origins = {"console": "https://platform.tail1234.ts.net", "backplane": "https://backplane.tail1234.ts.net", "grafana": "https://grafana.tail1234.ts.net"}
+            self.assertEqual(bundle.tailnet_settings("observability", origins),
+                             {"OB_GRAFANA_URL": "https://grafana.tail1234.ts.net", "OB_GATEWAY_URL": "https://platform.tail1234.ts.net",
+                              "OB_BACKPLANE_URL": "https://backplane.tail1234.ts.net"})
+            self.assertEqual(bundle.settings("backplane", EDGE, origins)["BP_PUBLIC_URL"], "https://backplane.tail1234.ts.net")
+            self.assertEqual(bundle.settings("backplane", EDGE, {"console": origins["console"]})["BP_PUBLIC_URL"], "https://backplane.example.com")
+            self.assertEqual(bundle.settings("observability", EDGE, {"console": "https://<PE_TAILNET_DOMAIN>"})["OB_GATEWAY_URL"], "https://<PE_TAILNET_DOMAIN>")
+
 
 if __name__ == "__main__":
     unittest.main()

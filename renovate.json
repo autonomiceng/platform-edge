@@ -2,7 +2,7 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended", ":pinDigests", "schedule:weekly"],
   "enabledManagers": ["docker-compose", "github-actions", "mise"],
-  "docker-compose": { "managerFilePatterns": ["/^compose\\.yaml$/"] },
+  "docker-compose": { "managerFilePatterns": ["/^compose\\.yaml$/", "/^compose\\.tailscale\\.yaml$/"] },
   "packageRules": [
     {
       "matchManagers": ["docker-compose"],
