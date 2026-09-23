@@ -30,6 +30,20 @@ class CommandDeadlineTests(unittest.TestCase):
                 self.assertEqual(child.call_args.kwargs["timeout"], budget)
 
 
+# A throwaway self-signed CA certificate (no key) for PEM parsing checks.
+TEST_CA = """-----BEGIN CERTIFICATE-----
+MIIBlzCCAT2gAwIBAgIULZKdwh3+v+jTCz4OG24FGjstfrMwCgYIKoZIzj0EAwIw
+IDEeMBwGA1UEAwwVcGxhdGZvcm0tZWRnZSB0ZXN0IENBMCAXDTI2MDkyMzE5NDA0
+MVoYDzIxMjYwODMwMTk0MDQxWjAgMR4wHAYDVQQDDBVwbGF0Zm9ybS1lZGdlIHRl
+c3QgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASf6G8DMMGsHM2JJUi6/SM8
+WZ5IA7rp245laoEeHTZMIb3C/gOtaN15IWuxZonJioqcFM0UHYj/kADv3254ybfq
+o1MwUTAdBgNVHQ4EFgQUVlyz0zArW/aTRB/o2Gysz+MplDkwHwYDVR0jBBgwFoAU
+Vlyz0zArW/aTRB/o2Gysz+MplDkwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQD
+AgNIADBFAiEA9vTa0ChUeNGznGFKaysMzbHwnjIW6A0je9Le20OUWHoCIBenkx/s
+xRz4Sf+J5HLs6Iw1kwdvvDGnPop1e7G9gyac
+-----END CERTIFICATE-----
+"""
+
 CONTRACT_IPAM = [{"Subnet": "172.30.0.0/24", "IPRange": "172.30.0.128/25", "Gateway": "172.30.0.1"}]
 
 
@@ -338,7 +352,10 @@ class AccessModeTests(unittest.TestCase):
                  ("PE_ACCESS_MODE=public\n", ["compose.yaml", "compose.public.yaml"]),
                  ("PE_ACCESS_MODE=proxy\nPE_TLS_ISSUER=files\nPE_TLS_DIR=/srv/certs\n", ["compose.yaml", "compose.proxy.yaml"]),
                  ("PE_TLS_ISSUER=files\nPE_TLS_DIR=/srv/certs\nCOMPOSE_FILE=compose.yaml:compose.files.yaml:custom.yaml\n",
-                  ["compose.yaml", "custom.yaml", "compose.files.yaml"]))
+                  ["compose.yaml", "custom.yaml", "compose.files.yaml"]),
+                 # A recorded overlay from an earlier issuer is dropped, custom overlays stay.
+                 ("PE_TLS_ISSUER=internal\nCOMPOSE_FILE=compose.yaml:compose.files.yaml:compose.acme-eab.yaml:custom.yaml\n",
+                  ["compose.yaml", "custom.yaml"]))
         for content, expected in cases:
             with self.subTest(content=content), tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
                 env = Path(directory) / ".env"
@@ -360,9 +377,20 @@ class AccessModeTests(unittest.TestCase):
             with patch.object(bootstrap.shutil, "which", return_value=None), self.assertRaises(bootstrap.Refused) as caught:
                 bootstrap.check_tls_inputs(FakeRunner(), settings, ROOT)
             self.assertEqual(caught.exception.code, "openssl_missing")
-            with self.assertRaises(bootstrap.Refused) as caught:
-                bootstrap.check_tls_inputs(FakeRunner(), bootstrap.settings_for({"PE_TLS_CA": str(certs / "absent.pem")}), ROOT)
-            self.assertIn("PE_TLS_CA", caught.exception.detail)
+            public = {"PE_ACCESS_MODE": "public", "PE_PUBLIC_DOMAIN": "example.com"}
+            pem = certs / "ca.pem"
+            pem.write_text(TEST_CA)
+            for key, value in (("PE_TLS_CA", str(certs / "absent.pem")), ("PE_TLS_CA", str(certs)),
+                               ("PE_TLS_CA", str(certs / "tls.crt")), ("PE_ACME_CA_ROOT", str(certs / "tls.key"))):
+                with self.subTest(key=key, value=value), self.assertRaises(bootstrap.Refused) as caught:
+                    bootstrap.check_tls_inputs(FakeRunner(), bootstrap.settings_for(dict(public, **{key: value})), ROOT)
+                self.assertIn(key, caught.exception.detail)
+            bootstrap.check_tls_inputs(FakeRunner(), bootstrap.settings_for(dict(public, PE_TLS_CA=str(pem), PE_ACME_CA_ROOT=str(pem))), ROOT)
+            # Trust files are checked only when the effective issuer uses them.
+            bootstrap.check_tls_inputs(FakeRunner(), bootstrap.settings_for({"PE_TLS_CA": str(certs)}), ROOT)
+            bootstrap.check_tls_inputs(FakeRunner(), bootstrap.settings_for({"PE_ACCESS_MODE": "proxy", "PE_TLS_CA": str(certs)}), ROOT)
+            bootstrap.check_tls_inputs(SanRunner("DNS:example.com, DNS:*.example.com"),
+                                       bootstrap.settings_for(dict(public, PE_TLS_ISSUER="files", PE_TLS_DIR=str(certs), PE_ACME_CA_ROOT=str(certs))), ROOT)
             # The state-check container reads the mounted files as Caddy's uid; a refusal names them.
             runner = SanRunner("DNS:localhost, DNS:*.localhost")
             runner.state = "unreadable\n"

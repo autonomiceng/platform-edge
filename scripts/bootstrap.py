@@ -45,6 +45,7 @@ RETIRED_OVERLAY = "compose.tailscale.yaml"
 # Retired settings are read only to refuse values that contradict the fixed Edge address.
 LEGACY = {"PE_TAILSCALE_EDGE_IP"}
 RESTORE_MARKER = ".pe-restore-incomplete"
+TLS_OVERLAYS = ("compose.files.yaml", "compose.acme-ca-root.yaml", "compose.acme-eab.yaml")
 ENV_LINE = re.compile(r"^(?:export\s+)?(?P<key>[A-Z][A-Z0-9_]*)=(?P<value>.*)$")
 # Route Files declare each host once with `import site <host> <routes>`; plain site addresses still count.
 ROUTE_LINE = re.compile(r"^\s*(?:import site (?P<site>HOST) [a-z0-9-]+|https?://(?P<address>HOST)\s*\{)$"
@@ -284,10 +285,22 @@ def mounted_tls_files(settings: dict[str, str]) -> list[str]:
     return []
 
 
+def trust_files(settings: dict[str, str]) -> list[str]:
+    """Settings naming CA files the effective issuer uses."""
+    issuer = settings["PE_TLS_ISSUER"]
+    return [key for key, used in (("PE_TLS_CA", issuer in {"acme", "files"}), ("PE_ACME_CA_ROOT", issuer == "acme"))
+            if used and settings[key]]
+
+
 def check_tls_inputs(runner: Runner, settings: dict[str, str], root: Path) -> None:
-    for key in ("PE_TLS_CA", "PE_ACME_CA_ROOT"):
-        if settings[key] and not os.access(root / settings[key], os.R_OK):
-            raise Refused("invalid_settings", f"{key} must be a readable PEM file")
+    for key in trust_files(settings):
+        path = root / settings[key]
+        try:
+            if not path.is_file():
+                raise OSError("not a regular file")
+            ssl.create_default_context(cadata=path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, ssl.SSLError) as error:
+            raise Refused("invalid_settings", f"{key} ({path}) must be a readable PEM file holding CA certificates") from error
     if settings["PE_TLS_ISSUER"] != "files":
         return
     directory = root / settings["PE_TLS_DIR"]
@@ -443,6 +456,8 @@ def compose_command(root: Path, env_file: Path) -> list[str]:
     if issuer == "acme":
         overlays += [name for name, key in (("compose.acme-ca-root.yaml", "PE_ACME_CA_ROOT"),
                                             ("compose.acme-eab.yaml", "PE_ACME_EAB_KEY_ID")) if setting(key)]
+    # A recorded TLS overlay from an earlier issuer would demand its unused input.
+    files = [name for name in files if name not in {str(root / overlay) for overlay in TLS_OVERLAYS}]
     for overlay in overlays:
         override = str(root / overlay)
         files = [name for name in files if name != override] + [override]

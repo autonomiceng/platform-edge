@@ -382,13 +382,14 @@ the console and health endpoint; application hostnames use the files.
 Replace a certificate by writing the new pair into the directory, then reload:
 
 ```sh
-docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+docker compose exec caddy caddy reload --force --config /etc/caddy/Caddyfile
 python3 scripts/bootstrap.py --probe-only
 ```
 
-Caddy reads the files at reload; Edge does not watch the directory or renew file
+`--force` matters: the configuration is unchanged, and without it Caddy skips the reload
+and keeps serving the old certificate. Edge does not watch the directory or renew file
 certificates, so alert on `pe_certificate_not_after_seconds`, which `--probe-only`
-refreshes after verifying the handshake. File certificates are outside the Checkpoint
+refreshes after verifying the handshake; compare its `not_after` with the new certificate. File certificates are outside the Checkpoint
 volumes; back them up with your PKI.
 
 ## Per-stack settings behind the edge
