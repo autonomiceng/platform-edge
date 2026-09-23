@@ -8,6 +8,7 @@ import sys
 import subprocess
 import tempfile
 import time
+import zlib
 from pathlib import Path
 
 import bootstrap
@@ -26,6 +27,11 @@ def main():
                PE_BIND_HOST="127.0.0.1", PE_HTTP_PORT=os.environ.get("SMOKE_HTTP_PORT", "18380"),
                PE_HTTPS_PORT=os.environ.get("SMOKE_HTTPS_PORT", "18743"),
                PE_PLATFORM_NETWORK=f"{project}-platform", PE_ACME_EMAIL="")
+    # Bootstrap creates the drill network; a /24 under 172.16 keeps it clear of installed
+    # and Docker-created networks, and the project name picks the octet.
+    octet = zlib.crc32(project.encode()) % 256
+    env.update(PE_PLATFORM_SUBNET=f"172.16.{octet}.0/24", PE_PLATFORM_IP_RANGE=f"172.16.{octet}.128/25",
+               PE_EDGE_IP=f"172.16.{octet}.2")
 
     def run(*argv, input=None):
         result = subprocess.run(argv, cwd=ROOT, env=env, text=True, input=input,
@@ -40,7 +46,6 @@ def main():
     existing = run("docker", "volume", "ls", "--format", "{{.Name}}").splitlines()
     if any(volume in existing for volume in volumes):
         raise ValueError("drill volumes already exist")
-    run("docker", "network", "create", env["PE_PLATFORM_NETWORK"])
     with tempfile.TemporaryDirectory(prefix="platform-edge-drill-") as work:
         env["PE_BACKUP_DIR"] = str(Path(work) / "backups")
         env_file = str(Path(work) / ".env")
