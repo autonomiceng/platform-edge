@@ -85,6 +85,8 @@ test("an invalid component field discards only that component", () => {
     (c) => (c.health = "/health"),
     (c) => (c.url = "javascript:alert(1)"),
     (c) => (c.url = null),
+    (c) => (c.url = "https://user:secret@litellm.example.com"),
+    (c) => (c.url = "https://litellm.example.com/?token=x"),
   ];
   for (const mutate of mutations) {
     const d = input();

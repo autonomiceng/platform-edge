@@ -721,8 +721,8 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             try:
                 publish_status(status_root, status_document(image, configured_at, root, settings))
             except OSError as error:
-                print(f"Status Document not written to {status_root}: {error.strerror}; "
-                      "check that directory's ownership and rerun bootstrap.", file=sys.stderr)
+                raise Refused("status_write_failed", f"cannot write {status_root / 'status.json'}: {error.strerror}; "
+                              "fix that directory's ownership and rerun bootstrap") from None
         else:
             certificate = wait_ready(settings, root, env_file, runner)
         print(json.dumps({

@@ -42,7 +42,16 @@ const StackStatus = (() => {
   }
   function origin(value) {
     try {
-      return ["http:", "https:"].includes(new URL(value).protocol);
+      const url = new URL(value);
+      return (
+        ["http:", "https:"].includes(url.protocol) &&
+        !url.username &&
+        !url.password &&
+        !url.search &&
+        !url.hash &&
+        !value.includes("?") &&
+        !value.includes("#")
+      );
     } catch {
       return false;
     }

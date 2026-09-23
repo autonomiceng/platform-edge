@@ -318,22 +318,21 @@ class BootstrapTests(unittest.TestCase):
             component = bootstrap.status_document(image, "2026-09-23T00:00:00Z", ROOT, {"PE_BACKUP_DIR": "/nonexistent"})["components"][0]
             self.assertEqual((component["image"], component["version"]), (image.partition("@")[0], version))
 
-    def test_failed_readiness_publishes_nothing_and_a_failed_write_only_warns(self):
+    def test_failed_readiness_publishes_nothing_and_a_failed_write_refuses(self):
         for failure in (bootstrap.Refused("not_ready", "original readiness failure"), None):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory, \
                     patch.dict(os.environ, {}, clear=True), patch.object(bootstrap.shutil, "which", return_value="docker"), \
                     patch.object(bootstrap, "wait_ready", side_effect=failure, return_value={}), \
                     patch.object(bootstrap, "publish_status", side_effect=None if failure else PermissionError(13, "Permission denied")) as publish, \
-                    contextlib.redirect_stderr(io.StringIO()) as warning, contextlib.redirect_stdout(io.StringIO()):
-                argv = ["--env-file", str(Path(directory) / ".env")]
-                if failure:
-                    with self.assertRaises(bootstrap.Refused) as raised:
-                        bootstrap.bootstrap(argv, FakeRunner(state=Path(directory) / "state"))
-                    self.assertIs(raised.exception, failure)
-                    publish.assert_not_called()
-                else:
-                    self.assertEqual(bootstrap.bootstrap(argv, FakeRunner(state=Path(directory) / "state")), 0)
-                    self.assertIn("Status Document not written", warning.getvalue())
+                    contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(bootstrap.Refused) as raised:
+                bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env")], FakeRunner(state=Path(directory) / "state"))
+            if failure:
+                self.assertIs(raised.exception, failure)
+                publish.assert_not_called()
+            else:
+                self.assertEqual(raised.exception.code, "status_write_failed")
+                self.assertIn("status.json: Permission denied", raised.exception.detail)
+            self.assertEqual(output.getvalue(), "")
 
     def test_unrendered_status_mount_refuses_before_any_change(self):
         with tempfile.TemporaryDirectory() as directory:

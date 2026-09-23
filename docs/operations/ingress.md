@@ -522,7 +522,7 @@ python3 scripts/bootstrap.py
 The script disables and stops `platform-edge-status.timer` and its service, removes both
 unit files from `~/.config/systemd/user/`, reloads the user manager, and deletes the old
 `data/status/bootstrap.json` record and `data/console/.status.lock`. It prints each action
-and is safe to rerun. Bootstrap then recreates Caddy without the retired `init` setting and
+and is safe to rerun; when it cannot stop the timer it exits 1 before removing anything. Bootstrap then recreates Caddy without the retired `init` setting and
 replaces the version 1 `data/console/status.json` with the version 2 document. Until a
 sibling ships its version 2 producer, its cards show Unknown.
 
@@ -671,6 +671,7 @@ proxy their owning gateway's `/status.json`. The Edge card reads `/stack-status/
 Compose mounts at `/srv/state` (`data/console/` by default): one `caddy` component with the
 configured image without digest, its release version, `configuredAt` of that bootstrap
 run, the Health Path `/health/caddy`, and `features.backups` from `PE_BACKUP_DIR`.
+When that write fails, bootstrap exits 1 with `status_write_failed` although Caddy is running.
 
 Metadata routes accept GET/HEAD, remove Authorization and Cookie, suppress upstream error
 and HTML fallback bodies, and return uncached JSON. **Each producer must enforce the contract's
