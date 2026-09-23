@@ -1,0 +1,26 @@
+{
+  "contract": 2,
+  "stack": "observability",
+  "configuredAt": "2026-09-23T16:05:00Z",
+  "components": [
+    {"id": "caddy", "name": "Caddy", "kind": "gateway", "enabled": true,
+     "image": "caddy:2.11.4", "version": "2.11.4", "health": "/health/caddy"},
+    {"id": "grafana", "name": "Grafana", "kind": "app", "enabled": true,
+     "image": "grafana/grafana:13.2.2", "version": "13.2.2",
+     "health": "/health/grafana", "url": "https://grafana.example.com"},
+    {"id": "alloy", "name": "Alloy", "kind": "collector", "enabled": true,
+     "image": "grafana/alloy:v1.19.2", "version": "1.19.2", "health": "/health/alloy"},
+    {"id": "loki", "name": "Loki", "kind": "datastore", "enabled": true,
+     "image": "grafana/loki:3.7.7", "version": "3.7.7", "health": "/health/loki"},
+    {"id": "mimir", "name": "Mimir", "kind": "datastore", "enabled": true,
+     "image": "grafana/mimir:3.2.1", "version": "3.2.1", "health": "/health/mimir"},
+    {"id": "tempo", "name": "Tempo", "kind": "datastore", "enabled": true,
+     "image": "grafana/tempo:3.0.3", "version": "3.0.3", "health": "/health/tempo"},
+    {"id": "rustfs", "name": "RustFS", "kind": "datastore", "enabled": false,
+     "image": "rustfs/rustfs:1.0.0", "version": "1.0.0", "health": "/health/rustfs"}
+  ],
+  "features": {
+    "backups": {"configured": true, "lastCheckpointAt": null},
+    "alerts": {"configured": false}
+  }
+}

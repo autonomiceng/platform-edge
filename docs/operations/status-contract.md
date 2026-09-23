@@ -1,175 +1,120 @@
-# Public stack status, version 1
+# Public stack status, contract 2
 
-This contract describes bounded observations for the Edge console and independent stack
-consoles. It is an informational interface, not a deployment, authentication or readiness
-control API. Producers and consumers ship independently. The examples under
-[`status-fixtures/`](status-fixtures/) are compatibility inputs for their implementations.
-This document establishes the interface; it does not claim a producer is deployed.
+Each stack publishes one public document describing what it was configured with, and one
+health path per component describing whether that component answers now. This is an
+informational interface for the Edge console and each stack's own console, not a
+deployment, authentication or readiness control API. Producers and consumers ship
+independently. The examples under [`status-fixtures/`](status-fixtures/) are compatibility
+inputs for implementations; they are synthetic and prove nothing about an installed stack.
 
-## Transport and limits
+The contract is frozen here before any producer or consumer changes (plan v2, slice C1).
+Producers arrive in S1 (Gateway), S2 (Observability), S3 (Backplane) and S4 (Edge);
+version 1 is retired in S5.
 
-A stack serves `GET /status.json` through its gateway. Edge exposes the corresponding
-same-origin document at `/stack-status/{gateway,backplane,observability,edge}`. Missing
-producers may return 404; older `/versions.json` documents remain separate interfaces.
-Routes strip request credentials and cookies, accept only GET/HEAD, and return no
-upstream diagnostic body on proxy errors. Responses use `application/json` and
-`Cache-Control: no-store`. The document is unauthenticated in every access mode, including
-public internet access. Edge needs no Docker socket or administrative credential. Consumers
-require `application/json`; a successful HTML fallback is unavailable metadata.
+## Transport
 
-A consumer permits at most 64 KiB and 32 components per document, with a four-second
-request deadline. It fetches stacks independently, refreshes on request and periodically
-while visible, and bounds concurrent requests. One failed or incompatible producer
-must not prevent other cards or the console itself from rendering.
+| Path | Served by | Meaning |
+| --- | --- | --- |
+| `GET /status.json` | each stack's gateway (Backplane: the server) | the Status Document below |
+| `GET /health/<component>` | same | 200 when the component's documented bounded probe passes, 503 when it fails, 404 for an unknown or disabled component; empty body publicly |
+| `GET /stack-status/<stack>` | Edge, same-origin | proxies that stack's `/status.json` |
+| `GET /stack-status/<stack>/health/<component>` | Edge, same-origin | proxies that stack's `/health/<component>` |
 
-Fresh configuration fields from a supported status document take precedence over legacy
-`/versions.json` values for the same ID. Legacy values may be shown as configuration dated by their valid producer timestamp
-(`configuredAt`, or legacy `pinnedAt` for the pin date), and labelled undated when absent, when status is absent, unsupported or its configuration observation expires;
-they never establish current health. The legacy gateway `langfuse` version maps to both
-`langfuse-web` and `langfuse-worker`.
+`<stack>` is one of `edge`, `gateway`, `backplane`, `observability`. Edge routes strip
+request credentials and cookies, accept only GET and HEAD, apply a four-second deadline,
+limit responses to 64 KiB and 32 components, set `Cache-Control: no-store`, and return no
+upstream diagnostic body on proxy errors. Documents are unauthenticated in every access
+mode, including public internet access. Edge needs no Docker socket or administrative
+credential. Consumers require `application/json`; a successful HTML fallback is
+unavailable metadata.
+
+Gateway, Observability and Edge write the document as a static file at bootstrap and serve
+it through Caddy. Backplane assembles it in the server from its configuration through an
+explicit public projection; the operations document is never serialized. No producer uses
+host observers, timers or `docker exec`.
 
 ## Document
 
 | Field | Meaning |
 | --- | --- |
-| `schemaVersion` | Integer `1`. An unsupported version is unavailable metadata. |
+| `contract` | Integer `2`. Any other value is unavailable metadata. |
 | `stack` | One of `edge`, `gateway`, `backplane`, `observability`; must match the requested stack. |
-| `generatedAt` | UTC RFC 3339 timestamp when this document was assembled. This does not renew its observations. |
-| `configurationObservedAt` | UTC timestamp of the configuration inspection, or null if unknown. |
-| `configurationValidForSeconds` | Integer from 1 to 300; maximum age of configuration and telemetry observations. |
-| `telemetry` | `configured`, `disabled` or `unknown`. Configuration alone never proves successful collection. |
-| `components` | Array of component records with unique IDs within this stack. |
+| `configuredAt` | UTC RFC 3339 timestamp when the producer rendered its configuration: bootstrap time for static files, configuration load time for Backplane. Informational; it does not age out. |
+| `components` | Array of component records, unique `id` within the stack, at most 32. |
+| `features` | Object with the optional keys `backups` and `alerts`. |
 
-Each component has these required fields:
+Each component has these fields and no others:
 
 | Field | Meaning |
 | --- | --- |
-| `id` | Stable identifier from the table below. No installation names or dynamic container IDs. |
-| `kind` | `service`, `capability` or `task`. |
-| `configured` | Boolean, or null when the installed configuration is unknown. |
-| `state` | One of the states below, supported by a component-specific observation. |
-| `observedAt` | UTC timestamp of that observation, or null when none exists. |
-| `validForSeconds` | Integer from 1 to 300; maximum age for treating this observation as current. |
+| `id` | Stable identifier from the table below, matching `^[a-z][a-z0-9-]{0,31}$`. |
+| `name` | Display name, 1 to 64 characters, rendered as text. |
+| `kind` | `app`, `datastore`, `gateway`, `collector` or `runtime`. |
+| `enabled` | Boolean: the component is selected by the configured Compose profiles and overlays. |
+| `image` | The configured image reference (registry, repository, tag) without digest, 1 to 256 characters. |
+| `version` | The release version parsed from the configured tag with a component-specific allowlist, matching `^[A-Za-z0-9._+-]{1,128}$`, or null when the tag is not a recognized release. |
+| `health` | Same-origin path `/health/<id>`. Required for every component; a disabled component's path answers 404 and is never probed. |
+| `url` | Optional. The component's configured browser or API origin. Omitted when the component has none. |
 
-Tasks additionally require nullable `lastExecutionAt`, the UTC start time of their latest
-execution. Their `observedAt` is when the execution record was inspected. A task with no
-record has `lastExecutionAt: null` and `state: unknown`; an explicitly disabled task may
-have no execution. Execution time does not age out, but the record inspection does.
+`features.backups` is `{"configured": boolean, "lastCheckpointAt": timestamp or null}`;
+`lastCheckpointAt` is the newest Checkpoint the producer knew of when it rendered the
+document, not a live value.
+`features.alerts` is `{"configured": boolean}`. A missing feature key is unknown.
 
-Optional version fields are nullable strings. Explicit null and omission both mean unknown:
-
-| Field | Evidence and presentation |
-| --- | --- |
-| `configuredVersion` | A recognized upstream release version, or `custom` for an arbitrary operator tag. Label as configured. |
-| `observedVersion` | A release version parsed from a bounded, service-specific runtime probe. Never copy the configured version here. |
-| `configuredDigest` | Complete `sha256:` registry digest from effective configuration, if present. |
-| `observedImageId` | Complete `sha256:` local image content ID from a trusted host observer, if available. |
-
-A registry manifest digest and Docker image content ID identify different objects;
-consumers must not compare them as if equal strings proved deployment convergence.
-An observation can have a known version and unknown readiness, or vice versa. Both version
-labels match `^[A-Za-z0-9._+-]{1,128}$`; both digest fields match
-`^sha256:[0-9a-f]{64}$`. Invalid optional values are unknown. Producers may omit version
-and digest fields to limit public disclosure.
+The field set is closed. Producers emit exactly these fields; a consumer treats a document
+with any other envelope, component or feature field as malformed. This is the public
+disclosure boundary: adding a field is a contract bump, reviewed as such.
 
 ## Stable identifiers
 
-These names belong to this interface; existing console element IDs may map to them.
-Only the listed capability/task IDs use the corresponding kind. All other IDs are services.
-
-| Stack | Service IDs | Capability IDs | Task IDs |
-| --- | --- | --- | --- |
-| edge | `caddy` | none | `bootstrap` |
-| gateway | `caddy`, `litellm`, `langfuse-web`, `langfuse-worker`, `postgres`, `clickhouse`, `valkey`, `rustfs`, `postgres-exporter`, `valkey-exporter` | none | `bootstrap`, `rustfs-init` |
-| backplane | `server`, `postgres`, `caddy`, `rustfs`, `workerd` | `files`, `functions` | `bootstrap`, `migrate`, `data-init`, `blob-bootstrap` |
-| observability | `caddy`, `grafana`, `alloy`, `loki`, `mimir`, `tempo`, `rustfs` | none | `bootstrap`, `rustfs-init` |
-
-The `files` capability covers the selected filesystem or S3 backend through the Files API.
-`functions` covers the configured deployment and invocation path. `bootstrap` is the host
-installation preparation task; `migrate` applies Backplane database migrations; `data-init`
-prepares Backplane filesystem permissions; `blob-bootstrap` prepares the Backplane S3
-bucket and scoped credentials. Gateway and observability call their equivalent S3 preparation
-task `rustfs-init`. Task IDs preserve each owning stack's Compose service names where applicable;
-`bootstrap` names the host installation preparation step.
-
-Components can be omitted by older producers. Omission is unknown, not disabled or absent.
-Consumers ignore unknown component IDs and additive fields. Malformed JSON, unsupported
-schema versions, a stack mismatch, invalid required envelope fields, duplicate IDs, or size
-and count limit violations reject the whole document. Invalid required component fields,
-wrong kinds for known IDs and malformed component timestamps discard that component,
-which renders unknown. They never turn malformed data into healthy state.
-New IDs or optional fields are additive changes.
-A changed field meaning or removal requires a new schema version.
-
-## States and freshness
-
-| State | Required evidence |
+| Stack | Component IDs |
 | --- | --- |
-| `healthy` | The service or capability passed its documented bounded probe. For a task, its most recent recorded execution succeeded. |
-| `degraded` | A documented partial-success condition, distinct from healthy. |
-| `starting` | Startup or task execution was actually observed in progress. |
-| `unavailable` | A configured component failed its probe or a recorded task failed. |
-| `disabled` | A current configuration inspection explicitly selected the component off (`configured: false`). |
-| `absent` | A trusted installation inventory explicitly found no resource for the configured component. |
-| `unknown` | No sufficient observation exists. |
+| edge | `caddy` |
+| gateway | `caddy`, `litellm`, `langfuse-web`, `langfuse-worker`, `postgres`, `clickhouse`, `valkey`, `rustfs`, `postgres-exporter`, `valkey-exporter` |
+| backplane | `server`, `postgres`, `rustfs`, `workerd`, `caddy` |
+| observability | `caddy`, `grafana`, `alloy`, `loki`, `mimir`, `tempo`, `rustfs` |
 
-`healthy`, `degraded`, `starting`, `unavailable` and `absent` require `configured: true`.
-`unknown` may have any configured value. Every state other than `unknown` requires
-`observedAt`; disabled observations refer to the configuration inspection time.
-For `disabled`, `observedAt` equals `configurationObservedAt` and effective validity is the
-minimum of the component and configuration validity windows. Task success reports the last
-execution, not continuous service readiness; present its execution time separately.
+Consumers ignore unknown IDs. A component whose required field is missing or invalid is
+discarded and renders unknown; malformed JSON, a wrong `contract`, a stack mismatch,
+duplicate IDs, unknown fields, or size and count limit violations reject the whole
+document. Malformed data never turns into a healthy state.
 
-A failed HTTP request cannot establish absence. Consumers display unavailable metadata
-when the producer cannot be reached, preserving any previous observation only with its
-original timestamp and an explicit stale label. They must not extend freshness on a
-failed refresh or reuse an old healthy result as the current answer.
+## Meaning
 
-Age is measured against the consumer's current UTC clock. On every response, compare that
-clock with a valid HTTP `Date` header, or `generatedAt` when the header is absent. Agreement
-requires an absolute difference of at most five seconds, in either direction. Otherwise
-report unknown with a clock-disagreement label; never relax age checks. An observation older than `validForSeconds` is stale, regardless of `generatedAt`.
-Re-fetching an unchanged document must never reset its age. Missing observation time is
-unknown. Timestamps over five seconds in the future relative to the consumer are invalid;
-observation and execution timestamps also cannot exceed `generatedAt` by over five seconds.
-Consumers may advance a validated age with a monotonic clock between refreshes.
-Stale and invalid observations cannot produce a current healthy indicator.
-`configuredVersion`, `configuredDigest`, `configured` and `telemetry` use
-`configurationObservedAt` and `configurationValidForSeconds`. Missing or expired
-configuration time makes those facts unknown or explicitly stale. `observedVersion`
-and `observedImageId` share their component's observation time and must be omitted when
-their evidence came from a different observation. A recent health probe must not make
-an older configuration snapshot appear newly inspected. Null configuration time requires
-`telemetry: unknown` and null configured fields.
+- Everything in the document is configuration. Consumers label `version` and `image` as
+  "configured", never "running" or "deployed". Observed digests, worker, task and restart
+  states are not part of this contract (red team finding 7, Owner decision D6).
+- Liveness comes only from `health`. A consumer probes each enabled component's `health`
+  path with the same bounds as the document fetch and shows healthy on 200, unhealthy on
+  503, unknown otherwise. Disabled components are shown as off and never probed.
+- An absent or unreachable producer means unknown, never unhealthy, and never prevents
+  another stack's card or the console itself from rendering.
+- Consumers render `name` as text and treat `url` as data: they link it only when its host
+  is one of the consumer's own configured hostnames, otherwise they show it as text.
+- Producers publish complete documents atomically and never serialize Compose
+  environments, Docker inspect output, connection strings, credentials, container names,
+  host paths, internal URLs or free-form errors.
 
-## Producer responsibilities
+## Fixtures
 
-Each producer documents what its probes prove and their limits. An application returning
-200 does not establish health of its databases, object store, workers or telemetry path.
-Files and Functions require capability-specific evidence. Docker health is usable only
-when its actual healthcheck and freshness support the advertised claim; running is not
-healthy. Missing dependencies cannot be represented as a healthy capability.
+One version 2 example per stack: [`v2-gateway.json`](status-fixtures/v2-gateway.json),
+[`v2-observability.json`](status-fixtures/v2-observability.json),
+[`v2-backplane.json`](status-fixtures/v2-backplane.json) and
+[`v2-edge.json`](status-fixtures/v2-edge.json). Consumer tests should exercise a valid
+document per stack, an unknown field, a duplicate ID, a stack mismatch, a missing producer,
+a disabled component and credential-free proxying. `current.json`, `stale.json`,
+`forward-compatible.json`, `malformed-component.json`, `duplicate.json` and
+`unsupported.json` are the version 1 fixtures and stay until S5.
 
-Probes have bounded deadlines, output sizes and concurrency, and avoid user data or
-irreversible actions. Producers publish complete documents atomically. Failed probes
-record their new outcome and timestamp; they do not preserve success with a new timestamp.
-Static configuration observations must age out unless an observer refreshes them.
+## Legacy v1
 
-The response is a closed public allowlist. Never serialize Compose environments, Docker
-inspect documents, connection strings, credentials, container names, host paths, internal
-URLs, probe bodies or free-form errors. Parse upstream versions with a component-specific
-allowlist; arbitrary operator tags become `custom`. Digest fields contain only lowercase
-SHA-256 identifiers. Consumers render text as text and derive links from their own trusted
-configuration, never from this document. Installation task results expose only the listed
-task ID, state and time; diagnostic details remain in protected operator interfaces.
-
-## Compatibility fixtures
-
-`current.json` contains mixed current observations, including a completed task and custom
-image configuration. `stale.json` deliberately has a fresh document timestamp and old
-component timestamp. `forward-compatible.json` adds unknown fields and a component.
-`malformed-component.json` leaves its valid sibling usable; `duplicate.json` rejects the
-whole document. `unsupported.json` must not be consumed as version 1. Tests should
-use a fixed clock of `2026-09-20T12:00:00Z`, then exercise expiry, unknown IDs/fields,
-duplicate IDs, malformed fields, a missing producer and credential-free proxying. Fixtures
-are synthetic; they are not acceptance evidence for an installed stack.
+Until slice S5, Edge still accepts a version 1 document from a stack that has not shipped
+version 2, recognized by `schemaVersion: 1`. The fields Edge reads from it are
+`schemaVersion`, `stack`, `generatedAt`, `configurationObservedAt`,
+`configurationValidForSeconds`, `telemetry`, and per component `id`, `kind`
+(`service`, `capability`, `task`), `configured`, `state` (`healthy`, `degraded`, `starting`,
+`unavailable`, `disabled`, `absent`, `unknown`), `observedAt`, `validForSeconds`,
+`lastExecutionAt`, `configuredVersion`, `observedVersion`, `configuredDigest` and
+`observedImageId`, with the freshness and clock rules of the version 1 document. S5
+removes the version 1 consumer path, its fixtures, the host observers and timers that
+produced it, and this appendix. The full version 1 text is in git history before C1.

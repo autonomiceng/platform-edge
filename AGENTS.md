@@ -44,7 +44,7 @@ For delegated work, read `docs/agents/model-routing.md` for model choices and br
 - `scripts/status_observer.py`, `scripts/status_io.py`, `scripts/install_status_timer.py`: host observations published to `data/console/status.json`.
 - `scripts/validate.sh`, `scripts/smoke.sh`: static gates and the Smoke Contract.
 - `tests/`: Python unittest with a fake runner; no Docker calls.
-- `docs/operations/`: runbooks. `docs/conventions.md`: verbatim shared stack conventions.
+- `docs/operations/`: runbooks. `docs/conventions.md`: the canonical shared conventions and Platform Contract; `scripts/sync-conventions.sh` vendors it into siblings.
 
 Only Caddy publishes ports and joins the external Platform Network, as `pe-edge`. There is no default network. List the service environment explicitly. Service names, volume names and Upstream Aliases are interfaces: renaming one needs a migration.
 
