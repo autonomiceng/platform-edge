@@ -690,8 +690,14 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             check_ports(runner, settings, project)
             configured_at = utc(datetime.now(timezone.utc))
             image, status_root = rendered_caddy(root, env_file, runner)
-            # Create the read-only mount source before Docker can create it as root.
-            status_root.mkdir(parents=True, exist_ok=True)
+            # Create the read-only mount source before Docker can create it as root. Caddy reads it
+            # as uid 0 without CAP_DAC_OVERRIDE, so others need search permission whatever the umask.
+            if not status_root.is_dir():
+                status_root.mkdir(parents=True)
+                status_root.chmod(0o755)
+            if not status_root.stat().st_mode & 0o001:
+                raise Refused("status_write_failed", f"{status_root} must be searchable by others (chmod o+x) "
+                              "so Caddy can read the Status Document")
             ensure_network(runner, settings)
             check_proxy_peer(runner, settings)
             ensure_volumes(runner, settings, project)

@@ -48,6 +48,7 @@ CONTRACT_IPAM = [{"Subnet": "172.30.0.0/24", "IPRange": "172.30.0.128/25", "Gate
 PINNED = "caddy:2.11.4@sha256:" + "a" * 64
 # Status Documents from fake bootstraps land here, never in the checkout's data directory.
 STATE = tempfile.TemporaryDirectory()
+os.chmod(STATE.name, 0o755)
 tearDownModule = STATE.cleanup
 
 
@@ -297,7 +298,12 @@ class BootstrapTests(unittest.TestCase):
             def observed(argv, **options):
                 order.append((argv[-1] if "run" in argv else " ".join(argv[-3:]), state.is_dir(), (state / "status.json").exists()))
                 return base(argv, **options)
-            self.assertEqual(start_bootstrap(observed, {"PE_BACKUP_DIR": str(backups)}, directory), 0)
+            umask = os.umask(0o077)
+            try:
+                self.assertEqual(start_bootstrap(observed, {"PE_BACKUP_DIR": str(backups)}, directory), 0)
+            finally:
+                os.umask(umask)
+            self.assertEqual(state.stat().st_mode & 0o777, 0o755)
             # The mount source exists before Docker could create it; the document only follows readiness.
             rendering = [command for command, _, _ in order].index("config --format json")
             self.assertFalse(order[rendering][1])
@@ -334,17 +340,22 @@ class BootstrapTests(unittest.TestCase):
                 self.assertIn("status.json: Permission denied", raised.exception.detail)
             self.assertEqual(output.getvalue(), "")
 
-    def test_unrendered_status_mount_refuses_before_any_change(self):
+    def test_unusable_status_mount_refuses_before_any_change(self):
         with tempfile.TemporaryDirectory() as directory:
-            runner = FakeRunner()
-            def missing(argv, **options):
-                if argv[-3:] == ["config", "--format", "json"]:
-                    return subprocess.CompletedProcess(argv, 0, json.dumps({"services": {"caddy": {"image": PINNED, "volumes": []}}}), "")
-                return runner(argv, **options)
-            with self.assertRaises(bootstrap.Refused) as caught:
-                start_bootstrap(missing, {}, directory)
-            self.assertEqual(caught.exception.code, "compose_config_failed")
-            self.assertFalse(any(call[:3] == ["docker", "network", "create"] or "up" in call for call in runner.calls))
+            private = Path(directory) / "private"
+            private.mkdir(mode=0o700)
+            private.chmod(0o700)
+            for volumes, code in (([], "compose_config_failed"),
+                                  ([{"target": "/srv/state", "source": str(private)}], "status_write_failed")):
+                runner = FakeRunner()
+                def rendering(argv, **options):
+                    if argv[-3:] == ["config", "--format", "json"]:
+                        return subprocess.CompletedProcess(argv, 0, json.dumps({"services": {"caddy": {"image": PINNED, "volumes": volumes}}}), "")
+                    return runner(argv, **options)
+                with self.subTest(code=code), self.assertRaises(bootstrap.Refused) as caught:
+                    start_bootstrap(rendering, {}, directory)
+                self.assertEqual(caught.exception.code, code)
+                self.assertFalse(any(call[:3] == ["docker", "network", "create"] or "run" in call or "up" in call for call in runner.calls))
 
     def test_hostnames_come_from_domain_and_route_files(self):
         expected = ["example.test", "litellm.example.test", "langfuse.example.test", "s3.example.test",
