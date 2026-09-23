@@ -157,13 +157,6 @@ HTTPS origins, application reachability, and anonymous protected API denial. A c
 blocked by its client allowlist is reported as `access_denied`; this does not establish
 successful native login. Authenticated acceptance and enrollment remain operator checks.
 
-Add `--status-timers` to check each selected owning timer before installation and invoke
-its installer after the requested bootstraps and connection succeed. Edge is implicit.
-The owner must implement the read-only `--check` and exact-pair recovery contract in
-[status observation](status-observer.md#selected-timer-owner-contract). An owner without
-that contract refuses before any mutation. No timer for an omitted stack is inspected
-or changed.
-
 ## Image overrides
 
 `PE_CADDY_IMAGE` accepts a complete image reference, for example `local/edge:experiment`
@@ -515,6 +508,24 @@ data and env files are untouched:
    subnet and ip-range, `docker inspect --format '{{.NetworkSettings.Networks.platform.IPAddress}}' "$(docker compose ps -q caddy)"`
    prints `172.30.0.2`, and every application hostname answers through Edge.
 
+### Status version 2 upgrade
+
+Edge reads only [status contract 2](status-contract.md) and no longer runs a host
+observer. On an installation that enabled the version 1 status timer, run once after
+updating the checkout:
+
+```sh
+scripts/retire-status-timer.sh
+python3 scripts/bootstrap.py
+```
+
+The script disables and stops `platform-edge-status.timer` and its service, removes both
+unit files from `~/.config/systemd/user/`, reloads the user manager, and deletes the old
+`data/status/bootstrap.json` record and `data/console/.status.lock`. It prints each action
+and is safe to rerun; when it cannot stop the timer it exits 1 before removing anything. Bootstrap then recreates Caddy without the retired `init` setting and
+replaces the version 1 `data/console/status.json` with the version 2 document. Until a
+sibling ships its version 2 producer, its cards show Unknown.
+
 To run a stack on its own again, select its local or public access mode, set its domain and free host ports, then run its bootstrap. Stop Edge first if you want to reuse ports 80 and 443. Preserve the Edge volumes unless explicitly retiring its certificates.
 
 ## Trusting local HTTPS certificates
@@ -642,40 +653,41 @@ shows application and log-collection paths with independent toggles. Component d
 link to the component’s upstream repository; project headers link to the stack repository.
 
 Refresh and automatic checks every 30 seconds update application addresses, HTTP
-reachability and independent stack status. Network polling pauses while hidden; evidence
-expires at its original deadline even between refreshes. Three concurrent requests share
-four-second per-request deadlines; status documents are limited to 64 KiB and 32 components.
-HTTP 200 alone never makes a component healthy. Missing, malformed, incompatible or failed
-producers leave other cards usable. Failed refreshes retain previous observations only as
-explicitly stale. Component links come exclusively from validated Edge access configuration
-and remain available when component health or producer support is unknown.
+reachability and each stack's Status Document. Network polling pauses while hidden. Three
+concurrent requests share four-second per-request deadlines; status documents are limited
+to 64 KiB and 32 components. Everything in a document is configuration: an enabled
+component shows Configured with "Configured <version>", a disabled one shows Not enabled,
+and `features.backups`/`features.alerts` form one line under the project name. A missing,
+malformed or failed document makes that stack's components Unknown and leaves other cards
+usable; a failed refresh never keeps a previous answer. HTTP 200 alone never makes a
+component healthy; application probes appear as HTTP reachability evidence only. Component
+links come exclusively from validated Edge access configuration, never from a document
+`url`, and remain available when producer support is unknown. Setup jobs and capabilities
+are architecture entries that no document reports; they stay Unknown.
 
 `/stack-status/gateway`, `/stack-status/backplane` and `/stack-status/observability`
-proxy their owning gateway's `/status.json`. `/stack-versions/gateway` remains a legacy
-configured-version fallback, dated by valid `configuredAt`/`pinnedAt` or labelled undated.
-The Edge card reads `/stack-status/edge`, published by the installed host observer.
-If that producer is unavailable, its own image version remains a configured, undated
-fallback and component health stays unknown.
-A configured image version is never displayed as an observed runtime version. Fresh status
-configuration takes precedence. Tasks display their execution start separately from the
-freshness of the record inspection. Optional architecture entries with no evidence are unknown.
+proxy their owning gateway's `/status.json`. The Edge card reads `/stack-status/edge`
+(also `/status.json`), the document bootstrap writes after readiness into the directory
+Compose mounts at `/srv/state` (`data/console/` by default): one `caddy` component with the
+configured image without digest, its release version, `configuredAt` of that bootstrap
+run, the Health Path `/health/caddy`, and `features.backups` from `PE_BACKUP_DIR`.
+When that write fails, bootstrap exits 1 with `status_write_failed` although Caddy is running.
 
 Metadata routes accept GET/HEAD, remove Authorization and Cookie, suppress upstream error
 and HTML fallback bodies, and return uncached JSON. **Each producer must enforce the contract's
 closed public field allowlist.** Edge checks transport and the browser validates schema;
 Caddy does not sanitize fields inside successful JSON. No backend administration route,
-Docker socket or observer credential is exposed. Gateway, Backplane and Observability status
+Docker socket or host observer is involved. Gateway, Backplane and Observability status
 producers can roll out independently; there are no new operator environment settings.
-Deploy the reviewed console and routes using the existing rollout procedure. Missing
-sibling producers need no workaround. Before the Edge observer publishes its first
-record, `/stack-status/edge` returns empty JSON 404 and Edge component health is unknown.
-`/health` reports HTTP reachability only.
+Missing sibling producers need no workaround. Before the first bootstrap writes the Edge
+document, `/stack-status/edge` returns empty JSON 404 and the Edge card is Unknown.
+`/health` and `/health/caddy` report Edge HTTP readiness only.
 
 Consumer checks use `node --test tests/status*.test.cjs` and the existing
 `tests/console-browser.cjs` Playwright acceptance runner. `scripts/smoke.sh` owns disposable
 Docker resources and invokes `tests/status_proxy.py` to check methods, credentials,
-404/HTML/error suppression, forwarding and partial producer failure. Fixture tests do not
-attest deployed sibling producers.
+404/HTML/error suppression, forwarding and partial producer failure, and parses the Edge
+document bootstrap published. Fixture tests do not attest deployed sibling producers.
 
 The status consumer enforces a four-second total request deadline, including body
 reads, and a 64 KiB body limit. It aborts and cancels a slow or oversized response.

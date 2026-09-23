@@ -1,4 +1,4 @@
-// Stack architecture, not a runtime inventory. Component health requires public status evidence.
+// Stack architecture, not a runtime inventory. Status Documents supply configured versions and enabled state.
 const DATA = {
   projects: [
     {
@@ -411,29 +411,3 @@ const DATA = {
     github: "/console/icons/github.svg",
   },
 };
-
-// Contract tasks and capabilities share the existing supporting-service layout.
-for (const [project, statusId, name, kind] of [
-  ["edge", "bootstrap", "Prepare installation", "setup"],
-  ["gateway", "bootstrap", "Prepare installation", "setup"],
-  ["observability", "bootstrap", "Prepare installation", "setup"],
-  ["backplane", "bootstrap", "Prepare installation", "setup"],
-  ["backplane", "migrate", "Apply database migrations", "setup"],
-  ["backplane", "data-init", "Prepare file permissions", "setup"],
-  ["backplane", "functions", "Functions", "capability"],
-])
-  DATA.services.push({
-    id: `${project}-${statusId}`,
-    statusId,
-    project,
-    name,
-    kind,
-    description:
-      kind === "setup"
-        ? "Latest recorded execution; not continuous readiness."
-        : "Configured function deployment and invocation capability.",
-    icon: kind === "setup" ? "setup" : "workerd",
-    links: {},
-    uses: [],
-    optional: false,
-  });

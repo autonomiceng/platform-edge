@@ -45,10 +45,25 @@ xRz4Sf+J5HLs6Iw1kwdvvDGnPop1e7G9gyac
 """
 
 CONTRACT_IPAM = [{"Subnet": "172.30.0.0/24", "IPRange": "172.30.0.128/25", "Gateway": "172.30.0.1"}]
+PINNED = "caddy:2.11.4@sha256:" + "a" * 64
+# Status Documents from fake bootstraps land here, never in the checkout's data directory.
+STATE = tempfile.TemporaryDirectory()
+os.chmod(STATE.name, 0o755)
+tearDownModule = STATE.cleanup
+
+
+def rendered(argv, source=STATE.name, image=PINNED):
+    """Answer `docker compose config --format json` with the status mount; None for other commands."""
+    if argv[-3:] != ["config", "--format", "json"]:
+        return None
+    volumes = [{"type": "bind", "source": "/srv/console", "target": "/srv/console", "read_only": True},
+               {"type": "bind", "source": str(source), "target": "/srv/state", "read_only": True}]
+    return subprocess.CompletedProcess(argv, 0, json.dumps({"services": {"caddy": {"image": image, "volumes": volumes}}}), "")
 
 
 class FakeRunner:
-    def __init__(self, *, containers=(), network_exists=True, ipam=CONTRACT_IPAM, create_fails=False):
+    def __init__(self, *, containers=(), network_exists=True, ipam=CONTRACT_IPAM, create_fails=False, state=STATE.name):
+        self.state = state
         self.containers = containers
         self.network_exists = network_exists
         self.ipam = ipam
@@ -57,6 +72,8 @@ class FakeRunner:
 
     def __call__(self, argv, **options):
         self.calls.append(argv)
+        if rendered(argv, self.state):
+            return rendered(argv, self.state)
         if argv == ["docker", "ps", "--format", "json"]:
             return subprocess.CompletedProcess(argv, 0, "\n".join(map(json.dumps, self.containers)), "")
         if argv[:3] == ["docker", "network", "inspect"]:
@@ -95,9 +112,7 @@ def start_bootstrap(runner, environment, directory):
     output = io.StringIO()
     with patch.dict(os.environ, environment, clear=True), \
             patch.object(bootstrap.shutil, "which", return_value="docker"), \
-            patch.object(bootstrap, "wait_ready", return_value={}), \
-            patch.object(bootstrap, "directory", return_value=contextlib.nullcontext()), \
-            patch.object(bootstrap, "task_record"), contextlib.redirect_stdout(output):
+            patch.object(bootstrap, "wait_ready", return_value={}), contextlib.redirect_stdout(output):
         return bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env")], runner)
 
 
@@ -111,6 +126,8 @@ class BootstrapTests(unittest.TestCase):
                 calls = []
                 def runner(argv):
                     calls.append(argv)
+                    if rendered(argv):
+                        return rendered(argv)
                     if "run" in argv:
                         isolated = Path(argv[argv.index("run") - 1]).read_text()
                         self.assertIn("networks: !reset []", isolated)
@@ -255,51 +272,93 @@ class BootstrapTests(unittest.TestCase):
                 output = io.StringIO()
                 with patch.dict(os.environ, {"PE_PLATFORM_NETWORK": "isolated", "PE_HTTP_PORT": "18280"}, clear=True), \
                         patch.object(bootstrap.shutil, "which", return_value="docker"), \
-                        patch.object(bootstrap, "wait_ready", return_value={}) as ready, \
-                        patch.object(bootstrap, "directory", return_value=contextlib.nullcontext()), \
-                        patch.object(bootstrap, "task_record") as recorded, contextlib.redirect_stdout(output):
+                        patch.object(bootstrap, "wait_ready", return_value={}) as ready, contextlib.redirect_stdout(output):
                     bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env")], runner)
                 creates = [c for c in runner.calls if c[:3] == ["docker", "network", "create"]]
                 self.assertEqual(len(creates), 0 if exists else 1)
                 self.assertIn(["docker", "network", "inspect", "--format", "{{json .IPAM.Config}}", "isolated"], runner.calls)
                 self.assertTrue(any("up" in call and "--wait" in call for call in runner.calls))
-                self.assertTrue(any(str(ROOT / "scripts/status_observer.py") in call for call in runner.calls))
-                self.assertEqual([call.args[3] for call in recorded.call_args_list], ["unknown", "healthy"])
                 ready.assert_called_once()
                 self.assertEqual(ready.call_args.args[0]["PE_HTTP_PORT"], "18280")
                 self.assertEqual(ready.call_args.args[0]["PE_PUBLIC_DOMAIN"], "localhost")
                 self.assertEqual(len(json.loads(output.getvalue())["hostnames"]), 7)
 
-    def test_status_timeout_preserves_successful_bootstrap(self):
-        base = FakeRunner()
-        def runner(argv, **options):
-            if str(ROOT / 'scripts/status_observer.py') in argv:
-                self.assertEqual(options, {'timeout': 120})
-                raise bootstrap.Refused('docker_timeout', 'private diagnostic')
-            return base(argv)
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True), \
-                patch.object(bootstrap.shutil, 'which', return_value='docker'), \
-                patch.object(bootstrap, 'directory', return_value=contextlib.nullcontext()), \
-                patch.object(bootstrap, 'task_record'), patch.object(bootstrap, 'wait_ready', return_value={}), \
-                contextlib.redirect_stderr(io.StringIO()) as warning, contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(bootstrap.bootstrap(['--env-file', str(Path(directory) / '.env')], runner), 0)
-        self.assertIn('Status observation failed', warning.getvalue())
-        self.assertNotIn('private diagnostic', warning.getvalue())
+    def test_bootstrap_publishes_the_edge_status_document_into_the_rendered_mount(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "mounted" / "state"
+            backups = Path(directory) / "backups"
+            for name, created in (("20260921T030000000000Z", "2026-09-21T03:00:00+00:00"),
+                                  ("20260922T030000000000Z", "2026-09-22T05:00:00.123456+02:00"),
+                                  ("20260923T030000000000Z", "not a time"), ("partial", "2026-09-23T04:00:00+00:00")):
+                (backups / name).mkdir(parents=True)
+                (backups / name / "manifest.json").write_text(json.dumps({"created_at": created}))
+            runner = FakeRunner(state=state)
+            order = []
+            base = runner.__call__
+            def observed(argv, **options):
+                order.append((argv[-1] if "run" in argv else " ".join(argv[-3:]), state.is_dir(), (state / "status.json").exists()))
+                return base(argv, **options)
+            umask = os.umask(0o077)
+            try:
+                self.assertEqual(start_bootstrap(observed, {"PE_BACKUP_DIR": str(backups)}, directory), 0)
+            finally:
+                os.umask(umask)
+            self.assertEqual(state.stat().st_mode & 0o777, 0o755)
+            # The mount source exists before Docker could create it; the document only follows readiness.
+            rendering = [command for command, _, _ in order].index("config --format json")
+            self.assertFalse(order[rendering][1])
+            self.assertTrue(all(exists for _, exists, _ in order[rendering + 1:]))
+            self.assertFalse(any(published for _, _, published in order))
+            document = json.loads((state / "status.json").read_text())
+            self.assertEqual(oct((state / "status.json").stat().st_mode & 0o777), "0o644")
+            self.assertEqual([path.name for path in state.iterdir()], ["status.json"])
+            self.assertRegex(document.pop("configuredAt"), r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+            self.assertEqual(document, {
+                "contract": 2, "stack": "edge",
+                "components": [{"id": "caddy", "name": "Caddy", "kind": "gateway", "enabled": True,
+                                "image": "caddy:2.11.4", "version": "2.11.4", "health": "/health/caddy"}],
+                "features": {"backups": {"configured": True, "lastCheckpointAt": "2026-09-22T03:00:00Z"}},
+            })
+        for image, version in (("local/edge:experiment", None), ("registry.example:5000/team/caddy:v2.11.4-alpine", "v2.11.4"),
+                               ("caddy@sha256:" + "b" * 64, None)):
+            component = bootstrap.status_document(image, "2026-09-23T00:00:00Z", ROOT, {"PE_BACKUP_DIR": "/nonexistent"})["components"][0]
+            self.assertEqual((component["image"], component["version"]), (image.partition("@")[0], version))
 
-    def test_status_permissions_do_not_mask_bootstrap_readiness(self):
-        for failure in (None, bootstrap.Refused('not_ready', 'original readiness failure')):
-            with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True), \
-                    patch.object(bootstrap.shutil, 'which', return_value='docker'), \
-                    patch.object(bootstrap, 'directory', side_effect=bootstrap.Unavailable()), \
-                    patch.object(bootstrap, 'wait_ready', side_effect=failure, return_value={}), \
-                    contextlib.redirect_stderr(io.StringIO()) as warning, contextlib.redirect_stdout(io.StringIO()):
-                if failure:
-                    with self.assertRaises(bootstrap.Refused) as raised:
-                        bootstrap.bootstrap(['--env-file', str(Path(directory) / '.env')], FakeRunner())
-                    self.assertIs(raised.exception, failure)
-                else:
-                    self.assertEqual(bootstrap.bootstrap(['--env-file', str(Path(directory) / '.env')], FakeRunner()), 0)
-                self.assertIn('Status execution record unavailable', warning.getvalue())
+    def test_failed_readiness_publishes_nothing_and_a_failed_write_refuses(self):
+        for failure in (bootstrap.Refused("not_ready", "original readiness failure"), None):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory, \
+                    patch.dict(os.environ, {}, clear=True), patch.object(bootstrap.shutil, "which", return_value="docker"), \
+                    patch.object(bootstrap, "wait_ready", side_effect=failure, return_value={}), \
+                    patch.object(bootstrap, "publish_status", side_effect=None if failure else PermissionError(13, "Permission denied")) as publish, \
+                    contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(bootstrap.Refused) as raised:
+                bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env")], FakeRunner(state=Path(directory) / "state"))
+            if failure:
+                self.assertIs(raised.exception, failure)
+                publish.assert_not_called()
+            else:
+                self.assertEqual(raised.exception.code, "status_write_failed")
+                self.assertIn("status.json: Permission denied", raised.exception.detail)
+            self.assertEqual(output.getvalue(), "")
+
+    def test_unusable_status_mount_refuses_before_any_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            private = Path(directory) / "private"
+            private.mkdir(mode=0o700)
+            private.chmod(0o700)
+            occupied = Path(directory) / "file"
+            occupied.touch()
+            for volumes, code in (([], "compose_config_failed"),
+                                  ([{"target": "/srv/state", "source": str(private)}], "status_write_failed"),
+                                  ([{"target": "/srv/state", "source": str(occupied)}], "status_write_failed")):
+                runner = FakeRunner()
+                def rendering(argv, **options):
+                    if argv[-3:] == ["config", "--format", "json"]:
+                        return subprocess.CompletedProcess(argv, 0, json.dumps({"services": {"caddy": {"image": PINNED, "volumes": volumes}}}), "")
+                    return runner(argv, **options)
+                with self.subTest(code=code), self.assertRaises(bootstrap.Refused) as caught:
+                    start_bootstrap(rendering, {}, directory)
+                self.assertEqual(caught.exception.code, code)
+                self.assertFalse(any(call[:3] == ["docker", "network", "create"] or "run" in call or "up" in call for call in runner.calls))
 
     def test_hostnames_come_from_domain_and_route_files(self):
         expected = ["example.test", "litellm.example.test", "langfuse.example.test", "s3.example.test",

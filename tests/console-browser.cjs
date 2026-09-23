@@ -8,16 +8,20 @@ const assert = require("node:assert/strict");
     const page = await browser.newPage();
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const now = new Date("2026-09-20T12:00:00Z");
+    const now = new Date("2026-09-23T17:00:00Z");
     await page.clock.install({ time: now });
-    let statusFixture = "current",
+    const fixture = (stack) =>
+      JSON.parse(
+        fs.readFileSync(`docs/operations/status-fixtures/v2-${stack}.json`, "utf8"),
+      );
+    // Backplane serves this document; the other stacks serve their fixtures.
+    let backplaneStatus = fixture("backplane"),
       statusAvailable = true,
       requests = 0;
     await page
       .context()
       .grantPermissions(["clipboard-read", "clipboard-write"]);
     const config = {
-      edgeVersion: "v9.8.7",
       domain: "localhost",
       mode: "local",
       scheme: "http",
@@ -33,13 +37,13 @@ const assert = require("node:assert/strict");
         rustfs: "8449",
       },
     };
-    let versionsAvailable = true,
-      backplaneReady = true;
+    let backplaneReady = true;
     await page.route("https://test.ts.net/**", (route) => {
       const path = new URL(route.request().url()).pathname;
       requests++;
       if (path.startsWith("/stack-status/")) {
-        if (path !== "/stack-status/backplane" || !statusAvailable)
+        const stack = path.slice("/stack-status/".length);
+        if (!statusAvailable || stack === "gateway")
           return route.fulfill({
             status: 404,
             contentType: "application/json",
@@ -47,18 +51,12 @@ const assert = require("node:assert/strict");
           });
         return route.fulfill({
           contentType: "application/json",
-          body: fs.readFileSync(
-            `docs/operations/status-fixtures/${statusFixture}.json`,
-            "utf8",
+          body: JSON.stringify(
+            stack === "backplane" ? backplaneStatus : fixture(stack),
           ),
         });
       }
       if (path === "/edge-config.json") return route.fulfill({ json: config });
-      if (path === "/stack-versions/gateway")
-        return route.fulfill({
-          status: versionsAvailable ? 200 : 502,
-          json: { images: { litellm: "1.2.3" } },
-        });
       if (path.startsWith("/health"))
         return route.fulfill({
           status: path === "/health/backplane" && !backplaneReady ? 502 : 200,
@@ -95,8 +93,12 @@ const assert = require("node:assert/strict");
     await settled();
     assert.equal(
       await page.locator(".version").first().textContent(),
-      "Configured v9.8.7 · undated",
-      "Image metadata remains configured-only until runtime observation",
+      "Configured 2.11.4",
+      "The Edge card shows the version its bootstrap configured",
+    );
+    assert.equal(
+      await page.locator(".project").first().locator(".features").textContent(),
+      "Backups configured · no checkpoint recorded",
     );
     assert.equal(
       await page.locator(".project h2").first().textContent(),
@@ -124,9 +126,10 @@ const assert = require("node:assert/strict");
       "https://test.ts.net:8448/api/v1",
     );
     assert.ok(
-      (await page.locator(".version").allTextContents()).includes(
-        "Configured 1.2.3 · undated",
+      !(await page.locator(".version").allTextContents()).some((text) =>
+        text.startsWith("Configured 1.101.0"),
       ),
+      "A missing Gateway producer never borrows another version source",
     );
     config.connected = "gateway";
     await page.clock.fastForward(30000);
@@ -159,13 +162,6 @@ const assert = require("node:assert/strict");
       /could not refresh/,
     );
     config.domain = "localhost";
-    versionsAvailable = false;
-    await refresh();
-    assert.ok(
-      !(await page.locator(".version").allTextContents()).includes(
-        "Configured 1.2.3 · undated",
-      ),
-    );
     backplaneReady = false;
     await refresh();
     assert.equal(
@@ -182,40 +178,41 @@ const assert = require("node:assert/strict");
       .filter({
         has: page.getByRole("link", { name: "Backplane ↗", exact: true }),
       });
-    await page.clock.setSystemTime(now);
     await refresh();
-    assert.equal(await bpCard.locator(".badge").textContent(), "Healthy");
+    assert.equal(await bpCard.locator(".badge").textContent(), "Configured");
+    assert.equal(await bpCard.locator(".version").textContent(), "Configured 0.9.0");
     assert.match(
-      await bpCard.locator(".version").textContent(),
-      /Configured custom/,
+      await bpCard.locator(".evidence").textContent(),
+      /^Configuration 2026-09-23T16:10:00.000Z · HTTP reachability: reachable$/,
     );
-    assert.doesNotMatch(
-      await bpCard.locator(".version").textContent(),
-      /Observed version/,
+    assert.ok(
+      (await page.locator(".inventory .badge.off").count()) >= 3,
+      "Disabled optional components render Not enabled",
     );
-    for (const fixture of ["forward-compatible", "malformed-component"]) {
-      statusFixture = fixture;
-      await refresh();
-      assert.equal(await bpCard.locator(".badge").textContent(), "Healthy");
-    }
-    for (const fixture of ["duplicate", "unsupported", "stale"]) {
-      statusFixture = fixture;
+    for (const mutate of [
+      (d) => (d.contract = 1),
+      (d) => (d.components[0].observedVersion = "0.9.0"),
+      (d) => d.components.push({ ...d.components[1] }),
+    ]) {
+      backplaneStatus = fixture("backplane");
+      mutate(backplaneStatus);
       await refresh();
       assert.equal(await bpCard.locator(".badge").textContent(), "Unknown");
+      assert.equal(await bpCard.locator(".version").textContent(), "Version unavailable");
       assert.equal(await bpCard.locator("h3 a").count(), 1);
     }
-    statusFixture = "current";
+    backplaneStatus = fixture("backplane");
     await refresh();
     statusAvailable = false;
     await refresh();
     assert.equal(await bpCard.locator(".badge").textContent(), "Unknown");
     assert.match(
       await bpCard.locator(".evidence").textContent(),
-      /Metadata unavailable · stale.*11:59:58/,
+      /^Status unavailable · HTTP reachability: reachable$/,
     );
     statusAvailable = true;
     await refresh();
-    // Hidden pages stop network polling, but evidence must still expire.
+    // Hidden pages stop network polling.
     await page.evaluate(() =>
       Object.defineProperty(document, "hidden", {
         configurable: true,
@@ -225,12 +222,7 @@ const assert = require("node:assert/strict");
     const hiddenRequests = requests;
     await page.clock.fastForward(61000);
     assert.equal(requests, hiddenRequests);
-    assert.equal(await bpCard.locator(".badge").textContent(), "Unknown");
-    assert.match(
-      await bpCard.locator(".evidence").textContent(),
-      /Stale observation/,
-    );
-    await page.clock.setSystemTime(now);
+    assert.equal(await bpCard.locator(".badge").textContent(), "Configured");
     await page.evaluate(() => {
       Object.defineProperty(document, "hidden", {
         configurable: true,
@@ -239,7 +231,7 @@ const assert = require("node:assert/strict");
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await settled();
-    assert.equal(await bpCard.locator(".badge").textContent(), "Healthy");
+    assert.ok(requests > hiddenRequests);
     statusAvailable = false;
     await refresh();
     await page
@@ -296,7 +288,7 @@ const assert = require("node:assert/strict");
     );
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: 6 contract fixtures, stale/failed/hidden expiry, independent health, trusted links, live refresh, search, details, map, and mobile layout",
+      "PASS: contract 2 documents, invalid and missing producers, configured versions, Not enabled, features, hidden polling, trusted links, live refresh, search, details, map, and mobile layout",
     );
   } finally {
     await browser.close();

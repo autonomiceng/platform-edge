@@ -28,10 +28,7 @@ let detailOpen = false,
   notice = "",
   config;
 const health = {};
-let legacyVersions = {};
-const statusDocuments = {},
-  statusFailures = {};
-let expiryTimer;
+const statusDocuments = {};
 DATA.projects.sort((a, b) => (a.id === "edge" ? -1 : b.id === "edge" ? 1 : 0));
 const github = (p) =>
   `<a class="github-link" href="https://github.com/${p.repo.includes("/") ? p.repo : "autonomiceng/" + p.repo}" target="_blank" rel="noreferrer" aria-label="${esc(p.name)} on GitHub"><img src="${DATA.icons.github}" alt=""> GitHub ↗</a>`;
@@ -71,26 +68,11 @@ function services() {
   }));
 }
 const state = (s) =>
-  s.kind === "setup" && s.state === "healthy"
-    ? "Last execution succeeded"
-    : {
-        off: "Not enabled",
-        healthy: "Healthy",
-        running: "Running",
-        configured: "Configured",
-        completed: "Completed",
-        "on demand": "On demand",
-        unknown: "Unknown",
-        unavailable: "Unavailable",
-        degraded: "Degraded",
-        starting: "Starting",
-        disabled: "Disabled",
-        absent: "Absent",
-        optional: "Optional",
-        checking: "Checking…",
-        attention: "Unavailable",
-        stopped: "Stopped",
-      }[s.state] || s.state;
+  ({
+    off: "Not enabled",
+    configured: "Configured",
+    unknown: "Unknown",
+  })[s.state] || s.state;
 const badge = (s) =>
   `<span class="badge ${s.state.replaceAll(" ", "-")}"><i class="dot"></i>${esc(state(s))}</span>`;
 function endpoints(s) {
@@ -145,10 +127,9 @@ function ProjectCards() {
             (s) => s.kind !== "app" && s.kind !== "setup" && s.id !== "edge",
           ),
           jobs = all.filter((s) => s.kind === "setup"),
-          active = all.filter(
-            (s) => s.kind !== "setup" && s.state === "healthy",
-          ).length;
-        return `<section class="project"><div class="project-top">${icon(p)}<div class="grow"><h2>${esc(p.name)}</h2><p>${esc(p.description)}</p><span class="meta">${active} healthy · Telemetry ${esc(StackStatus.telemetry(statusDocuments[p.id], Date.now(), statusFailures[p.id]))} · ${all.length - jobs.length} ${all.length - jobs.length === 1 ? "service" : "services"}</span></div>${github(p)}</div><div class="apps">${apps.map(appCard).join("")}</div>${
+          active = all.filter((s) => s.state === "configured").length,
+          features = StackStatus.features(statusDocuments[p.id]);
+        return `<section class="project"><div class="project-top">${icon(p)}<div class="grow"><h2>${esc(p.name)}</h2><p>${esc(p.description)}</p><span class="meta">${active} configured · ${all.length - jobs.length} ${all.length - jobs.length === 1 ? "service" : "services"}</span>${features ? `<div class="meta features">${esc(features)}</div>` : ""}</div>${github(p)}</div><div class="apps">${apps.map(appCard).join("")}</div>${
           rest.length
             ? `<details data-key="${p.id}-services" ${query || overview !== "all" ? "open" : ""}><summary>All services<small>${rest.length} supporting components</small></summary><div class="inventory">${[
                 "infra",
@@ -313,18 +294,6 @@ const probes = {
   bp: "backplane",
   grafana: "observability",
 };
-const versionKeys = {
-  lite: "litellm",
-  langfuse: "langfuse",
-  "g-rust": "rustfs",
-  "g-pg": "postgres",
-  clickhouse: "clickhouse",
-  valkey: "valkey",
-  "lf-worker": "langfuse",
-  "g-caddy": "caddy",
-  "pg-export": "postgres-exporter",
-  "vk-export": "valkey-exporter",
-};
 const statusIds = {
   edge: "caddy",
   lite: "litellm",
@@ -335,55 +304,22 @@ const statusIds = {
   "g-caddy": "caddy",
   "pg-export": "postgres-exporter",
   "vk-export": "valkey-exporter",
-  "g-init": "rustfs-init",
   bp: "server",
   "b-pg": "postgres",
   "b-rust": "rustfs",
   "b-caddy": "caddy",
-  "b-init": "blob-bootstrap",
   "o-caddy": "caddy",
   "o-rust": "rustfs",
-  "o-init": "rustfs-init",
 };
-const statusKey = (s) => s.statusId || statusIds[s.id] || s.id;
+const statusKey = (s) => statusIds[s.id] || s.id;
 function observation(s) {
-  return StackStatus.view(
-    statusDocuments[s.project],
-    statusKey(s),
-    Date.now(),
-    statusFailures[s.project],
-  );
+  return StackStatus.view(statusDocuments[s.project], statusKey(s));
 }
 function serviceEvidence(s) {
-  const v = observation(s),
-    parts = [v.reason];
-  if (v.observedAt !== null)
-    parts.push(`Observed ${new Date(v.observedAt).toISOString()}`);
-  if (v.lastExecutionAt !== null)
-    parts.push(`Last execution ${new Date(v.lastExecutionAt).toISOString()}`);
-  if (!v.configFresh) parts.push("Configuration unknown or stale");
-  if (s.id === "alloy") parts.push(`Telemetry ${v.telemetry}`);
+  const parts = [observation(s).reason];
   if (probes[s.id] !== undefined)
     parts.push(`HTTP reachability: ${health[probes[s.id]] || "checking"}`);
-  return parts.filter(Boolean).join(" · ");
-}
-function scheduleExpiry() {
-  clearTimeout(expiryTimer);
-  const now = Date.now(),
-    times = [];
-  for (const d of Object.values(statusDocuments)) {
-    if (d.configuration !== null)
-      times.push(d.configuration + d.configurationValidForSeconds * 1000 + 1);
-    for (const c of Object.values(d.components))
-      if (c.observed !== null)
-        times.push(c.observed + c.validForSeconds * 1000 + 1);
-  }
-  const next = Math.min(...times.filter((t) => t > now));
-  if (Number.isFinite(next))
-    expiryTimer = setTimeout(() => {
-      render();
-      scheduleExpiry();
-    }, next - now);
+  return parts.join(" · ");
 }
 function validateConfig(value) {
   const hostname = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i;
@@ -452,27 +388,8 @@ function serviceState(s) {
   return observation(s).state;
 }
 function serviceVersion(s) {
-  const v = observation(s),
-    labels = [];
-  if (v.configuredVersion)
-    labels.push(
-      `Configured ${v.configuredVersion} · ${new Date(v.configurationAt).toISOString()}`,
-    );
-  else if (
-    s.project === "gateway" &&
-    (!v.configFresh ||
-      !statusDocuments[s.project]?.components[statusKey(s)])
-  ) {
-    const fallback = StackStatus.legacy(legacyVersions, versionKeys[s.id]);
-    if (fallback) labels.push(fallback);
-  }
-  if (s.id === "edge" && !v.configuredVersion && /^[A-Za-z0-9._+-]{1,128}$/.test(config?.edgeVersion || ""))
-    labels.push(`Configured ${config.edgeVersion} · undated`);
-  if (v.observedVersion) labels.push(`Observed version ${v.observedVersion}`);
-  if (v.configuredDigest)
-    labels.push(`Configured digest ${v.configuredDigest}`);
-  if (v.observedImageId) labels.push(`Observed image ID ${v.observedImageId}`);
-  return labels.join(" · ");
+  const { version } = observation(s);
+  return version ? `Configured ${version}` : "";
 }
 function serviceLinks(s) {
   const links = {},
@@ -540,18 +457,12 @@ async function check() {
     const jobs = Object.keys(StackStatus.ids).map((stack) => async () => {
       try {
         const result = await StackStatus.request(`/stack-status/${stack}`);
-        statusDocuments[stack] = StackStatus.parse(
-          result.text,
-          stack,
-          Date.now(),
-          result.date,
-        );
-        statusFailures[stack] = false;
+        statusDocuments[stack] = StackStatus.parse(result.text, stack);
       } catch {
-        statusFailures[stack] = true;
+        // An absent or invalid document is unknown, never a previous answer.
+        delete statusDocuments[stack];
       }
       render();
-      scheduleExpiry();
     });
     jobs.push(
       async () => {
@@ -560,17 +471,6 @@ async function check() {
           config = validateConfig(JSON.parse(result.text));
         } catch {
           settingsOK = false;
-        }
-        render();
-      },
-      async () => {
-        legacyVersions = {};
-        try {
-          legacyVersions = JSON.parse(
-            (await StackStatus.request("/stack-versions/gateway")).text,
-          );
-        } catch {
-          /* Legacy configuration is optional. */
         }
         render();
       },

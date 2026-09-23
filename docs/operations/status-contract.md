@@ -7,9 +7,9 @@ deployment, authentication or readiness control API. Producers and consumers shi
 independently. The examples under [`status-fixtures/`](status-fixtures/) are compatibility
 inputs for implementations; they are synthetic and prove nothing about an installed stack.
 
-The contract is frozen here before any producer or consumer changes (plan v2, slice C1).
-Producers arrive in S1 (Gateway), S2 (Observability), S3 (Backplane) and S4 (Edge);
-version 1 is retired in S5.
+The contract was frozen here before any producer or consumer changed (plan v2, slice C1).
+The Edge console reads only version 2; a stack still publishing version 1 renders Unknown
+until its version 2 producer ships.
 
 ## Transport
 
@@ -102,19 +102,4 @@ One version 2 example per stack: [`v2-gateway.json`](status-fixtures/v2-gateway.
 [`v2-backplane.json`](status-fixtures/v2-backplane.json) and
 [`v2-edge.json`](status-fixtures/v2-edge.json). Consumer tests should exercise a valid
 document per stack, an unknown field, a duplicate ID, a stack mismatch, a missing producer,
-a disabled component and credential-free proxying. `current.json`, `stale.json`,
-`forward-compatible.json`, `malformed-component.json`, `duplicate.json` and
-`unsupported.json` are the version 1 fixtures and stay until S5.
-
-## Legacy v1
-
-Until slice S5, Edge still accepts a version 1 document from a stack that has not shipped
-version 2, recognized by `schemaVersion: 1`. The fields Edge reads from it are
-`schemaVersion`, `stack`, `generatedAt`, `configurationObservedAt`,
-`configurationValidForSeconds`, `telemetry`, and per component `id`, `kind`
-(`service`, `capability`, `task`), `configured`, `state` (`healthy`, `degraded`, `starting`,
-`unavailable`, `disabled`, `absent`, `unknown`), `observedAt`, `validForSeconds`,
-`lastExecutionAt`, `configuredVersion`, `observedVersion`, `configuredDigest` and
-`observedImageId`, with the freshness and clock rules of the version 1 document. S5
-removes the version 1 consumer path, its fixtures, the host observers and timers that
-produced it, and this appendix. The full version 1 text is in git history before C1.
+a disabled component and credential-free proxying.

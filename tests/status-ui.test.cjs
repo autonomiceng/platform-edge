@@ -4,7 +4,9 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 const S = require("../docker/console/status.js");
-const now = Date.parse("2026-09-20T12:00:00Z");
+const now = Date.parse("2026-09-23T17:00:00Z");
+const fixture = (stack) =>
+  fs.readFileSync(`docs/operations/status-fixtures/v2-${stack}.json`, "utf8");
 function ui() {
   const context = vm.createContext({
     StackStatus: S,
@@ -46,10 +48,14 @@ function ui() {
 }
 test("trusted links survive missing producers and failed HTTP reachability", () => {
   const run = ui();
-  run(`health.backplane = 'unavailable'; statusFailures.backplane = true;`);
+  run(`health.backplane = 'unavailable';`);
   assert.equal(
     run(`serviceState(DATA.services.find(s => s.id === 'bp'))`),
     "unknown",
+  );
+  assert.equal(
+    run(`serviceEvidence(DATA.services.find(s => s.id === 'bp'))`),
+    "Status unavailable · HTTP reachability: unavailable",
   );
   assert.equal(
     run(`serviceLinks(DATA.services.find(s => s.id === 'bp')).Console`),
@@ -85,79 +91,67 @@ test("every contract ID maps to exactly one catalog component", () => {
   for (const [stack, ids] of Object.entries(S.ids)) {
     const actual = JSON.parse(
       run(
-        `JSON.stringify(DATA.services.filter(s => s.project === '${stack}').map(s => s.statusId || statusIds[s.id] || s.id).sort())`,
+        `JSON.stringify(DATA.services.filter(s => s.project === '${stack}').map(statusKey))`,
       ),
     );
-    assert.deepEqual(actual, [...ids].sort());
+    for (const id of ids)
+      assert.equal(actual.filter((key) => key === id).length, 1, `${stack}/${id}`);
   }
 });
-test("fresh per-ID configuration wins; expiry falls back and langfuse maps both components", () => {
+test("configured versions, Not enabled and features come only from the document", () => {
   const run = ui();
-  const doc = {
-    schemaVersion: 1,
-    stack: "gateway",
-    generatedAt: "2026-09-20T12:00:00Z",
-    configurationObservedAt: "2026-09-20T11:59:45Z",
-    configurationValidForSeconds: 60,
-    telemetry: "unknown",
-    components: [
-      {
-        id: "langfuse-web",
-        kind: "service",
-        configured: true,
-        state: "unknown",
-        observedAt: null,
-        validForSeconds: 60,
-        configuredVersion: "3.2",
-      },
-    ],
-  };
-  run(
-    `legacyVersions = {images:{langfuse:'3.1'}}; statusDocuments.gateway = StackStatus.parse(${JSON.stringify(JSON.stringify(doc))}, 'gateway', Date.now());`,
+  for (const stack of Object.keys(S.ids))
+    run(
+      `statusDocuments.${stack} = StackStatus.parse(${JSON.stringify(fixture(stack))}, '${stack}');`,
+    );
+  const service = (id, expression) =>
+    run(`${expression}(services().find(s => s.id === '${id}'))`);
+  assert.equal(service("edge", "serviceVersion"), "Configured 2.11.4");
+  assert.equal(service("edge", "state"), "Configured");
+  assert.equal(service("lite", "serviceVersion"), "Configured 1.101.0");
+  assert.equal(service("pg-export", "state"), "Not enabled");
+  assert.equal(service("b-rust", "state"), "Not enabled");
+  assert.equal(service("workerd", "serviceVersion"), "");
+  assert.equal(service("g-init", "state"), "Unknown");
+  assert.equal(
+    service("grafana", "serviceEvidence"),
+    "Configuration 2026-09-23T16:05:00.000Z · HTTP reachability: checking",
   );
-  const version = (id) =>
-    run(`serviceVersion(DATA.services.find(s => s.id === '${id}'))`);
-  assert.match(version("langfuse"), /^Configured 3.2/);
-  assert.equal(version("lf-worker"), "Configured 3.1 · undated");
-  run(`statusDocuments.gateway.configurationValidForSeconds = 1;`);
-  assert.equal(version("langfuse"), "Configured 3.1 · undated");
-  assert.equal(version("lf-worker"), "Configured 3.1 · undated");
-  assert.doesNotMatch(version("langfuse"), /Observed/);
-  run(`legacyVersions.images.undefined = "must-not-map";`);
-  assert.equal(version("gateway-bootstrap"), "");
+  const cards = run(`ProjectCards()`);
+  assert.match(cards, /Backups configured · no checkpoint recorded · Alerts not configured/);
+  assert.doesNotMatch(cards, /healthy|Telemetry/);
 });
-test("app HTTP 200 never promotes sibling Caddy, databases, workers or capabilities", () => {
+test("app HTTP 200 never promotes a component to healthy", () => {
   const run = ui();
   run(`for (const id of Object.values(probes)) health[id] = 'reachable';`);
   assert.equal(
     run(`DATA.services.every(s => serviceState(s) === 'unknown')`),
     true,
   );
+  run(`statusDocuments.gateway = StackStatus.parse(${JSON.stringify(fixture("gateway"))}, 'gateway');`);
+  assert.equal(
+    run(`DATA.services.some(s => serviceState(s) === 'healthy')`),
+    false,
+  );
 });
 test("status URLs and text cannot become trusted navigation or HTML", () => {
   const run = ui();
-  const fixture = JSON.parse(
-    fs.readFileSync("docs/operations/status-fixtures/current.json", "utf8"),
-  );
-  fixture.components[0].url = "https://untrusted.test/";
-  fixture.components[0].observedVersion = "<script>alert(1)</script>";
+  const doc = JSON.parse(fixture("backplane"));
+  doc.components[0].url = "https://untrusted.test/";
+  doc.components[0].name = "<script>alert(1)</script>";
   run(
-    `statusDocuments.backplane = StackStatus.parse(${JSON.stringify(JSON.stringify(fixture))}, 'backplane', Date.now());`,
+    `statusDocuments.backplane = StackStatus.parse(${JSON.stringify(JSON.stringify(doc))}, 'backplane');`,
   );
   assert.equal(
     run(`serviceLinks(DATA.services.find(s => s.id === 'bp')).Console`),
     "http://backplane.localhost/dashboard/",
   );
-  assert.doesNotMatch(
-    run(`serviceVersion(DATA.services.find(s => s.id === 'bp'))`),
-    /script|Observed/,
-  );
+  assert.doesNotMatch(run(`ProjectCards()`), /untrusted|<script>/);
   assert.equal(run(`esc('<script>')`), "&lt;script&gt;");
 });
 
 test("capabilities never claim their own process log stream", () => {
   const run = ui();
-  for (const id of ["files", "backplane-functions"]) {
-    assert.equal(run(`DATA.services.find(s => s.id === '${id}').kind`), "capability");
-  }
+  assert.equal(run(`DATA.services.find(s => s.id === 'files').kind`), "capability");
+  assert.doesNotMatch(run(`selected = 'files'; detail()`), /Logs/);
 });

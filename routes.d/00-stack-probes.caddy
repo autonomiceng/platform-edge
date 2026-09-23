@@ -55,7 +55,7 @@
 	}
 }
 (status-errors) {
-	@metadata expression `{http.request.orig_uri.path}.startsWith("/stack-status/") || {http.request.orig_uri.path} == "/stack-versions/gateway" || {http.request.orig_uri.path} == "/status.json"`
+	@metadata expression `{http.request.orig_uri.path}.startsWith("/stack-status/") || {http.request.orig_uri.path} == "/status.json"`
 	handle @metadata {
 		header Cache-Control "no-store"
 		header Content-Type "application/json"
@@ -96,7 +96,6 @@
 	import status-proxy /stack-status/gateway /status.json lg-gateway:80 {$PE_PUBLIC_DOMAIN}
 	import status-proxy /stack-status/backplane /status.json bp-gateway:80 backplane.{$PE_PUBLIC_DOMAIN}
 	import status-proxy /stack-status/observability /status.json ob-gateway:80 {$PE_PUBLIC_DOMAIN}
-	import status-proxy /stack-versions/gateway /versions.json lg-gateway:80 {$PE_PUBLIC_DOMAIN}
 	# Unknown status endpoints never fall through to Gateway's producer.
 	handle /stack-status/* {
 		header Cache-Control "no-store"
@@ -105,6 +104,12 @@
 		header @write Allow "GET, HEAD"
 			respond @write "" 405
 		respond "" 404
+	}
+
+	# The Edge component's Health Path: Caddy answering is its bounded probe.
+	handle /health/caddy {
+		header Cache-Control "no-store"
+		respond "" 200
 	}
 
 	handle /health/rustfs {

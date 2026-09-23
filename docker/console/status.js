@@ -1,9 +1,9 @@
-// Public status v1. Keep parsing, evidence age and transport independent of the DOM.
+// Public status contract 2. Keep parsing and transport independent of the DOM.
 const StackStatus = (() => {
   const MAX_BYTES = 65536;
   const DEADLINE_MS = 4000;
   const ids = {
-    edge: ["caddy", "bootstrap"],
+    edge: ["caddy"],
     gateway: [
       "caddy",
       "litellm",
@@ -15,63 +15,19 @@ const StackStatus = (() => {
       "rustfs",
       "postgres-exporter",
       "valkey-exporter",
-      "bootstrap",
-      "rustfs-init",
     ],
-    backplane: [
-      "server",
-      "postgres",
-      "caddy",
-      "rustfs",
-      "workerd",
-      "files",
-      "functions",
-      "bootstrap",
-      "migrate",
-      "data-init",
-      "blob-bootstrap",
-    ],
-    observability: [
-      "caddy",
-      "grafana",
-      "alloy",
-      "loki",
-      "mimir",
-      "tempo",
-      "rustfs",
-      "bootstrap",
-      "rustfs-init",
-    ],
+    backplane: ["server", "postgres", "rustfs", "workerd", "caddy"],
+    observability: ["caddy", "grafana", "alloy", "loki", "mimir", "tempo", "rustfs"],
   };
-  const tasks = new Set([
-    "bootstrap",
-    "rustfs-init",
-    "migrate",
-    "data-init",
-    "blob-bootstrap",
-  ]);
-  const states = [
-    "healthy",
-    "degraded",
-    "starting",
-    "unavailable",
-    "disabled",
-    "absent",
-    "unknown",
-  ];
-  const version = (value) =>
-    typeof value === "string" && /^[A-Za-z0-9._+-]{1,128}$/.test(value)
-      ? value
-      : null;
-  const digest = (value) =>
-    typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value)
-      ? value
-      : null;
+  const envelope = ["contract", "stack", "configuredAt", "components", "features"];
+  const fields = ["id", "name", "kind", "enabled", "image", "version", "health", "url"];
+  const kinds = ["app", "datastore", "gateway", "collector", "runtime"];
   const object = (value) =>
     value !== null && typeof value === "object" && !Array.isArray(value);
-  const ttl = (value) => Number.isInteger(value) && value >= 1 && value <= 300;
+  const only = (value, keys) => Object.keys(value).every((k) => keys.includes(k));
+  const text = (value, max) =>
+    typeof value === "string" && value.length >= 1 && value.length <= max;
   function timestamp(value) {
-    if (value === null) return null;
     if (
       typeof value !== "string" ||
       !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|\+00:00)$/.test(value)
@@ -84,172 +40,129 @@ const StackStatus = (() => {
       ? time
       : NaN;
   }
-  const validTime = (time, now, generated) =>
-    time === null ||
-    (Number.isFinite(time) && time <= now + 5000 && time <= generated + 5000);
-  const fresh = (time, seconds, now) =>
-    time !== null && time <= now + 5000 && now - time <= seconds * 1000;
-  function parse(text, stack, now = Date.now(), date = null) {
+  function origin(value) {
+    try {
+      const url = new URL(value);
+      return (
+        ["http:", "https:"].includes(url.protocol) &&
+        !url.username &&
+        !url.password &&
+        !url.search &&
+        !url.hash &&
+        !value.includes("?") &&
+        !value.includes("#")
+      );
+    } catch {
+      return false;
+    }
+  }
+  const valid = (c) =>
+    typeof c.id === "string" &&
+    /^[a-z][a-z0-9-]{0,31}$/.test(c.id) &&
+    text(c.name, 64) &&
+    kinds.includes(c.kind) &&
+    typeof c.enabled === "boolean" &&
+    text(c.image, 256) &&
+    !c.image.includes("@") &&
+    (c.version === null ||
+      (typeof c.version === "string" &&
+        /^[A-Za-z0-9._+-]{1,128}$/.test(c.version))) &&
+    c.health === `/health/${c.id}` &&
+    (!Object.hasOwn(c, "url") || (text(c.url, 2048) && origin(c.url)));
+  function feature(value, keys, check) {
+    if (!object(value)) return undefined;
+    // An unknown feature field is a contract bump, not a partial feature.
+    if (!only(value, keys)) throw new Error("Unknown feature field");
+    return keys.every((k) => Object.hasOwn(value, k)) && check(value)
+      ? value
+      : undefined;
+  }
+  function parse(text, stack) {
     if (new TextEncoder().encode(text).length > MAX_BYTES)
       throw new Error("Status too large");
     const d = JSON.parse(text);
     if (
       !object(d) ||
-      d.schemaVersion !== 1 ||
+      d.contract !== 2 ||
       !Object.hasOwn(ids, stack) ||
       d.stack !== stack ||
+      !only(d, envelope) ||
+      !envelope.every((k) => Object.hasOwn(d, k)) ||
+      !Number.isFinite(timestamp(d.configuredAt)) ||
       !Array.isArray(d.components) ||
-      d.components.length > 32
+      d.components.length > 32 ||
+      !object(d.features) ||
+      !only(d.features, ["backups", "alerts"])
     )
       throw new Error("Unsupported status");
-    const generated = timestamp(d.generatedAt),
-      configuration = timestamp(d.configurationObservedAt);
-    if (
-      !Number.isFinite(generated) ||
-      !ttl(d.configurationValidForSeconds) ||
-      !["configured", "disabled", "unknown"].includes(d.telemetry) ||
-      !validTime(configuration, generated, generated) ||
-      (configuration === null && d.telemetry !== "unknown")
-    )
-      throw new Error("Invalid status envelope");
-    // An invalid supplied Date cannot silently fall back to generatedAt.
-    const serverClock =
-      date === null
-        ? generated
-        : /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(
-              date,
-            )
-          ? Date.parse(date)
-          : NaN;
-    const clockAgrees =
-      Number.isFinite(serverClock) &&
-      (date === null || new Date(serverClock).toUTCString() === date) &&
-      Math.abs(now - serverClock) <= 5000;
-    if (clockAgrees && !validTime(configuration, now, generated))
-      throw new Error("Invalid configuration time");
-    if (clockAgrees && generated > now + 5000)
-      throw new Error("Invalid generation time");
     const seen = new Set(),
       components = Object.create(null);
     for (const c of d.components) {
-      if (object(c) && typeof c.id === "string") {
+      if (!object(c)) continue;
+      if (!only(c, fields)) throw new Error("Unknown component field");
+      if (typeof c.id === "string") {
         if (seen.has(c.id)) throw new Error("Duplicate component");
         seen.add(c.id);
       }
-      if (!object(c) || !ids[stack].includes(c.id)) continue;
-      const kind = tasks.has(c.id)
-        ? "task"
-        : ["files", "functions"].includes(c.id)
-          ? "capability"
-          : "service";
-      const observed = timestamp(c.observedAt),
-        execution = kind === "task" ? timestamp(c.lastExecutionAt) : null;
-      if (
-        c.kind !== kind ||
-        ![true, false, null].includes(c.configured) ||
-        !states.includes(c.state) ||
-        !ttl(c.validForSeconds) ||
-        !validTime(observed, now, generated) ||
-        !validTime(execution, now, generated)
-      )
-        continue;
-      if (c.state !== "unknown" && observed === null) continue;
-      if (!["unknown", "disabled"].includes(c.state) && c.configured !== true)
-        continue;
-      if (
-        c.state === "disabled" &&
-        (c.configured !== false || observed !== configuration)
-      )
-        continue;
-      if (
-        kind === "task" &&
-        execution === null &&
-        !["unknown", "disabled"].includes(c.state)
-      )
-        continue;
-      if (
-        configuration === null &&
-        (c.configured !== null ||
-          version(c.configuredVersion) !== null ||
-          digest(c.configuredDigest) !== null)
-      )
-        continue;
-      components[c.id] = {
-        kind,
-        state: c.state,
-        configured: c.configured,
-        observed,
-        execution,
-        validForSeconds: c.validForSeconds,
-        configuredVersion: version(c.configuredVersion),
-        observedVersion: version(c.observedVersion),
-        configuredDigest: digest(c.configuredDigest),
-        observedImageId: digest(c.observedImageId),
-      };
+      // Unknown IDs are ignored; invalid components render unknown.
+      if (!valid(c) || !ids[stack].includes(c.id)) continue;
+      components[c.id] = { enabled: c.enabled, version: c.version };
     }
-    return {
-      generated,
-      configuration,
-      configurationValidForSeconds: d.configurationValidForSeconds,
-      telemetry: d.telemetry,
-      clockAgrees,
-      components,
-    };
-  }
-  function configurationFresh(doc, now, failed) {
-    return Boolean(doc?.clockAgrees && !failed && fresh(doc.configuration, doc.configurationValidForSeconds, now));
-  }
-  function telemetry(doc, now = Date.now(), failed = false) {
-    return configurationFresh(doc, now, failed) ? doc.telemetry : "unknown";
-  }
-  function view(doc, id, now = Date.now(), failed = false) {
-    const c = doc?.components[id];
-    const configFresh = configurationFresh(doc, now, failed);
-    const observedFresh = Boolean(
-      c &&
-        doc.clockAgrees &&
-        !failed &&
-        fresh(c.observed, c.validForSeconds, now),
+    const backups = feature(
+      d.features.backups,
+      ["configured", "lastCheckpointAt"],
+      (f) =>
+        typeof f.configured === "boolean" &&
+        (f.lastCheckpointAt === null ||
+          Number.isFinite(timestamp(f.lastCheckpointAt))),
     );
-    const current = observedFresh && (c.state !== "disabled" || configFresh);
-    const reason = !doc
-      ? "Metadata unavailable"
-      : !doc.clockAgrees
-        ? "Clock disagreement"
-        : failed
-          ? c && c.observed !== null
-            ? "Metadata unavailable · stale"
-            : "Metadata unavailable"
-          : c && c.observed !== null && !current
-            ? "Stale observation"
-            : !c || c.observed === null
-              ? "Unknown observation"
-              : "";
+    const alerts = feature(
+      d.features.alerts,
+      ["configured"],
+      (f) => typeof f.configured === "boolean",
+    );
     return {
-      state: current ? c.state : "unknown",
-      reason,
-      kind: c?.kind,
-      observedAt: c?.observed ?? null,
-      lastExecutionAt: c?.execution ?? null,
-      configured: configFresh ? (c?.configured ?? null) : null,
-      configurationAt: doc?.configuration ?? null,
-      configFresh,
-      telemetry: configFresh ? doc.telemetry : "unknown",
-      configuredVersion: configFresh ? (c?.configuredVersion ?? null) : null,
-      configuredDigest: configFresh ? (c?.configuredDigest ?? null) : null,
-      observedVersion: observedFresh ? c.observedVersion : null,
-      observedImageId: observedFresh ? c.observedImageId : null,
+      configuredAt: timestamp(d.configuredAt),
+      components,
+      features: {
+        backups: backups && {
+          configured: backups.configured,
+          lastCheckpointAt:
+            backups.lastCheckpointAt === null
+              ? null
+              : timestamp(backups.lastCheckpointAt),
+        },
+        alerts: alerts && { configured: alerts.configured },
+      },
     };
   }
-  function legacy(data, id, now = Date.now()) {
-    if (typeof id !== "string") return null;
-    const value = version(object(data?.images) ? data.images[id] : null);
-    if (!value) return null;
-    const supplied = data.configuredAt ?? data.pinnedAt;
-    const time = supplied == null ? null : timestamp(supplied);
-    if (supplied != null && (!Number.isFinite(time) || time > now + 5000))
-      return null;
-    return `Configured ${value} · ${time === null ? "undated" : new Date(time).toISOString()}`;
+  // Everything here is configuration; liveness belongs to health paths.
+  function view(doc, id) {
+    const c = doc?.components[id];
+    return {
+      state: !c ? "unknown" : c.enabled ? "configured" : "off",
+      version: c?.version ?? null,
+      reason: !doc
+        ? "Status unavailable"
+        : !c
+          ? "Not in status document"
+          : `Configuration ${new Date(doc.configuredAt).toISOString()}`,
+    };
+  }
+  function features(doc) {
+    const { backups, alerts } = doc?.features || {},
+      parts = [];
+    if (backups)
+      parts.push(
+        !backups.configured
+          ? "Backups not configured"
+          : backups.lastCheckpointAt === null
+            ? "Backups configured · no checkpoint recorded"
+            : `Backups configured · last checkpoint ${new Date(backups.lastCheckpointAt).toISOString()}`,
+      );
+    if (alerts)
+      parts.push(alerts.configured ? "Alerts configured" : "Alerts not configured");
+    return parts.join(" · ");
   }
   async function request(url, fetcher = fetch) {
     const controller = new AbortController();
@@ -323,6 +236,6 @@ const StackStatus = (() => {
       }),
     );
   }
-  return { ids, parse, view, telemetry, legacy, request, pool };
+  return { ids, parse, view, features, request, pool };
 })();
 if (typeof module !== "undefined") module.exports = StackStatus;
