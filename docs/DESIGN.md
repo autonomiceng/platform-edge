@@ -22,7 +22,8 @@ No high availability, dynamic service discovery, authentication, rate limiting o
 Sibling stacks are installed behind Edge through bootstrap's `--with <stack>` flags.
 `scripts/bundle.py` preflights every selected checkout, then writes only the Platform
 Contract's bundle settings into each sibling `.env` under that stack's own lock, with an
-atomic replacement that keeps unrelated lines byte for byte and reads no secret, and runs
+atomic replacement that keeps unrelated lines byte for byte and never prints or interprets a
+secret, and runs
 the sibling's own bootstrap from its checkout, stopping at the first failure with the rerun
 command. No custody check, source parsing, lifecycle logic or secret generation moves out
 of the owning stacks. `--dry-run` prints the plan and writes nothing. The

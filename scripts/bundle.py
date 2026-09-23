@@ -65,9 +65,9 @@ def settings(stack: str, edge: dict[str, str]) -> dict[str, str]:
     else:
         values.update(HTTP_PORT=PORTS[stack], PUBLIC_PORT_SUFFIX="")
     values["PLATFORM_NETWORK"] = edge["PE_PLATFORM_NETWORK"]
+    # Always written, so a sibling never keeps an allocation Edge has since reverted.
     for key in ("PLATFORM_SUBNET", "PLATFORM_IP_RANGE"):
-        if edge["PE_" + key] != bootstrap.DEFAULTS["PE_" + key]:
-            values[key] = edge["PE_" + key]
+        values[key] = edge["PE_" + key]
     values["TRUSTED_PROXIES"] = edge["PE_EDGE_IP"] + "/32"
     if stack == "observability":
         values.update(GATEWAY_HEALTH_HOST=domain, GATEWAY_URL=f"{scheme}://{domain}",

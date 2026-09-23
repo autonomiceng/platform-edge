@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -74,7 +75,8 @@ class BundleTests(unittest.TestCase):
             self.assertEqual((gateway / ".env").read_bytes().decode(),
                              "# Default public domain.\r\nLG_PUBLIC_DOMAIN=example.com\r\n\nLG_ACCESS_MODE=proxy\nexport LG_SCHEME=https\n"
                              "LITELLM_MASTER_KEY='sk-secret$1'\nLG_HTTP_PORT=18080\nCUSTOM=kept\n"
-                             "LG_BIND_HOST=127.0.0.1\nLG_PUBLIC_PORT_SUFFIX=\nLG_PLATFORM_NETWORK=platform\nLG_TRUSTED_PROXIES=172.30.0.2/32\n")
+                             "LG_BIND_HOST=127.0.0.1\nLG_PUBLIC_PORT_SUFFIX=\nLG_PLATFORM_NETWORK=platform\nLG_PLATFORM_SUBNET=172.30.0.0/24\n"
+                             "LG_PLATFORM_IP_RANGE=172.30.0.128/25\nLG_TRUSTED_PROXIES=172.30.0.2/32\n")
             created = observability / ".env"
             self.assertEqual(created.stat().st_mode & 0o777, 0o600)
             self.assertTrue(created.read_text().startswith("# template\nOB_ACCESS_MODE=proxy\n"))
@@ -89,7 +91,7 @@ class BundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {}, clear=True):
             root = Path(temporary)
             source = ("LG_ACCESS_MODE=proxy\nLG_SCHEME='https'\nLG_PUBLIC_DOMAIN=old.example\nLITELLM_MASTER_KEY=\n"
-                      "POSTGRES_PASSWORD='p#ss'\nLG_PLATFORM_NETWORK=platform\n")
+                      "POSTGRES_PASSWORD='p#ss'\nLG_PLATFORM_NETWORK=platform\nLG_PLATFORM_SUBNET=172.30.0.0/24\nLG_PLATFORM_IP_RANGE=172.30.0.128/25\n")
             gateway = checkout(root, "gateway", source)
             output = io.StringIO()
             with patch.object(bundle, "run_bootstrap", Runs()), contextlib.redirect_stdout(output):
@@ -166,7 +168,8 @@ class BundleTests(unittest.TestCase):
                 self.assertEqual(plan["stack"], "gateway")
                 self.assertEqual(plan["writes"], {"LG_ACCESS_MODE": "proxy", "LG_SCHEME": "https",
                                                   "LG_BIND_HOST": "127.0.0.1", "LG_HTTP_PORT": "18080", "LG_PUBLIC_PORT_SUFFIX": "",
-                                                  "LG_PLATFORM_NETWORK": "platform", "LG_TRUSTED_PROXIES": "172.30.0.2/32"})
+                                                  "LG_PLATFORM_NETWORK": "platform", "LG_PLATFORM_SUBNET": "172.30.0.0/24",
+                                                  "LG_PLATFORM_IP_RANGE": "172.30.0.128/25", "LG_TRUSTED_PROXIES": "172.30.0.2/32"})
                 self.assertEqual(plan["command"], [sys.executable, "scripts/bootstrap.py"])
                 self.assertFalse(edge_env.exists())
                 self.assertEqual((gateway / ".env").read_bytes().decode(), GATEWAY_ENV)
@@ -194,7 +197,8 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(item["command"], ["bun", "infra/bootstrap/prepare.ts", "--capability-file", str(capability.resolve()),
                                               "--access-mode", "proxy", "--public-url", "https://backplane.example.com"])
             self.assertEqual(item["writes"], {"BP_ACCESS_MODE": "proxy", "BP_PUBLIC_URL": "https://backplane.example.com", "BP_BIND_HOST": "127.0.0.1",
-                                              "BP_PORT": "3000", "BP_PLATFORM_NETWORK": "platform", "BP_TRUSTED_PROXIES": "172.30.0.2/32"})
+                                              "BP_PORT": "3000", "BP_PLATFORM_NETWORK": "platform", "BP_PLATFORM_SUBNET": "172.30.0.0/24",
+                                              "BP_PLATFORM_IP_RANGE": "172.30.0.128/25", "BP_TRUSTED_PROXIES": "172.30.0.2/32"})
             (backplane / ".env").write_text("BP_AUTH_SECRET=s\n")
             [fresh] = bundle.plan(arguments(root, "backplane", capability=capability), root, EDGE)
             self.assertEqual(fresh["command"][-2:], ["--profile", "gateway"])
@@ -209,6 +213,14 @@ class BundleTests(unittest.TestCase):
             self.assertIn("rerun `python3 scripts/bootstrap.py --with backplane`", refused.exception.detail)
             self.assertEqual((backplane / ".env").read_text(), "BP_AUTH_SECRET=s\n")
             (backplane / ".env.lock").unlink()
+            for failure, text in ((subprocess.TimeoutExpired("bun", bundle.TIMEOUT), "ran longer than 1800 s"),
+                                  (FileNotFoundError(2, "No such file", "bun"), "was not started: ")):
+                with patch.object(bundle, "run_bootstrap", side_effect=failure), self.assertRaises(bootstrap.Refused) as refused:
+                    bundle.install([fresh], ["--with", "backplane"])
+                self.assertEqual(refused.exception.code, "sibling_bootstrap_failed")
+                self.assertIn(text, refused.exception.detail)
+                self.assertIn("rerun `python3 scripts/bootstrap.py --with backplane`", refused.exception.detail)
+                self.assertFalse((backplane / ".env.lock").exists())
             with patch.object(bundle, "run_bootstrap", Runs()), contextlib.redirect_stdout(io.StringIO()):
                 bundle.install([fresh], [])
             self.assertFalse((backplane / ".env.lock").exists())

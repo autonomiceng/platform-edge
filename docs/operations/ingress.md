@@ -25,7 +25,8 @@ python3 scripts/bootstrap.py --with gateway --with observability --with backplan
 Checkouts default to the sibling directories `../llm-gateway-stack`, `../observability-stack`
 and `../agent-backplane`; `--gateway-dir`, `--observability-dir` and `--backplane-dir` point
 elsewhere. A missing checkout or `.env.example`, a missing `bun` for Backplane, and exported
-`LG_`, `OB_`, `BP_` or `COMPOSE_` shell settings are refused (exit 1) before anything is written.
+shell settings of a selected stack (`LG_`, `OB_`, `BP_`) or any `COMPOSE_` setting are refused
+(exit 1) before anything is written.
 
 For each stack, in the order gateway, observability, backplane, bootstrap copies `.env.example`
 to `.env` (mode 0600) when it is absent, takes the stack's own env lock, writes the bundle keys
@@ -35,8 +36,8 @@ checkout: `python3 scripts/bootstrap.py`, or for Backplane `bun infra/bootstrap/
 --capability-file PATH --access-mode proxy --public-url URL` plus `--profile gateway` until
 `COMPOSE_PROFILES` is recorded. Its output goes to the terminal; env contents are never printed.
 The values come from Edge: `PE_PUBLIC_DOMAIN`, `PE_SCHEME` (HTTPS when unset),
-`PE_PLATFORM_NETWORK`, `PE_EDGE_IP` as the `/32` trust entry, and the subnet and ip-range only
-when Edge overrides the contract defaults. Secrets and every other setting stay the stack's own:
+`PE_PLATFORM_NETWORK`, `PE_PLATFORM_SUBNET`, `PE_PLATFORM_IP_RANGE` and `PE_EDGE_IP` as the
+`/32` trust entry. Secrets and every other setting stay the stack's own:
 set `LG_BACKUP_DIR`, `LANGFUSE_INIT_USER_EMAIL`, `BP_BACKUP_DIR` and the Observability alert
 destination in those `.env` files first.
 
@@ -336,8 +337,9 @@ BP_PLATFORM_NETWORK=platform
 BP_TRUSTED_PROXIES=172.30.0.2/32
 ```
 
-When Edge overrides the network allocation, every stack also takes `*_PLATFORM_SUBNET` and
-`*_PLATFORM_IP_RANGE` with Edge's values; `--with` writes them only then.
+Every stack also takes `*_PLATFORM_SUBNET` and `*_PLATFORM_IP_RANGE` from Edge's
+`PE_PLATFORM_SUBNET` and `PE_PLATFORM_IP_RANGE` (contract defaults `172.30.0.0/24` and
+`172.30.0.128/25`); `--with` always writes them.
 
 Start Backplane with its internal gateway overlay (Compose 2.24.4+):
 
