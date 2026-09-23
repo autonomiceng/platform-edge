@@ -11,24 +11,4 @@
 		import forwarded-proto-{$PE_ACCESS_MODE:local}
 	}
 }
-(backplane-local) {
-	http://backplane.{$PE_PUBLIC_DOMAIN} {
-		import backplane-routes
-	}
-	https://backplane.{$PE_PUBLIC_DOMAIN} {
-		tls internal
-		import backplane-routes
-	}
-}
-(backplane-public) {
-	https://backplane.{$PE_PUBLIC_DOMAIN} {
-		import ca-acme
-		import backplane-routes
-	}
-}
-(backplane-proxy) {
-	http://backplane.{$PE_PUBLIC_DOMAIN} {
-		import backplane-routes
-	}
-}
-import backplane-{$PE_ACCESS_MODE:local}
+import site backplane.{$PE_PUBLIC_DOMAIN} backplane-routes

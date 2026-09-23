@@ -184,16 +184,18 @@ see [capture and restore](backup.md#capture-and-restore) before changing an inst
 Fresh installs select `PE_ACCESS_MODE=local`. The modes describe the listener independently
 of the application's configured browser URL (`PE_SCHEME` and `PE_PUBLIC_DOMAIN`):
 
-| Mode | HTTP | HTTPS | Intended use |
-| --- | --- | --- | --- |
-| Local (`local`) | Available without redirects | Self-signed HTTPS | Start without a domain; trust the local certificate authority to remove browser warnings |
-| Public (`public`) | Redirects to HTTPS, except `/health` | Automatically renewed, publicly trusted certificate | Use your own domain |
-| Behind another gateway (`proxy`) | Internal connection from that gateway | Handled by the other gateway | Run behind Platform Edge or another HTTPS gateway |
+| Mode | HTTP | HTTPS | Issuer (`PE_TLS_ISSUER`) | Intended use |
+| --- | --- | --- | --- | --- |
+| Local (`local`) | Available without redirects | Self-signed HTTPS | `internal` (default) or `files` | Start without a domain; trust the local certificate authority to remove browser warnings |
+| Public (`public`) | Redirects to HTTPS, except `/health` | Automatically renewed certificate, or your own files | `acme` (default; Let's Encrypt or `PE_ACME_CA`) or `files` | Use your own domain |
+| Behind another gateway (`proxy`) | Internal connection from that gateway | Handled by the other gateway | Unused | Run behind Platform Edge or another HTTPS gateway |
 
-Choose the mode; certificate setup follows automatically. For local HTTPS, Caddy creates
-a self-signed root certificate and uses it to sign the server certificates. The trust guide
-below explains how to install that public root. Public mode obtains trusted certificates
-for your domain. Behind another gateway, that gateway owns the certificates.
+Choose the mode; the default issuer follows. For local HTTPS, Caddy creates a self-signed
+root certificate and uses it to sign the server certificates. The trust guide below
+explains how to install that public root. Public mode obtains trusted certificates for your
+domain. Behind another gateway, that gateway owns the certificates. Bootstrap refuses an
+issuer the mode cannot use. [Corporate certificates and private ACME](#corporate-certificates-and-private-acme)
+covers `files` and a private `PE_ACME_CA`.
 
 The template uses `PE_PUBLIC_DOMAIN=localhost`, `PE_SCHEME=http` for browser URLs, and
 `PE_BIND_HOST=127.0.0.1`. Both 80 and 443 serve real listeners in local mode. Readiness
@@ -316,7 +318,78 @@ PE_ACME_EMAIL=ops@example.com
 
 Bootstrap selects `compose.public.yaml` in public mode so an empty `PE_SCHEME` uses HTTPS. When running Compose directly, include both `-f compose.yaml -f compose.public.yaml`.
 
-Only public mode uses `PE_ACME_EMAIL`. Caddy stores and renews certificates in `edge-data`. HTTP `/health` intentionally stays available without a redirect. Healthy means Caddy answers, not that upstreams are healthy. Other HTTP requests for configured hosts redirect to HTTPS; the `:80` catch-all returns 404 for unknown hosts on every path except `/health`. For public certificates, externally reachable ports remain 80 and 443 even if NAT maps them to different `PE_HTTP_PORT` and `PE_HTTPS_PORT` values. Nonstandard direct HTTPS URLs require an explicit port in clients; the normal redirect targets port 443.
+Only the `acme` issuer uses `PE_ACME_EMAIL`. Caddy stores and renews certificates in `edge-data`. HTTP `/health` intentionally stays available without a redirect. Healthy means Caddy answers, not that upstreams are healthy. Other HTTP requests for configured hosts redirect to HTTPS; the `:80` catch-all returns 404 for unknown hosts on every path except `/health`. For public certificates, externally reachable ports remain 80 and 443 even if NAT maps them to different `PE_HTTP_PORT` and `PE_HTTPS_PORT` values. Nonstandard direct HTTPS URLs require an explicit port in clients; the normal redirect targets port 443.
+
+## Corporate certificates and private ACME
+
+`PE_TLS_ISSUER` selects where certificates come from, independently of the access mode:
+`internal` (Edge's own CA, local mode), `acme` (public mode) or `files` (local or public).
+Behind another gateway the setting is unused. Relative `PE_TLS_DIR`, `PE_TLS_CA` and
+`PE_ACME_CA_ROOT` paths resolve against this checkout.
+
+### Private or alternative ACME CA
+
+Set `PE_ACME_CA` to the CA's ACME directory URL (`https://`). For a CA whose chain is not
+in the public trust stores (step-ca, an ACME-enabled corporate CA), set `PE_ACME_CA_ROOT`
+to its CA certificate in PEM form: Caddy trusts it when talking to the ACME server, and
+bootstrap's readiness probe trusts it for the issued server certificates. A CA that
+requires external account binding takes `PE_ACME_EAB_KEY_ID` and `PE_ACME_EAB_HMAC`,
+always together.
+
+```sh
+PE_ACCESS_MODE=public
+PE_PUBLIC_DOMAIN=example.internal
+PE_TLS_ISSUER=acme
+PE_ACME_EMAIL=ops@example.internal
+PE_ACME_CA=https://ca.example.internal/acme/acme/directory
+PE_ACME_CA_ROOT=/etc/ssl/corp/root_ca.crt
+PE_ACME_EAB_KEY_ID=
+PE_ACME_EAB_HMAC=
+```
+
+Bootstrap selects `compose.acme-ca-root.yaml` (mounts the trust file read-only at
+`/certs/acme-ca-root.crt`) and `compose.acme-eab.yaml` when those settings are set; direct
+Compose commands list the same files after `compose.public.yaml`. Only the HTTP-01 and
+TLS-ALPN-01 challenges are available: the ACME server must reach the host on TCP 80 and
+443 for every configured name, and DNS-01 is not offered. Account keys and issued
+certificates stay in `edge-data`.
+
+### Certificate and key files
+
+Put the server certificate chain in `tls.crt` and its unencrypted private key in `tls.key`
+inside one directory:
+
+```sh
+PE_TLS_ISSUER=files
+PE_TLS_DIR=/etc/ssl/platform-edge
+PE_TLS_CA=/etc/ssl/corp/root_ca.crt
+```
+
+The certificate must cover every configured hostname, the root domain and the six
+subdomains, by name or by a one-label wildcard (`*.example.com` covers
+`grafana.example.com`, not `example.com`). Bootstrap reads the subject alternative names
+with `openssl` and refuses a certificate that leaves a hostname uncovered. `PE_TLS_CA` is
+the issuing CA in PEM form for bootstrap's readiness probe; leave it empty when that CA is
+in the host's trust store. Bootstrap selects `compose.files.yaml`, which mounts `PE_TLS_DIR`
+read-only at `/certs` and never creates it; direct Compose commands add `-f compose.files.yaml`.
+
+Caddy runs as uid 0 with every capability dropped, so it reads the files by permission
+bits: own `tls.key` by root with mode 0600, and keep `tls.crt` and the CA file readable.
+Bootstrap checks this from a throwaway container before starting and refuses with
+`tls_files_unreadable`. In local mode, `127.0.0.1` keeps its internal-CA certificate for
+the console and health endpoint; application hostnames use the files.
+
+Replace a certificate by writing the new pair into the directory, then reload:
+
+```sh
+docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+python3 scripts/bootstrap.py --probe-only
+```
+
+Caddy reads the files at reload; Edge does not watch the directory or renew file
+certificates, so alert on `pe_certificate_not_after_seconds`, which `--probe-only`
+refreshes after verifying the handshake. File certificates are outside the Checkpoint
+volumes; back them up with your PKI.
 
 ## Per-stack settings behind the edge
 
@@ -403,7 +476,7 @@ must remain independently startable when Backplane is not installed.
 
 1. Render the edge settings with `python3 scripts/bootstrap.py --render-only`, then edit `.env` for the desired mode. This writes only the env file, with mode 0600.
 2. If an installed stack already owns ports 80 or 443, give its gateway spare loopback ports and run its bootstrap to release those ports. For a new stack, prepare its env using its documented bootstrap. Keep the backplane’s optional `edge` profile off.
-3. Run `python3 scripts/bootstrap.py` in platform-edge. It creates the external network with the contract allocation if missing, or refuses one whose allocation differs (see the network cutover below), names a conflicting container before publishing, and starts Caddy with `docker compose up --wait`. It probes `127.0.0.1` on the selected HTTP or HTTPS port with the domain as Host. HTTPS uses that domain as SNI, validates the public certificate or trusts the installation’s self-signed root certificate read from the volume, and reports the root SHA-256 fingerprint and leaf `notAfter`. It never disables TLS verification. The publish address must accept loopback connections (use `127.0.0.1` or `0.0.0.0` for these host probes).
+3. Run `python3 scripts/bootstrap.py` in platform-edge. It creates the external network with the contract allocation if missing, or refuses one whose allocation differs (see the network cutover below), names a conflicting container before publishing, and starts Caddy with `docker compose up --wait`. It probes `127.0.0.1` on the selected HTTP or HTTPS port with the domain as Host. HTTPS uses that domain as SNI, validates the certificate against the system trust store, `PE_TLS_CA` or `PE_ACME_CA_ROOT`, or trusts the installation’s self-signed root certificate read from the volume, and reports the leaf `notAfter` (plus the root SHA-256 fingerprint for the internal CA). It never disables TLS verification. The publish address must accept loopback connections (use `127.0.0.1` or `0.0.0.0` for these host probes).
 4. Apply the per-stack settings above, including Edge’s fixed address in the trust lists. Run each stack’s bootstrap so it selects the matching Compose files and starts its services. Probe application hostnames through Edge. A missing stack must affect only its own hostnames. Edge `/health` proves only Edge readiness.
 
 Both sibling bootstraps must probe **their own local HTTP listener**, independently of

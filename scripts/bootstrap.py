@@ -46,7 +46,10 @@ RETIRED_OVERLAY = "compose.tailscale.yaml"
 LEGACY = {"PE_TAILSCALE_EDGE_IP"}
 RESTORE_MARKER = ".pe-restore-incomplete"
 ENV_LINE = re.compile(r"^(?:export\s+)?(?P<key>[A-Z][A-Z0-9_]*)=(?P<value>.*)$")
-ROUTE_LINE = re.compile(r"^\s*https?://(?P<host>(?:[a-z0-9-]+\.)*\{\$PE_PUBLIC_DOMAIN\})\s*\{$")
+# Route Files declare each host once with `import site <host> <routes>`; plain site addresses still count.
+ROUTE_LINE = re.compile(r"^\s*(?:import site (?P<site>HOST) [a-z0-9-]+|https?://(?P<address>HOST)\s*\{)$"
+                        .replace("HOST", r"(?:[a-z0-9-]+\.)*\{\$PE_PUBLIC_DOMAIN\}"))
+SAN_NAME = re.compile(r"DNS:([^,\s]+)")
 PORT = re.compile(r"(?P<host>\[[^]]+\]|[^, ]+):(?P<first>\d+)(?:-(?P<last>\d+))?->[^, ]+/tcp")
 DEFAULTS = {
     "PE_CADDY_IMAGE": "",
@@ -60,7 +63,14 @@ DEFAULTS = {
     "PE_PLATFORM_SUBNET": "172.30.0.0/24",
     "PE_PLATFORM_IP_RANGE": "172.30.0.128/25",
     "PE_EDGE_IP": "172.30.0.2",
+    "PE_TLS_ISSUER": "",
     "PE_ACME_EMAIL": "",
+    "PE_ACME_CA": "",
+    "PE_ACME_CA_ROOT": "",
+    "PE_ACME_EAB_KEY_ID": "",
+    "PE_ACME_EAB_HMAC": "",
+    "PE_TLS_DIR": "",
+    "PE_TLS_CA": "",
     "PE_TAILSCALE_HOST": "",
     "PE_TAILSCALE_APPS": "",
     "PE_TAILSCALE_PORT": "443",
@@ -153,7 +163,16 @@ def settings_for(values: dict[str, str]) -> dict[str, str]:
     mode = settings["PE_ACCESS_MODE"]
     if mode not in {"local", "public", "proxy"}:
         raise Refused("invalid_settings", "PE_ACCESS_MODE must be local, public, or proxy")
-    settings["PE_TLS_ISSUER"] = {"local": "internal", "public": "acme", "proxy": "none"}[mode]
+    settings["PE_TLS_ISSUER"] = tls_issuer(mode, settings["PE_TLS_ISSUER"])
+    if settings["PE_TLS_ISSUER"] not in {"local": ("internal", "files"), "public": ("acme", "files"), "proxy": ("none",)}[mode]:
+        raise Refused("invalid_settings", "PE_TLS_ISSUER must be internal or files in local mode and acme or files in public mode")
+    if settings["PE_TLS_ISSUER"] == "files" and not settings["PE_TLS_DIR"]:
+        raise Refused("invalid_settings", "PE_TLS_ISSUER=files needs PE_TLS_DIR, a directory holding tls.crt and tls.key")
+    if settings["PE_TLS_ISSUER"] == "acme":
+        if settings["PE_ACME_CA"] and not re.fullmatch(r"https://[^/\s]+(?:/\S*)?", settings["PE_ACME_CA"]):
+            raise Refused("invalid_settings", "PE_ACME_CA must be an https:// ACME directory URL")
+        if bool(settings["PE_ACME_EAB_KEY_ID"]) != bool(settings["PE_ACME_EAB_HMAC"]):
+            raise Refused("invalid_settings", "PE_ACME_EAB_KEY_ID and PE_ACME_EAB_HMAC must be set together")
     configured_scheme = os.environ.get("PE_SCHEME", values.get("PE_SCHEME", ""))
     settings["PE_SCHEME"] = configured_scheme or ("http" if mode == "local" else "https")
     if settings["PE_SCHEME"] not in {"http", "https"} or (mode == "public" and settings["PE_SCHEME"] != "https"):
@@ -234,14 +253,58 @@ def settings_for(values: dict[str, str]) -> dict[str, str]:
     return settings
 
 
+def tls_issuer(mode: str, configured: str) -> str:
+    """The effective issuer; behind another gateway the setting is unused."""
+    if mode == "proxy":
+        return "none"
+    # Derived settings are fed back through settings_for after a mode change; "none" re-derives.
+    return (configured if configured != "none" else "") or {"public": "acme"}.get(mode, "internal")
+
+
 def routed_hostnames(routes: Path, domain: str) -> list[str]:
     hosts = set()
     for path in sorted(routes.glob("*.caddy")):
         for line in path.read_text(encoding="utf-8").splitlines():
             match = ROUTE_LINE.fullmatch(line)
             if match:
-                hosts.add(match.group("host").replace("{$PE_PUBLIC_DOMAIN}", domain))
+                hosts.add((match.group("site") or match.group("address")).replace("{$PE_PUBLIC_DOMAIN}", domain))
     return sorted(hosts)
+
+
+def certificate_covers(names: set[str], host: str) -> bool:
+    return host in names or ("." in host and "*." + host.split(".", 1)[1] in names)
+
+
+def mounted_tls_files(settings: dict[str, str]) -> list[str]:
+    """Container paths of operator certificate inputs mounted by the selected overlays."""
+    if settings["PE_TLS_ISSUER"] == "files":
+        return ["/certs/tls.crt", "/certs/tls.key"]
+    if settings["PE_TLS_ISSUER"] == "acme" and settings["PE_ACME_CA_ROOT"]:
+        return ["/certs/acme-ca-root.crt"]
+    return []
+
+
+def check_tls_inputs(runner: Runner, settings: dict[str, str], root: Path) -> None:
+    for key in ("PE_TLS_CA", "PE_ACME_CA_ROOT"):
+        if settings[key] and not os.access(root / settings[key], os.R_OK):
+            raise Refused("invalid_settings", f"{key} must be a readable PEM file")
+    if settings["PE_TLS_ISSUER"] != "files":
+        return
+    directory = root / settings["PE_TLS_DIR"]
+    certificate = directory / "tls.crt"
+    if not directory.is_dir() or not certificate.is_file() or not (directory / "tls.key").is_file():
+        raise Refused("invalid_settings", f"PE_TLS_DIR ({directory}) must be a directory holding tls.crt and tls.key")
+    if shutil.which("openssl") is None:
+        raise Refused("openssl_missing", "install openssl; bootstrap reads the certificate's subject alternative names with it")
+    result = runner(["openssl", "x509", "-in", str(certificate), "-noout", "-ext", "subjectAltName"])
+    if result.returncode:
+        raise Refused("invalid_settings", f"openssl cannot read {certificate} as a PEM certificate")
+    names = {name.lower() for name in SAN_NAME.findall(result.stdout)}
+    missing = [host for host in routed_hostnames(root / "routes.d", settings["PE_PUBLIC_DOMAIN"])
+               if not certificate_covers(names, host.lower())]
+    if missing:
+        raise Refused("invalid_settings", f"{certificate} does not cover {', '.join(missing)}; its subject alternative names are "
+                      + (", ".join(sorted(names)) or "empty"))
 
 
 def check_ports(runner: Runner, settings: dict[str, str], project: str) -> None:
@@ -368,11 +431,20 @@ def ensure_volumes(runner: Runner, settings: dict[str, str], project: str) -> No
 def compose_command(root: Path, env_file: Path) -> list[str]:
     command = ["docker", "compose", "--project-directory", str(root), "--env-file", str(env_file)]
     values = read_env(env_file) if env_file.exists() else {}
-    mode = os.environ.get("PE_ACCESS_MODE", values.get("PE_ACCESS_MODE", "local"))
+    def setting(key: str) -> str:
+        return os.environ.get(key, values.get(key, ""))
+    mode = setting("PE_ACCESS_MODE") or "local"
     files = os.environ.get("COMPOSE_FILE", values.get("COMPOSE_FILE", "compose.yaml")).split(os.pathsep)
     files = [str((root / name).resolve()) for name in files if name]
-    if mode in {"proxy", "public"}:
-        override = str(root / f"compose.{mode}.yaml")
+    overlays = [f"compose.{mode}.yaml"] if mode in {"proxy", "public"} else []
+    issuer = tls_issuer(mode, setting("PE_TLS_ISSUER"))
+    if issuer == "files":
+        overlays.append("compose.files.yaml")
+    if issuer == "acme":
+        overlays += [name for name, key in (("compose.acme-ca-root.yaml", "PE_ACME_CA_ROOT"),
+                                            ("compose.acme-eab.yaml", "PE_ACME_EAB_KEY_ID")) if setting(key)]
+    for overlay in overlays:
+        override = str(root / overlay)
         files = [name for name in files if name != override] + [override]
     for name in files:
         command += ["-f", name]
@@ -416,6 +488,20 @@ def probe(settings: dict[str, str], host: str, ca: str = "", path: str = "/healt
         connection.close()
 
 
+def probe_trust(settings: dict[str, str], root: Path, runner: Runner, dc: list[str]) -> str:
+    """PEM data the readiness probe trusts; empty means the system store."""
+    if settings["PE_TLS_ISSUER"] == "internal":
+        result = runner(dc + ["exec", "-T", "caddy", "cat", "/data/caddy/pki/authorities/local/root.crt"])
+        if result.returncode:
+            raise OSError("internal CA root is not available in edge-data")
+        return result.stdout
+    if settings.get("PE_TLS_CA"):
+        return (root / settings["PE_TLS_CA"]).read_text(encoding="utf-8")
+    if settings["PE_TLS_ISSUER"] == "acme" and settings.get("PE_ACME_CA_ROOT"):
+        return (root / settings["PE_ACME_CA_ROOT"]).read_text(encoding="utf-8")
+    return ""
+
+
 def wait_ready(settings: dict[str, str], root: Path, env_file: Path,
                runner: Runner = run, timeout: float = 120.0) -> dict:
     deadline = time.monotonic() + timeout
@@ -423,13 +509,7 @@ def wait_ready(settings: dict[str, str], root: Path, env_file: Path,
     dc = compose_command(root, env_file)
     while time.monotonic() < deadline:
         try:
-            ca = ""
-            if settings["PE_TLS_ISSUER"] == "internal":
-                result = runner(dc + ["exec", "-T", "caddy", "cat",
-                                      "/data/caddy/pki/authorities/local/root.crt"])
-                if result.returncode:
-                    raise OSError("internal CA root is not available in edge-data")
-                ca = result.stdout
+            ca = probe_trust(settings, root, runner, dc)
             mode = settings.get("PE_ACCESS_MODE", "local")
             if mode == "local":
                 probe(dict(settings, PE_SCHEME="http"), settings["PE_PUBLIC_DOMAIN"])
@@ -437,7 +517,7 @@ def wait_ready(settings: dict[str, str], root: Path, env_file: Path,
             else:
                 listener = dict(settings, PE_SCHEME="http") if mode == "proxy" else settings
                 certificate = probe(listener, settings["PE_PUBLIC_DOMAIN"], ca)
-            if ca:
+            if settings["PE_TLS_ISSUER"] == "internal":
                 certificate["ca_sha256"] = ca_fingerprint(ca)
             if certificate:
                 metric = (f'pe_certificate_not_after_seconds {certificate["not_after_seconds"]:.0f}\n'
@@ -456,6 +536,8 @@ def wait_ready(settings: dict[str, str], root: Path, env_file: Path,
         except (OSError, ValueError, http.client.HTTPException) as error:
             last = str(error)
         time.sleep(3)
+    if "CERTIFICATE_VERIFY_FAILED" in last and settings["PE_TLS_ISSUER"] != "internal" and not settings.get("PE_TLS_CA"):
+        last += "; set PE_TLS_CA to the issuing CA's PEM file when it is not in the system trust store"
     raise Refused("not_ready", last)
 
 
@@ -523,6 +605,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         if args.render_only:
             print(json.dumps({"env": str(env_file), "project": project, "generated": []}))
             return 0
+        check_tls_inputs(runner, settings, root)
         if not args.probe_only:
             check_ports(runner, settings, project)
             started = now()
@@ -532,19 +615,26 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
                 check_proxy_peer(runner, settings)
                 ensure_volumes(runner, settings, project)
                 # The read-only state check must not contend for the running Edge's fixed address.
+                # Caddy runs as uid 0 without CAP_DAC_OVERRIDE, so mounted certificate files are read
+                # here under the same identity; busybox `test -r` would wrongly pass for root.
+                mounted = mounted_tls_files(settings)
+                unreadable = f"elif ! cat {' '.join(mounted)} >/dev/null 2>&1; then echo unreadable; " if mounted else ""
                 with tempfile.NamedTemporaryFile("w", suffix=".yaml") as isolated:
                     isolated.write("services:\n  caddy:\n    networks: !reset []\n    network_mode: none\n")
                     isolated.flush()
                     result = runner(compose_command(root, env_file) + ["-f", isolated.name,
                         "run", "--rm", "--no-deps", "--entrypoint", "sh", "caddy", "-ec",
-                        f"if test -e /data/{RESTORE_MARKER} || test -e /config/{RESTORE_MARKER}; "
-                        "then echo marker; else ls /data /config >/dev/null && echo clean; fi",
+                        f"if test -e /data/{RESTORE_MARKER} || test -e /config/{RESTORE_MARKER}; then echo marker; "
+                        f"{unreadable}else ls /data /config >/dev/null && echo clean; fi",
                     ])
                 state = result.stdout.strip().splitlines()[-1:]
-                if result.returncode or state not in (["clean"], ["marker"]):
+                if result.returncode or state not in (["clean"], ["marker"], ["unreadable"]):
                     raise Refused("state_check_failed", (result.stderr or result.stdout).strip()[-2000:])
                 if state == ["marker"]:
                     raise Refused("restore_incomplete", "restore markers present; preserve volumes and restore into a fresh prefix")
+                if state == ["unreadable"]:
+                    raise Refused("tls_files_unreadable", "Caddy (uid 0 without CAP_DAC_OVERRIDE) cannot read "
+                                  + ", ".join(mounted) + "; own tls.key by root with mode 0600, and keep certificates readable")
                 compose_up(root, env_file, runner)
                 certificate = wait_ready(settings, root, env_file, runner)
             except BaseException:

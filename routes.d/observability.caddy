@@ -6,24 +6,4 @@
 		import forwarded-proto-{$PE_ACCESS_MODE:local}
 	}
 }
-(observability-local) {
-	http://grafana.{$PE_PUBLIC_DOMAIN} {
-		import observability-routes
-	}
-	https://grafana.{$PE_PUBLIC_DOMAIN} {
-		tls internal
-		import observability-routes
-	}
-}
-(observability-public) {
-	https://grafana.{$PE_PUBLIC_DOMAIN} {
-		import ca-acme
-		import observability-routes
-	}
-}
-(observability-proxy) {
-	http://grafana.{$PE_PUBLIC_DOMAIN} {
-		import observability-routes
-	}
-}
-import observability-{$PE_ACCESS_MODE:local}
+import site grafana.{$PE_PUBLIC_DOMAIN} observability-routes

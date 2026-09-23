@@ -22,11 +22,64 @@
 	}
 }
 
-(ca-acme) {
+# Issuer snippets, selected by PE_TLS_ISSUER; bootstrap validates the mode and issuer pair.
+(tls-internal) {
+	tls internal
+}
+# Empty email and dir mean Caddy's defaults (Let's Encrypt). Caddy refuses empty trusted_roots
+# and eab arguments, so the overlays that supply them also select those snippets.
+(tls-acme) {
 	tls {
 		issuer acme {
 			email "{$PE_ACME_EMAIL}"
+			dir "{$PE_ACME_CA}"
+			import acme-trust-{$PE_ACME_TRUST:system}
+			import acme-account-{$PE_ACME_ACCOUNT:none}
 		}
+	}
+}
+(acme-trust-system) {
+}
+(acme-trust-file) {
+	trusted_roots /certs/acme-ca-root.crt
+}
+(acme-account-none) {
+}
+(acme-account-eab) {
+	eab "{$PE_ACME_EAB_KEY_ID}" "{$PE_ACME_EAB_HMAC}"
+}
+# compose.files.yaml mounts PE_TLS_DIR read-only at /certs.
+(tls-files) {
+	tls /certs/tls.crt /certs/tls.key
+}
+# Retired alias for operator Route Files; removed in the next release.
+(ca-acme) {
+	import tls-acme
+}
+
+# One line per hostname in a Route File: `import site <host> <routes-snippet>` expands to the
+# listeners of PE_ACCESS_MODE, with the selected issuer on the HTTPS listener.
+(site) {
+	import site-{$PE_ACCESS_MODE:local} {args[0]} {args[1]}
+}
+(site-local) {
+	http://{args[0]} {
+		import {args[1]}
+	}
+	https://{args[0]} {
+		import tls-{$PE_TLS_ISSUER:internal}
+		import {args[1]}
+	}
+}
+(site-public) {
+	https://{args[0]} {
+		import tls-{$PE_TLS_ISSUER:acme}
+		import {args[1]}
+	}
+}
+(site-proxy) {
+	http://{args[0]} {
+		import {args[1]}
 	}
 }
 

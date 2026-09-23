@@ -31,7 +31,12 @@ services:
       PE_ACCESS_MODE: ${PE_ACCESS_MODE:-local}
       PE_PUBLIC_DOMAIN: ${PE_PUBLIC_DOMAIN:-localhost}
       PE_SCHEME: ${PE_SCHEME:-http}
+      # Local mode issues with the internal CA; compose.public.yaml defaults to acme.
+      PE_TLS_ISSUER: ${PE_TLS_ISSUER:-internal}
       PE_ACME_EMAIL: ${PE_ACME_EMAIL:-}
+      PE_ACME_CA: ${PE_ACME_CA:-}
+      PE_ACME_EAB_KEY_ID: ${PE_ACME_EAB_KEY_ID:-}
+      PE_ACME_EAB_HMAC: ${PE_ACME_EAB_HMAC:-}
       PE_TAILSCALE_HOST: ${PE_TAILSCALE_HOST:-}
       PE_TAILSCALE_APPS: ${PE_TAILSCALE_APPS:-}
       PE_TAILSCALE_PORT: ${PE_TAILSCALE_PORT:-443}
