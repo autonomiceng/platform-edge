@@ -86,11 +86,11 @@ class ServeTests(unittest.TestCase):
             env = root / ".env"
             env.write_text("COMPOSE_FILE=compose.yaml:custom.yaml:compose.proxy.yaml:compose.tailscale.yaml\n")
             result = tailscale_serve.configuration(root, env, {"PE_TAILSCALE_HOST": "host.tail123.ts.net", "PE_ACCESS_MODE": "local"}, ["caddy"])
-            self.assertEqual(result["files"], "compose.yaml:custom.yaml:compose.tailscale.yaml")
+            self.assertEqual(result["files"], "compose.yaml:custom.yaml")
             outside = root / "custom" / "compose.proxy.yaml"
             env.write_text(f"COMPOSE_FILE={root / 'compose.yaml'}:{outside}:{root / 'compose.proxy.yaml'}:{root / 'compose.tailscale.yaml'}\n")
             result = tailscale_serve.configuration(root, env, {"PE_TAILSCALE_HOST": "host.tail123.ts.net"}, ["caddy"])
-            self.assertEqual(result["files"], f"{root / 'compose.yaml'}:{outside}:{root / 'compose.tailscale.yaml'}")
+            self.assertEqual(result["files"], f"{root / 'compose.yaml'}:{outside}")
 
 class ConsoleSetupTests(unittest.TestCase):
     def test_selected_consoles_preserve_profiles_credentials_and_allowlists(self):
@@ -116,8 +116,8 @@ class ConsoleSetupTests(unittest.TestCase):
                 if argv[:3] == ['tailscale', 'serve', 'status']:
                     return '{}'
                 if argv[:3] == ['docker', 'network', 'inspect']:
-                    return json.dumps([{'IPAM': {'Config': [{'Gateway': '172.18.0.1', 'Subnet': '172.18.0.0/16'}]},
-                                        'Containers': {'c' * 64: {'IPv4Address': '172.18.0.2/16'}}}])
+                    return json.dumps([{'IPAM': {'Config': [{'Gateway': '172.30.0.1', 'Subnet': '172.30.0.0/24', 'IPRange': '172.30.0.128/25'}]},
+                                        'Containers': {'c' * 64: {'IPv4Address': self.edge_address + '/24'}}}])
                 if argv[:2] == ['docker', 'ps']:
                     return 'c' * 12
                 if argv[:2] == ['docker', 'compose'] and 'ps' in argv:
@@ -126,6 +126,11 @@ class ConsoleSetupTests(unittest.TestCase):
 
             args = ['--env-file', str(edge / '.env'), '--backplane-dir', str(bp), '--observability-dir', str(ob),
                     '--gateway-dir', str(absent), '--dry-run']
+            self.edge_address = '172.30.0.130'
+            with patch.object(tailscale_serve, 'checked', checked), contextlib.redirect_stderr(io.StringIO()) as log:
+                self.assertEqual(tailscale_serve.main(args), 1)
+            self.assertIn('fixed PE_EDGE_IP', log.getvalue())
+            self.edge_address = '172.30.0.2'
             for extra, explicit in (([], False), (['--console-allow', '100.64.0.0/10 fd7a:115c:a1e0::/48'], True)):
                 output = io.StringIO()
                 with patch.object(tailscale_serve, 'checked', checked), contextlib.redirect_stdout(output):
@@ -134,8 +139,9 @@ class ConsoleSetupTests(unittest.TestCase):
                 self.assertEqual(result['links']['backplane_rustfs'], 'https://host.tail123.ts.net:8450/rustfs/console/')
                 self.assertEqual(result['links']['observability_rustfs'], 'https://host.tail123.ts.net:8451/rustfs/console/')
                 settings = {Path(change['env']).parent.name: change['settings'] for change in result['changes']}
-                self.assertEqual(settings['edge']['PE_TRUSTED_PROXIES'], '172.18.0.1')
-                self.assertEqual(settings['bp']['BP_TRUSTED_PROXIES'], '172.18.0.2')
+                self.assertEqual(settings['edge']['PE_TRUSTED_PROXIES'], '172.30.0.1')
+                self.assertNotIn('PE_TAILSCALE_EDGE_IP', settings['edge'])
+                self.assertEqual(settings['bp']['BP_TRUSTED_PROXIES'], '172.30.0.2')
                 self.assertEqual(settings['bp']['BP_RUSTFS_AUTHORITY'], 'host.tail123.ts.net:8450')
                 self.assertEqual(settings['bp']['COMPOSE_FILE'], 'compose.yaml:custom.yaml:compose.blobs.yaml:compose.gateway.yaml')
                 self.assertNotIn('COMPOSE_PROFILES', settings['bp'])

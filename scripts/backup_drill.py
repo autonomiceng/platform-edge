@@ -7,7 +7,9 @@ import signal
 import sys
 import subprocess
 import tempfile
+import ipaddress
 import time
+import zlib
 from pathlib import Path
 
 import bootstrap
@@ -26,6 +28,14 @@ def main():
                PE_BIND_HOST="127.0.0.1", PE_HTTP_PORT=os.environ.get("SMOKE_HTTP_PORT", "18380"),
                PE_HTTPS_PORT=os.environ.get("SMOKE_HTTPS_PORT", "18743"),
                PE_PLATFORM_NETWORK=f"{project}-platform", PE_ACME_EMAIL="")
+    # Bootstrap creates the drill network; a /24 under 172.16 keeps it clear of installed
+    # and Docker-created networks, and the project name picks the octet. SMOKE_PLATFORM_SUBNET
+    # moves it when 172.16.0.0/16 is taken on the host.
+    subnet = ipaddress.IPv4Network(os.environ.get("SMOKE_PLATFORM_SUBNET", f"172.16.{zlib.crc32(project.encode()) % 256}.0/24"))
+    if subnet.prefixlen != 24:
+        raise ValueError("SMOKE_PLATFORM_SUBNET must be an IPv4 /24")
+    env.update(PE_PLATFORM_SUBNET=str(subnet), PE_PLATFORM_IP_RANGE=str(list(subnet.subnets(prefixlen_diff=1))[1]),
+               PE_EDGE_IP=str(subnet.network_address + 2))
 
     def run(*argv, input=None):
         result = subprocess.run(argv, cwd=ROOT, env=env, text=True, input=input,
@@ -40,7 +50,8 @@ def main():
     existing = run("docker", "volume", "ls", "--format", "{{.Name}}").splitlines()
     if any(volume in existing for volume in volumes):
         raise ValueError("drill volumes already exist")
-    run("docker", "network", "create", env["PE_PLATFORM_NETWORK"])
+    if env["PE_PLATFORM_NETWORK"] in run("docker", "network", "ls", "--format", "{{.Name}}").splitlines():
+        raise ValueError("drill network already exists")
     with tempfile.TemporaryDirectory(prefix="platform-edge-drill-") as work:
         env["PE_BACKUP_DIR"] = str(Path(work) / "backups")
         env_file = str(Path(work) / ".env")

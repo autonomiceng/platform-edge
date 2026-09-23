@@ -62,6 +62,8 @@ services:
     networks:
       platform:
         aliases: [pe-edge]
+        # Fixed address outside the dynamic range; siblings trust exactly this peer.
+        ipv4_address: ${PE_EDGE_IP:-172.30.0.2}
 
 volumes:
   edge-data:

@@ -41,6 +41,9 @@ def record_bootstrap(root, env_file, started, state):
 
 PROJECT = "platform-edge"
 NETWORK = "platform"
+RETIRED_OVERLAY = "compose.tailscale.yaml"
+# Retired settings are read only to refuse values that contradict the fixed Edge address.
+LEGACY = {"PE_TAILSCALE_EDGE_IP"}
 RESTORE_MARKER = ".pe-restore-incomplete"
 ENV_LINE = re.compile(r"^(?:export\s+)?(?P<key>[A-Z][A-Z0-9_]*)=(?P<value>.*)$")
 ROUTE_LINE = re.compile(r"^\s*https?://(?P<host>(?:[a-z0-9-]+\.)*\{\$PE_PUBLIC_DOMAIN\})\s*\{$")
@@ -54,11 +57,13 @@ DEFAULTS = {
     "PE_HTTP_PORT": "80",
     "PE_HTTPS_PORT": "443",
     "PE_PLATFORM_NETWORK": NETWORK,
+    "PE_PLATFORM_SUBNET": "172.30.0.0/24",
+    "PE_PLATFORM_IP_RANGE": "172.30.0.128/25",
+    "PE_EDGE_IP": "172.30.0.2",
     "PE_ACME_EMAIL": "",
     "PE_TAILSCALE_HOST": "",
     "PE_TAILSCALE_APPS": "",
     "PE_TAILSCALE_PORT": "443",
-    "PE_TAILSCALE_EDGE_IP": "",
     "PE_TAILSCALE_LITELLM_PORT": "8443",
     "PE_TAILSCALE_LANGFUSE_PORT": "8444",
     "PE_TAILSCALE_S3_PORT": "8445",
@@ -127,7 +132,7 @@ def read_env(path: Path) -> dict[str, str]:
         if not match:
             continue
         key, value = match.group("key"), match.group("value").strip()
-        if key not in DEFAULTS and key not in {"COMPOSE_PROJECT_NAME", "COMPOSE_FILE"}:
+        if key not in DEFAULTS and key not in LEGACY and key not in {"COMPOSE_PROJECT_NAME", "COMPOSE_FILE"}:
             continue
         if key in values:
             raise Refused("env_repair_required", f"{key} is set twice in {path}")
@@ -190,11 +195,22 @@ def settings_for(values: dict[str, str]) -> dict[str, str]:
             raise ValueError("empty allow list")
     except ValueError as error:
         raise Refused("invalid_settings", "PE_METRICS_ALLOW must contain IP addresses or CIDRs") from error
-    if settings["PE_TAILSCALE_EDGE_IP"]:
-        try:
-            ipaddress.IPv4Address(settings["PE_TAILSCALE_EDGE_IP"])
-        except ValueError as error:
-            raise Refused("invalid_settings", "PE_TAILSCALE_EDGE_IP must be an IPv4 address") from error
+    try:
+        subnet = ipaddress.IPv4Network(settings["PE_PLATFORM_SUBNET"])
+        ip_range = ipaddress.IPv4Network(settings["PE_PLATFORM_IP_RANGE"])
+        edge = ipaddress.IPv4Address(settings["PE_EDGE_IP"])
+    except ValueError as error:
+        raise Refused("invalid_settings", "PE_PLATFORM_SUBNET and PE_PLATFORM_IP_RANGE must be IPv4 networks and PE_EDGE_IP an IPv4 address") from error
+    if not ip_range.subnet_of(subnet):
+        raise Refused("invalid_settings", "PE_PLATFORM_IP_RANGE must lie inside PE_PLATFORM_SUBNET")
+    if edge not in subnet or edge in (subnet.network_address, subnet.broadcast_address):
+        raise Refused("invalid_settings", "PE_EDGE_IP must be a host address inside PE_PLATFORM_SUBNET")
+    if edge in ip_range or edge == platform_gateway(subnet):
+        raise Refused("invalid_settings", "PE_EDGE_IP must lie outside PE_PLATFORM_IP_RANGE and differ from the network gateway")
+    legacy = os.environ.get("PE_TAILSCALE_EDGE_IP", values.get("PE_TAILSCALE_EDGE_IP", ""))
+    if legacy and legacy != settings["PE_EDGE_IP"]:
+        raise Refused("legacy_setting", f"PE_TAILSCALE_EDGE_IP={legacy} is retired; Edge always uses PE_EDGE_IP "
+                      f"({settings['PE_EDGE_IP']}). Remove the setting, then rerun bootstrap after the network cutover in docs/operations/ingress.md")
     if settings["PE_TRUSTED_PROXIES"] and (settings["PE_BIND_HOST"] != "127.0.0.1" or settings["PE_ACCESS_MODE"] not in ("local", "proxy")):
         raise Refused("invalid_settings", "trusted ingress peers require a loopback-only local or proxy listener")
     for peer in settings["PE_TRUSTED_PROXIES"].split():
@@ -266,13 +282,68 @@ def check_proxy_peer(runner: Runner, settings: dict[str, str]) -> None:
         raise Refused("invalid_settings", "Tailscale trusted peer must match the current host bridge gateway")
 
 
-def ensure_network(runner: Runner, name: str = NETWORK) -> None:
-    probe = runner(["docker", "network", "inspect", name])
-    if probe.returncode == 0:
+def platform_gateway(subnet: ipaddress.IPv4Network) -> ipaddress.IPv4Address:
+    return subnet.network_address + 1
+
+
+def check_network_allocation(name: str, observed: str, settings: dict[str, str]) -> None:
+    subnet = ipaddress.IPv4Network(settings["PE_PLATFORM_SUBNET"])
+    expected = (str(subnet), str(ipaddress.IPv4Network(settings["PE_PLATFORM_IP_RANGE"])), str(platform_gateway(subnet)))
+    try:
+        configs = [item for item in (json.loads(observed) or []) if item.get("Subnet")
+                   and ipaddress.ip_network(item["Subnet"]).version == 4]
+        actual = ("none", "none", "none")
+        if configs:
+            # A gateway elsewhere in the subnet could sit on the fixed Edge address.
+            actual = (str(ipaddress.IPv4Network(configs[0]["Subnet"])),
+                      str(ipaddress.IPv4Network(configs[0]["IPRange"])) if configs[0].get("IPRange") else "none",
+                      str(ipaddress.IPv4Address(configs[0]["Gateway"])) if configs[0].get("Gateway") else "none")
+    except (ValueError, TypeError, KeyError):
+        actual = ("unreadable", "unreadable", "unreadable")
+    if actual != expected:
+        raise Refused("platform_network_mismatch",
+                      f"network {name} has subnet {actual[0]}, ip-range {actual[1]} and gateway {actual[2]}; expected subnet "
+                      f"{expected[0]}, ip-range {expected[1]} and gateway {expected[2]}. Stop every stack on the network, "
+                      f"run `docker network rm {name}`, then rerun each bootstrap (Edge first).")
+
+
+def ensure_network(runner: Runner, settings: dict[str, str]) -> None:
+    name = settings["PE_PLATFORM_NETWORK"]
+    probe_command = ["docker", "network", "inspect", "--format", "{{json .IPAM.Config}}", name]
+    probe = runner(probe_command)
+    if probe.returncode != 0:
+        subnet = ipaddress.IPv4Network(settings["PE_PLATFORM_SUBNET"])
+        created = runner(["docker", "network", "create", "--driver", "bridge", "--subnet", str(subnet),
+                          "--ip-range", settings["PE_PLATFORM_IP_RANGE"], "--gateway", str(platform_gateway(subnet)), name])
+        # A sibling bootstrap may have created the network first; its allocation is validated below.
+        probe = runner(probe_command)
+        if probe.returncode != 0:
+            raise Refused("network_create_failed", created.stderr.strip())
+    check_network_allocation(name, probe.stdout, settings)
+
+
+def drop_retired_overlay(handle) -> None:
+    """Rewrite a COMPOSE_FILE line that still lists the retired peer-pinning overlay."""
+    handle.seek(0)
+    lines = handle.read().splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        match = ENV_LINE.match(line.rstrip("\r\n"))
+        if not match or match.group("key") != "COMPOSE_FILE":
+            continue
+        value = match.group("value").strip()
+        quote = value[0] if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"') else ""
+        names = value.strip(quote).split(os.pathsep)
+        kept = [name for name in names if Path(name).name != RETIRED_OVERLAY]
+        if len(kept) == len(names):
+            return
+        lines[index] = line[:match.start("value")] + quote + os.pathsep.join(kept) + quote + line[match.end("value"):]
+        print(f"COMPOSE_FILE: dropped {RETIRED_OVERLAY}; the Edge address is fixed by PE_EDGE_IP", file=sys.stderr)
+        handle.seek(0)
+        handle.write("".join(lines))
+        handle.truncate()
+        handle.flush()
+        os.fsync(handle.fileno())
         return
-    created = runner(["docker", "network", "create", name])
-    if created.returncode != 0:
-        raise Refused("network_create_failed", created.stderr.strip())
 
 
 def compose_up(root: Path, env_file: Path, runner: Runner) -> None:
@@ -442,6 +513,10 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             handle.flush()
             os.fsync(handle.fileno())
         os.fchmod(handle.fileno(), 0o600)
+        drop_retired_overlay(handle)
+        exported = os.environ.get("COMPOSE_FILE", "")
+        if any(Path(name).name == RETIRED_OVERLAY for name in exported.split(os.pathsep)):
+            raise Refused("legacy_setting", f"the exported COMPOSE_FILE lists the retired {RETIRED_OVERLAY}; unset it or drop that entry")
         values = read_env(env_file)
         settings = settings_for(values)
         project = os.environ.get("COMPOSE_PROJECT_NAME") or values.get("COMPOSE_PROJECT_NAME") or PROJECT
@@ -453,10 +528,10 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
             started = now()
             record_bootstrap(root, env_file, started, "unknown")
             try:
-                ensure_network(runner, settings["PE_PLATFORM_NETWORK"])
+                ensure_network(runner, settings)
                 check_proxy_peer(runner, settings)
                 ensure_volumes(runner, settings, project)
-                # The read-only state check must not contend for the running Edge's pinned IP.
+                # The read-only state check must not contend for the running Edge's fixed address.
                 with tempfile.NamedTemporaryFile("w", suffix=".yaml") as isolated:
                     isolated.write("services:\n  caddy:\n    networks: !reset []\n    network_mode: none\n")
                     isolated.flush()

@@ -44,13 +44,39 @@ class ExecutionTests(unittest.TestCase):
         self.assertNotIn("BP_SERVER_IMAGE", bp)
         self.assertNotIn("BP_WORKERD_IMAGE", bp)
         self.assertEqual((ob["OB_ACCESS_MODE"], ob["OB_HTTP_PORT"], ob["OB_PLATFORM_NETWORK"]), ("proxy", "18180", "platform"))
-        self.assertEqual(ob["OB_TRUSTED_PROXIES"], edge["PE_TAILSCALE_EDGE_IP"] + "/32")
+        self.assertEqual(ob["OB_TRUSTED_PROXIES"], "172.30.0.2/32")
+        self.assertNotIn("PE_TAILSCALE_EDGE_IP", edge)
         self.assertEqual(edge["COMPOSE_PROJECT_NAME"], "host-edge")
-        self.assertEqual([Path(file).name for file in edge["COMPOSE_FILE"].split(":")][:2], ["compose.yaml", "operator.yaml"])
-        self.assertEqual(Path(edge["COMPOSE_FILE"].split(":")[-1]).name, "compose.tailscale.yaml")
+        self.assertEqual([Path(file).name for file in edge["COMPOSE_FILE"].split(":")], ["compose.yaml", "operator.yaml"])
         self.assertFalse((self.host / "llm-gateway-stack/.env").exists())
         self.assertNotIn("gateway", runner.started)
         self.assertEqual(report["enrollment"], "unverified")
+
+    def test_existing_network_with_another_allocation_is_a_named_conflict(self):
+        runner = FakeRunner()
+        runner.networks["platform"] = [{"Subnet": "172.18.0.0/16", "Gateway": "172.18.0.1"}]
+        before = self.snapshot()
+        code, plan = self.invoke("--stack", "observability", "--dry-run", runner=runner)
+        self.assertEqual((code, plan["executable"]), (1, False))
+        self.assertIn("platform_network_mismatch", {error["code"] for error in plan["conflicts"]})
+        self.assertEqual(self.snapshot(), before)
+        runner.networks["platform"] = [{"Subnet": "172.30.0.0/24", "IPRange": "172.30.0.128/25", "Gateway": "172.30.0.1"}]
+        code, plan = self.invoke("--stack", "observability", "--dry-run", runner=runner)
+        self.assertEqual((code, plan["executable"]), (0, True))
+
+    def test_recorded_retired_overlay_is_dropped_from_the_edge_selection(self):
+        runner = FakeRunner()
+        env = self.root / ".env"
+        env.write_text("PE_ACCESS_MODE=local\nPE_TAILSCALE_EDGE_IP=\nCOMPOSE_FILE=compose.yaml:operator.yaml:compose.tailscale.yaml\n")
+        env.chmod(0o600)
+        (self.root / "operator.yaml").write_text("# operator overlay\n")
+        code, plan = self.invoke("--stack", "observability", "--dry-run", runner=runner)
+        self.assertEqual((code, plan["executable"]), (0, True))
+        self.assertEqual(plan["actions"][0]["compose_selection"]["COMPOSE_FILE"], "compose.yaml:operator.yaml")
+        code, report = self.invoke("--stack", "observability", runner=runner)
+        self.assertEqual((code, report["completed"]), (0, ["edge", "observability"]))
+        self.assertEqual(installation.read_settings(env)["COMPOSE_FILE"], "compose.yaml:operator.yaml")
+        self.assertIn("PE_TAILSCALE_EDGE_IP=\n", env.read_text())
 
     def test_matching_rerun_preserves_recorded_secrets_selection_and_stopped_mounts(self):
         runner = FakeRunner()

@@ -5,7 +5,7 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 # Validate the shipped default independently of operator image and Compose overrides.
 export PE_CADDY_IMAGE=''
-unset COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PROFILES
+unset COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PROFILES PE_PLATFORM_SUBNET PE_PLATFORM_IP_RANGE PE_EDGE_IP
 for tool in python3 shellcheck node; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
@@ -36,6 +36,7 @@ assert {name for name, svc in services.items() if svc.get('ports')} == {'caddy'}
 caddy = services['caddy']
 assert set(caddy['networks']) == {'platform'}, 'caddy joins only platform'
 assert caddy['networks']['platform']['aliases'] == ['pe-edge'], 'edge alias changed'
+assert caddy['networks']['platform']['ipv4_address'] == '172.30.0.2', 'fixed Edge address changed'
 assert set(config['networks']) == {'platform'} and config['networks']['platform']['external'], 'external network required'
 assert set(config['volumes']) == {'edge-data', 'edge-config'}, 'volume names changed'
 assert all(v['external'] for v in config['volumes'].values()), 'durable volumes must be external'

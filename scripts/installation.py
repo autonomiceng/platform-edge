@@ -131,7 +131,7 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
             conflict("edge", "tailscale_preflight", "Cannot verify the selected private Tailscale endpoints.")
             return result
     network = edge["PE_PLATFORM_NETWORK"]
-    peer = edge["PE_TAILSCALE_EDGE_IP"] or None
+    peer = edge["PE_EDGE_IP"]
     if docker:
         try:
             networks = inspect(["docker", "network", "ls", "--format", "{{.Name}}"])
@@ -142,6 +142,11 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                     connection["changes"]["edge"]["PE_TRUSTED_PROXIES"] = bridge
                 if network_type != "bridge false":
                     raise ValueError("Platform Network must be a non-internal local bridge.")
+                allocation = inspect(["docker", "network", "inspect", "--format", "{{json .IPAM.Config}}", network])
+                try:
+                    bootstrap.check_network_allocation(network, allocation, edge)
+                except bootstrap.Refused as mismatch:
+                    conflict("edge", mismatch.code, "Platform Network allocation differs; follow the network cutover in docs/operations/ingress.md.")
         except (ValueError, OSError, KeyError, TypeError, IndexError, bootstrap.Refused):
             conflict("edge", "network_unverified", "Cannot verify the existing Platform Network as a non-internal bridge.")
     if (args.tailscale or edge["PE_TAILSCALE_HOST"]) and (edge["PE_ACCESS_MODE"] == "public" or edge["PE_BIND_HOST"] != "127.0.0.1"):
@@ -171,7 +176,7 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                   "network": network, "preserve": "existing env, secrets, storage, volumes, native Compose selection and routes"}
         result["actions"].append(action)
         try:
-            required = [entrypoint, "compose.yaml", "Caddyfile", "compose.tailscale.yaml"] if name == "edge" else [entrypoint, ".env.example", "compose.yaml"]
+            required = [entrypoint, "compose.yaml", "Caddyfile"] if name == "edge" else [entrypoint, ".env.example", "compose.yaml"]
             if name in {"gateway", "observability"}:
                 required.append("compose.proxy.yaml")
             if name == "backplane":
@@ -182,6 +187,13 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                 raise ValueError("Selected checkout is missing an owning entrypoint or required configuration file.")
             custody(env)
             recorded = read_settings(env) if env.exists() else {}
+            selection_repair = None
+            if name == "edge" and recorded.get("COMPOSE_FILE"):
+                # The retired peer-pinning overlay no longer exists; the recorded selection is repaired in place.
+                kept = [file for file in recorded["COMPOSE_FILE"].split(":") if Path(file).name != bootstrap.RETIRED_OVERLAY]
+                if len(kept) != len(recorded["COMPOSE_FILE"].split(":")):
+                    selection_repair = ":".join(kept)
+                    recorded = dict(recorded, COMPOSE_FILE=selection_repair)
             if recorded.get("COMPOSE_ENV_FILES") or recorded.get("COMPOSE_PATH_SEPARATOR", ":") != ":":
                 raise ValueError("Alternate Compose env files or separators require owning configuration repair.")
             values = read_settings(template if name == "edge" else directory / ".env.example") | recorded
@@ -237,6 +249,8 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                 connection_changes = selected_connection["changes"][name]
                 action["origin"] = selected_connection["endpoints"][tail_app or "Platform Edge"]["url"].rstrip("/")
             changes = dict(connection_changes) if name == "edge" else {}
+            if selection_repair is not None:
+                changes["COMPOSE_FILE"] = selection_repair
             if name == "edge":
                 ports = [edge["PE_HTTP_PORT"]] + ([edge["PE_HTTPS_PORT"]] if edge["PE_ACCESS_MODE"] != "proxy" else [])
                 bind = edge["PE_BIND_HOST"]
@@ -245,7 +259,7 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                 ports = [recorded.get(key, {"gateway": "18080", "backplane": "3000", "observability": "18180"}[name])]
                 bind = "127.0.0.1"
                 action["access_mode"] = "proxy"
-                action["trusted_edge_peer"] = "planned: exact address pinned and verified at execution"
+                action["trusted_edge_peer"] = "planned: fixed PE_EDGE_IP verified at execution"
                 expected = {prefix + "_ACCESS_MODE": "proxy", prefix + "_BIND_HOST": bind}
                 if name == "backplane":
                     expected["BP_PUBLIC_URL"] = origin
@@ -388,9 +402,8 @@ def preflight(root, env_file, template, args, runner, refused=bootstrap.Refused,
                     actual = item["containers"][0]["Networks"][network]["IPAddress"] or item["pinned_peer"]
                     if not actual:
                         raise ValueError("Stopped Edge has no qualified reserved peer; recover its original network identity first.")
-                    if peer and peer != actual:
-                        raise ValueError("Recorded Edge peer differs from the installed peer.")
-                    peer = str(ipaddress.IPv4Address(actual))
+                    if peer != str(ipaddress.IPv4Address(actual)):
+                        raise ValueError("Installed Edge address differs from PE_EDGE_IP; recreate Edge on the fixed address first (network cutover in docs/operations/ingress.md).")
                 action["listeners"] = [bind + ":" + str(port) for bind, port in item["ports"]]
                 wanted.extend((name, bind, port) for bind, port in item["ports"])
                 prepared.append(item)

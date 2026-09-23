@@ -36,6 +36,7 @@ class FakeRunner:
         self.fail = fail
         self.interrupted_backplane_services = None
         self.inventory_failed = False
+        self.networks = {}
 
     def render(self, root, values):
         name = next(name for name, (_, directory, _) in installation.STACKS.items() if root.name == directory)
@@ -49,7 +50,7 @@ class FakeRunner:
             {"type": "bind", "source": str(root / "Caddyfile"), "target": "/config", "read_only": True}],
             "ports": [{"host_ip": "127.0.0.1", "published": str(port), "target": port} for port in ports]}}
         if name == "edge":
-            services["caddy"]["networks"] = {"platform": {"ipv4_address": values.get("PE_TAILSCALE_EDGE_IP", "")}}
+            services["caddy"]["networks"] = {"platform": {"ipv4_address": values.get("PE_EDGE_IP", "172.30.0.2")}}
         if name == "backplane":
             profiles = values.get("COMPOSE_PROFILES", "blobs,compute,gateway").split(",")
             services["server"]["image"] = values.get("BP_SERVER_IMAGE") or "fixture/backplane:1"
@@ -137,7 +138,9 @@ class FakeRunner:
             rows += [{"ID": "foreign", "Ports": line} for line in self.publications.splitlines()]
             output = "\n".join(map(json.dumps, rows))
         elif argv[:3] == ["docker", "network", "ls"]:
-            output = ""
+            output = "\n".join(self.networks)
+        elif argv[:3] == ["docker", "network", "inspect"]:
+            output = json.dumps(self.networks[argv[-1]]) if "{{json .IPAM.Config}}" in argv else "bridge false"
         elif argv[:3] == ["docker", "image", "inspect"]:
             output = json.dumps(self.image_volumes.get(argv[-1], {})) if argv[4] == "{{json .Config.Volumes}}" else self.images[argv[-1]]
         elif argv[:2] == ["docker", "inspect"]:
@@ -174,7 +177,7 @@ class InstallationTests(unittest.TestCase):
         for name, (_, directory, entrypoint) in installation.STACKS.items():
             checkout = self.host / directory
             for filename in {entrypoint, "scripts/install_status_timer.py", ".env.example", "compose.yaml", "compose.proxy.yaml",
-                             "compose.edge.yaml", "compose.gateway.yaml", "compose.blobs.yaml", "compose.compute.yaml", "compose.public.yaml", "compose.tailscale.yaml", "package.json", "bun.lock", "Caddyfile"}:
+                             "compose.edge.yaml", "compose.gateway.yaml", "compose.blobs.yaml", "compose.compute.yaml", "compose.public.yaml", "package.json", "bun.lock", "Caddyfile"}:
                 path = checkout / filename
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("")

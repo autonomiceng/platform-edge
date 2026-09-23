@@ -23,7 +23,7 @@ python3 scripts/bootstrap.py --render-only
 ```
 
 Choose the local or public Edge settings below, then run `python3 scripts/bootstrap.py` here. Add sibling stacks afterward using the [ingress guide](docs/operations/ingress.md). If an existing stack already owns ports 80 or 443, first move its gateway to spare loopback ports.
-Bootstrap creates the shared network and external certificate volumes, checks port
+Bootstrap creates the shared network with the platform contract's allocation (or validates an existing one), creates external certificate volumes, checks port
 conflicts, starts Caddy and verifies both local listeners, including HTTPS certificate trust. No sibling stack is required for Edge readiness.
 
 ## Local integration
@@ -59,7 +59,7 @@ LG_BIND_HOST=127.0.0.1
 LG_HTTP_PORT=18080
 LG_PUBLIC_PORT_SUFFIX=
 LG_PLATFORM_NETWORK=platform
-LG_TRUSTED_PROXIES=192.0.2.2/32
+LG_TRUSTED_PROXIES=172.30.0.2/32
 ```
 
 Observability `.env`:
@@ -72,13 +72,13 @@ OB_BIND_HOST=127.0.0.1
 OB_HTTP_PORT=18180
 OB_PUBLIC_PORT_SUFFIX=
 OB_PLATFORM_NETWORK=platform
-OB_TRUSTED_PROXIES=192.0.2.2/32
+OB_TRUSTED_PROXIES=172.30.0.2/32
 OB_GATEWAY_HEALTH_HOST=localhost
 OB_GATEWAY_URL=https://localhost
 OB_BACKPLANE_URL=https://backplane.localhost
 ```
 
-Replace `192.0.2.2/32` above with Edge’s reserved address on the shared Docker network, as described in the [ingress guide](docs/operations/ingress.md).
+`172.30.0.2/32` is Edge’s fixed address (`PE_EDGE_IP`) on the shared Docker network; the [ingress guide](docs/operations/ingress.md) describes the network allocation.
 
 Backplane `.env` (use the internal `gateway` profile; the standalone `edge` profile stays off):
 
@@ -139,7 +139,7 @@ LG_BIND_HOST=127.0.0.1
 LG_HTTP_PORT=18080
 LG_PUBLIC_PORT_SUFFIX=
 LG_PLATFORM_NETWORK=platform
-LG_TRUSTED_PROXIES=192.0.2.2/32
+LG_TRUSTED_PROXIES=172.30.0.2/32
 ```
 
 Observability `.env`:
@@ -152,13 +152,13 @@ OB_BIND_HOST=127.0.0.1
 OB_HTTP_PORT=18180
 OB_PUBLIC_PORT_SUFFIX=
 OB_PLATFORM_NETWORK=platform
-OB_TRUSTED_PROXIES=192.0.2.2/32
+OB_TRUSTED_PROXIES=172.30.0.2/32
 OB_GATEWAY_HEALTH_HOST=example.com
 OB_GATEWAY_URL=https://example.com
 OB_BACKPLANE_URL=https://backplane.example.com
 ```
 
-Replace `192.0.2.2/32` above with Edge’s reserved address on the shared Docker network, as described in the [ingress guide](docs/operations/ingress.md).
+`172.30.0.2/32` is Edge’s fixed address (`PE_EDGE_IP`) on the shared Docker network; the [ingress guide](docs/operations/ingress.md) describes the network allocation.
 
 Backplane `.env` (use the internal `gateway` profile; the standalone `edge` profile stays off):
 

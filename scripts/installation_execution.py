@@ -279,7 +279,7 @@ def execute(prepared: list[dict], runner, inspect, refused=bootstrap.Refused) ->
                 if read_source(item["env"]) != item["source"]:
                     raise ValueError("Selected configuration changed; rerun preflight.")
                 qualify(item, inspect)
-            peer = None
+            peer = bootstrap.settings_for(prepared[0]["values"])["PE_EDGE_IP"]
             for item, lock in zip(prepared, locks):
                 name = item["name"]
                 changes = dict(item["changes"])
@@ -291,7 +291,7 @@ def execute(prepared: list[dict], runner, inspect, refused=bootstrap.Refused) ->
                 if name != "edge":
                     trust = changes.get(item["prefix"] + "_TRUSTED_PROXIES", peer)
                     if {str(ipaddress.ip_interface(value).ip) for value in trust.split()} != {peer}:
-                        raise ValueError("The pinned peer differs from the qualified proxy trust.")
+                        raise ValueError("Recorded proxy trust differs from the fixed Edge address.")
                 if name == "gateway" and prepared[0].get("connection"):
                     from tailscale_serve import operator_allow
                     allowed = operator_allow(item["values"].get("LG_OPERATOR_ALLOW", "127.0.0.0/8 ::1"))
@@ -302,23 +302,19 @@ def execute(prepared: list[dict], runner, inspect, refused=bootstrap.Refused) ->
                 if response.returncode:
                     raise ValueError("Owning bootstrap failed.")
                 if name == "edge":
-                    peer = edge_peer(item, inspect)
+                    if edge_peer(item, inspect) != peer:
+                        raise ValueError("Edge is not at its fixed PE_EDGE_IP address.")
                     source = read_source(item["env"])
                     item["source"] = source
-                    files = list(item["files"])
-                    pin = str(item["root"] / "compose.tailscale.yaml")
-                    if pin not in [str((item["root"] / file).resolve()) for file in files]:
-                        files.append(pin)
-                    pin_settings = {"PE_TAILSCALE_EDGE_IP": peer, "COMPOSE_FILE": ":".join(files)}
                     if item.get("connection"):
                         network = json.loads(inspect(["docker", "network", "inspect", item["action"]["network"]]))[0]
                         from tailscale_serve import bridge_gateway
-                        pin_settings["PE_TRUSTED_PROXIES"] = bridge_gateway(network)
-                    if amended(source, pin_settings) != source:
-                        with owner_lock(item):
-                            publish(item, pin_settings)
-                        if runner(item["command"], timeout=1800, quiet=True, cwd=str(item["root"])).returncode or edge_peer(item, inspect) != peer:
-                            raise ValueError("Pinned Edge peer could not be verified.")
+                        trust = {"PE_TRUSTED_PROXIES": bridge_gateway(network)}
+                        if amended(source, trust) != source:
+                            with owner_lock(item):
+                                publish(item, trust)
+                            if runner(item["command"], timeout=1800, quiet=True, cwd=str(item["root"])).returncode or edge_peer(item, inspect) != peer:
+                                raise ValueError("Edge trusted ingress peer could not be applied.")
                 report["completed"].append(name)
     except (OSError, ValueError, KeyError, TypeError, IndexError, KeyboardInterrupt, refused) as error:
         report["detail"] = str(error) if isinstance(error, ValueError) else "Selected installation stopped; inspect the owning status record privately."

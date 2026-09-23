@@ -30,10 +30,15 @@ class CommandDeadlineTests(unittest.TestCase):
                 self.assertEqual(child.call_args.kwargs["timeout"], budget)
 
 
+CONTRACT_IPAM = [{"Subnet": "172.30.0.0/24", "IPRange": "172.30.0.128/25", "Gateway": "172.30.0.1"}]
+
+
 class FakeRunner:
-    def __init__(self, *, containers=(), network_exists=True):
+    def __init__(self, *, containers=(), network_exists=True, ipam=CONTRACT_IPAM, create_fails=False):
         self.containers = containers
         self.network_exists = network_exists
+        self.ipam = ipam
+        self.create_fails = create_fails
         self.calls = []
 
     def __call__(self, argv, **options):
@@ -41,7 +46,14 @@ class FakeRunner:
         if argv == ["docker", "ps", "--format", "json"]:
             return subprocess.CompletedProcess(argv, 0, "\n".join(map(json.dumps, self.containers)), "")
         if argv[:3] == ["docker", "network", "inspect"]:
-            return subprocess.CompletedProcess(argv, 0 if self.network_exists else 1, "", "")
+            if not self.network_exists:
+                return subprocess.CompletedProcess(argv, 1, "", "No such network")
+            output = json.dumps(self.ipam if "--format" in argv else [{"IPAM": {"Config": self.ipam}}])
+            return subprocess.CompletedProcess(argv, 0, output, "")
+        if argv[:3] == ["docker", "network", "create"]:
+            # A concurrent sibling bootstrap wins the race; inspect then succeeds.
+            self.network_exists = True
+            return subprocess.CompletedProcess(argv, 1 if self.create_fails else 0, "", "already exists" if self.create_fails else "")
         if "run" in argv:
             return subprocess.CompletedProcess(argv, 0, "clean\n", "")
         return subprocess.CompletedProcess(argv, 0, "", "")
@@ -62,6 +74,8 @@ class BootstrapTests(unittest.TestCase):
                         self.assertIn("networks: !reset []", isolated)
                         self.assertIn("network_mode: none", isolated)
                         return subprocess.CompletedProcess(argv, code, output, "daemon failure" if code else "")
+                    if argv[:3] == ["docker", "network", "inspect"]:
+                        return subprocess.CompletedProcess(argv, 0, json.dumps(CONTRACT_IPAM), "")
                     return subprocess.CompletedProcess(argv, 0, "", "")
                 with patch.dict(os.environ, {}, clear=True), \
                         patch.object(bootstrap.shutil, "which", return_value="docker"), \
@@ -112,6 +126,95 @@ class BootstrapTests(unittest.TestCase):
                                       "Labels": "com.docker.compose.project=platform-edge,com.docker.compose.service=caddy"}])
         bootstrap.check_ports(own, bootstrap.DEFAULTS, bootstrap.PROJECT)
 
+    def start(self, runner, environment, directory):
+        output = io.StringIO()
+        with patch.dict(os.environ, environment, clear=True), \
+                patch.object(bootstrap.shutil, "which", return_value="docker"), \
+                patch.object(bootstrap, "wait_ready", return_value={}), \
+                patch.object(bootstrap, "directory", return_value=contextlib.nullcontext()), \
+                patch.object(bootstrap, "task_record"), contextlib.redirect_stdout(output):
+            return bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env")], runner)
+
+    def test_missing_network_is_created_with_the_contract_allocation(self):
+        for environment, expected in ((
+                {}, ["--subnet", "172.30.0.0/24", "--ip-range", "172.30.0.128/25", "--gateway", "172.30.0.1", "isolated"]), (
+                {"PE_PLATFORM_SUBNET": "10.9.0.0/16", "PE_PLATFORM_IP_RANGE": "10.9.128.0/17", "PE_EDGE_IP": "10.9.0.2"},
+                ["--subnet", "10.9.0.0/16", "--ip-range", "10.9.128.0/17", "--gateway", "10.9.0.1", "isolated"])):
+            with self.subTest(environment=environment), tempfile.TemporaryDirectory() as directory:
+                ipam = [{"Subnet": expected[1], "IPRange": expected[3], "Gateway": expected[5]}]
+                runner = FakeRunner(network_exists=False, ipam=ipam)
+                self.assertEqual(self.start(runner, dict(environment, PE_PLATFORM_NETWORK="isolated"), directory), 0)
+                creates = [c for c in runner.calls if c[:3] == ["docker", "network", "create"]]
+                self.assertEqual(creates, [["docker", "network", "create", "--driver", "bridge"] + expected])
+                probe = ["docker", "network", "inspect", "--format", "{{json .IPAM.Config}}", "isolated"]
+                self.assertEqual([c for c in runner.calls if c[:3] == ["docker", "network", "inspect"]], [probe, probe])
+                self.assertTrue(any("up" in call and "--wait" in call for call in runner.calls))
+
+    def test_existing_network_with_matching_allocation_is_reused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = FakeRunner(ipam=[{"Subnet": "172.30.0.0/24", "IPRange": "172.30.0.128/25", "Gateway": "172.30.0.1"}])
+            self.assertEqual(self.start(runner, {"PE_PLATFORM_NETWORK": "isolated"}, directory), 0)
+            self.assertFalse([c for c in runner.calls if c[:3] == ["docker", "network", "create"]])
+            self.assertTrue(any("up" in call and "--wait" in call for call in runner.calls))
+
+    def test_existing_network_with_different_allocation_is_refused_with_both_values(self):
+        for ipam, observed in (([{"Subnet": "172.18.0.0/16", "Gateway": "172.18.0.1"}], "172.18.0.0/16"),
+                               ([{"Subnet": "172.30.0.0/24", "IPRange": "172.30.0.0/25", "Gateway": "172.30.0.1"}], "172.30.0.0/25"),
+                               ([{"Subnet": "172.30.0.0/24", "IPRange": "172.30.0.128/25", "Gateway": "172.30.0.2"}], "gateway 172.30.0.2"),
+                               ([{"Subnet": "172.30.0.0/24", "IPRange": "172.30.0.128/25"}], "gateway none"),
+                               ([], "none"), (None, "none")):
+            with self.subTest(ipam=ipam), tempfile.TemporaryDirectory() as directory:
+                runner = FakeRunner(ipam=ipam)
+                with self.assertRaises(bootstrap.Refused) as caught:
+                    self.start(runner, {"PE_PLATFORM_NETWORK": "isolated"}, directory)
+                self.assertEqual(caught.exception.code, "platform_network_mismatch")
+                for text in (observed, "172.30.0.0/24", "172.30.0.128/25", "gateway 172.30.0.1", "docker network rm isolated"):
+                    self.assertIn(text, caught.exception.detail)
+                self.assertFalse(any("up" in call for call in runner.calls))
+
+    def test_lost_creation_race_validates_the_winner_instead_of_failing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = FakeRunner(network_exists=False, create_fails=True)
+            self.assertEqual(self.start(runner, {"PE_PLATFORM_NETWORK": "isolated"}, directory), 0)
+            self.assertEqual(len([c for c in runner.calls if c[:3] == ["docker", "network", "create"]]), 1)
+            self.assertTrue(any("up" in call and "--wait" in call for call in runner.calls))
+        with tempfile.TemporaryDirectory() as directory:
+            runner = FakeRunner(network_exists=False, create_fails=True, ipam=[{"Subnet": "172.18.0.0/16"}])
+            with self.assertRaises(bootstrap.Refused) as caught:
+                self.start(runner, {"PE_PLATFORM_NETWORK": "isolated"}, directory)
+            self.assertEqual(caught.exception.code, "platform_network_mismatch")
+
+    def test_allocation_settings_and_retired_peer_pinning_are_validated(self):
+        with patch.dict(os.environ, {}, clear=True):
+            bootstrap.settings_for({"PE_PLATFORM_SUBNET": "10.9.0.0/16", "PE_PLATFORM_IP_RANGE": "10.9.128.0/17", "PE_EDGE_IP": "10.9.0.2"})
+            bootstrap.settings_for({"PE_TAILSCALE_EDGE_IP": "172.30.0.2"})
+            for invalid in ({"PE_EDGE_IP": "172.30.0.200"}, {"PE_EDGE_IP": "172.30.0.1"}, {"PE_EDGE_IP": "172.30.1.2"},
+                            {"PE_EDGE_IP": "172.30.0.0"}, {"PE_EDGE_IP": "172.30.0.255"}, {"PE_EDGE_IP": "edge"},
+                            {"PE_PLATFORM_IP_RANGE": "172.31.0.0/25"}, {"PE_PLATFORM_SUBNET": "172.30.0.0/25"},
+                            {"PE_PLATFORM_SUBNET": "172.30.0.5/24"}, {"PE_PLATFORM_SUBNET": "fd00::/64"}):
+                with self.subTest(invalid=invalid), self.assertRaises(bootstrap.Refused) as caught:
+                    bootstrap.settings_for(invalid)
+                self.assertEqual(caught.exception.code, "invalid_settings")
+            with self.assertRaises(bootstrap.Refused) as caught:
+                bootstrap.settings_for({"PE_TAILSCALE_EDGE_IP": "172.18.0.7"})
+            self.assertEqual(caught.exception.code, "legacy_setting")
+            self.assertIn("172.30.0.2", caught.exception.detail)
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            env = Path(directory) / ".env"
+            env.write_text("# keep\nCOMPOSE_FILE='compose.yaml:custom.yaml:compose.tailscale.yaml'\nPE_TAILSCALE_EDGE_IP=\nCUSTOM=1\n")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as log:
+                self.assertEqual(bootstrap.bootstrap(["--env-file", str(env), "--render-only"], FakeRunner()), 0)
+            self.assertEqual(env.read_text(), "# keep\nCOMPOSE_FILE='compose.yaml:custom.yaml'\nPE_TAILSCALE_EDGE_IP=\nCUSTOM=1\n")
+            self.assertIn("compose.tailscale.yaml", log.getvalue())
+            self.assertEqual(bootstrap.compose_command(ROOT, env)[-4:], ["-f", str(ROOT / "compose.yaml"), "-f", str(ROOT / "custom.yaml")])
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as log:
+                self.assertEqual(bootstrap.bootstrap(["--env-file", str(env), "--render-only"], FakeRunner()), 0)
+            self.assertEqual(log.getvalue(), "")
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"COMPOSE_FILE": "compose.yaml:compose.tailscale.yaml"}, clear=True), \
+                contextlib.redirect_stdout(io.StringIO()), self.assertRaises(bootstrap.Refused) as caught:
+            bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env"), "--render-only"], FakeRunner())
+        self.assertEqual(caught.exception.code, "legacy_setting")
+
     def test_network_created_only_when_missing(self):
         for exists in (True, False):
             with self.subTest(exists=exists), tempfile.TemporaryDirectory() as directory:
@@ -124,8 +227,8 @@ class BootstrapTests(unittest.TestCase):
                         patch.object(bootstrap, "task_record") as recorded, contextlib.redirect_stdout(output):
                     bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env")], runner)
                 creates = [c for c in runner.calls if c[:3] == ["docker", "network", "create"]]
-                self.assertEqual(creates, [] if exists else [["docker", "network", "create", "isolated"]])
-                self.assertIn(["docker", "network", "inspect", "isolated"], runner.calls)
+                self.assertEqual(len(creates), 0 if exists else 1)
+                self.assertIn(["docker", "network", "inspect", "--format", "{{json .IPAM.Config}}", "isolated"], runner.calls)
                 self.assertTrue(any("up" in call and "--wait" in call for call in runner.calls))
                 self.assertTrue(any(str(ROOT / "scripts/status_observer.py") in call for call in runner.calls))
                 self.assertEqual([call.args[3] for call in recorded.call_args_list], ["unknown", "healthy"])

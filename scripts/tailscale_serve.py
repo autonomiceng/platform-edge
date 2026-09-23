@@ -310,13 +310,11 @@ def compose(root: Path, env: Path, files: str) -> list[str]:
 def configuration(root: Path, env: Path, changes: dict[str, str], services: list[str]) -> dict:
     current = values(env)
     files = current.get("COMPOSE_FILE", "compose.yaml").split(":")
-    # Preserve operator overlays; replace only our own listener selection.
-    managed = {(root / name).resolve() for name in ("compose.proxy.yaml", "compose.tailscale.yaml")}
+    # Preserve operator overlays; replace only our own listener selection and drop the retired peer-pinning overlay.
+    managed = {(root / name).resolve() for name in ("compose.proxy.yaml", bootstrap.RETIRED_OVERLAY)}
     files = [f for f in files if (root / f).resolve() not in managed]
     if "BP_ACCESS_MODE" not in changes and "PE_TAILSCALE_HOST" not in changes:
         files.append(str(root / "compose.proxy.yaml") if files and Path(files[0]).is_absolute() else "compose.proxy.yaml")
-    if "PE_TAILSCALE_HOST" in changes:
-        files.append(str(root / "compose.tailscale.yaml") if files and Path(files[0]).is_absolute() else "compose.tailscale.yaml")
     changes = dict(changes, COMPOSE_FILE=":".join(files))
     return {"root": root, "env": env, "changes": changes, "services": services,
             "source": env.read_text(), "files": changes["COMPOSE_FILE"]}
@@ -374,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
                     PE_TAILSCALE_HOST=host, PE_TAILSCALE_PORT=str(args.https_port))
         edge.update({"PE_TAILSCALE_" + name.upper() + "_PORT": str(port) for name, port in ports.items()})
         bootstrap.settings_for(dict(settings, **edge))
-        # Pin the existing Edge peer so recreation cannot silently invalidate sibling trust.
+        # Siblings trust the fixed Edge address; the running Edge must already hold it.
         network = json.loads(checked(["docker", "network", "inspect", settings["PE_PLATFORM_NETWORK"]]))[0]
         containers = network.get("Containers", {})
         gateways = [str(ipaddress.ip_address(entry["Gateway"])) for entry in network.get("IPAM", {}).get("Config", [])
@@ -388,7 +386,9 @@ def main(argv: list[str] | None = None) -> int:
         peers = [containers[c]["IPv4Address"].split("/")[0] for c in containers if any(c.startswith(i) for i in ids)]
         if len(peers) != 1:
             raise ValueError("Start Platform Edge first; exactly one running Edge must be on its platform network.")
-        peer = str(ipaddress.IPv4Address(peers[0]))
+        peer = settings["PE_EDGE_IP"]
+        if str(ipaddress.IPv4Address(peers[0])) != peer:
+            raise ValueError("Edge is not at its fixed PE_EDGE_IP address; rerun its bootstrap after the network cutover.")
         if args.console_allow is not None:
             platform_ranges = [ipaddress.ip_network(entry["Subnet"]) for entry in network.get("IPAM", {}).get("Config", []) if entry.get("Subnet")]
             for value in args.console_allow.split():
@@ -397,7 +397,6 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("console client allowlist must exclude all-address and Platform Network ranges")
                 if allowed.version == 4 and (ipaddress.ip_address(peer) in allowed or ipaddress.ip_address(gateways[0]) in allowed):
                     raise ValueError("console client allowlist must exclude ingress proxy addresses")
-        edge["PE_TAILSCALE_EDGE_IP"] = peer
         configs = [configuration(root, args.env_file.resolve(), edge, ["caddy"])]
         endpoints = {"Platform Edge": landing}
         skipped = []
