@@ -22,7 +22,7 @@ cd platform-edge
 python3 scripts/bootstrap.py --render-only
 ```
 
-Choose the local or public Edge settings below, then run `python3 scripts/bootstrap.py` here. Add sibling stacks afterward using the [ingress guide](docs/operations/ingress.md). If an existing stack already owns ports 80 or 443, first move its gateway to spare loopback ports.
+Choose the local or public Edge settings below, then run `python3 scripts/bootstrap.py` here; add `--with` for each sibling stack to install behind it (below). If an existing stack already owns ports 80 or 443, first move its gateway to spare loopback ports.
 Bootstrap creates the shared network with the platform contract's allocation (or validates an existing one), creates external certificate volumes, checks port
 conflicts, starts Caddy and verifies both local listeners, including HTTPS certificate trust. No sibling stack is required for Edge readiness.
 
@@ -49,47 +49,19 @@ PE_VOLUME_PREFIX=platform-edge
 PE_BACKUP_DIR=./backups
 ```
 
-Gateway `.env`:
+Then install the stacks behind it with one command. It writes the
+[per-stack settings](docs/operations/ingress.md#per-stack-settings-behind-the-edge) into each
+sibling `.env` (`../llm-gateway-stack`, `../observability-stack` and `../agent-backplane` by
+default) and runs each stack's own bootstrap; add `--dry-run` to see the plan first:
 
 ```sh
-LG_ACCESS_MODE=proxy
-LG_PUBLIC_DOMAIN=localhost
-LG_SCHEME=https
-LG_BIND_HOST=127.0.0.1
-LG_HTTP_PORT=18080
-LG_PUBLIC_PORT_SUFFIX=
-LG_PLATFORM_NETWORK=platform
-LG_TRUSTED_PROXIES=172.30.0.2/32
+python3 scripts/bootstrap.py --with gateway --with observability --with backplane \
+  --capability-file ~/private/backplane-enrollment
 ```
 
-Observability `.env`:
-
-```sh
-OB_ACCESS_MODE=proxy
-OB_PUBLIC_DOMAIN=localhost
-OB_SCHEME=https
-OB_BIND_HOST=127.0.0.1
-OB_HTTP_PORT=18180
-OB_PUBLIC_PORT_SUFFIX=
-OB_PLATFORM_NETWORK=platform
-OB_TRUSTED_PROXIES=172.30.0.2/32
-OB_GATEWAY_HEALTH_HOST=localhost
-OB_GATEWAY_URL=https://localhost
-OB_BACKPLANE_URL=https://backplane.localhost
-```
-
-`172.30.0.2/32` is Edge’s fixed address (`PE_EDGE_IP`) on the shared Docker network; the [ingress guide](docs/operations/ingress.md) describes the network allocation.
-
-Backplane `.env` (use the internal `gateway` profile; the standalone `edge` profile stays off):
-
-```sh
-BP_ACCESS_MODE=proxy
-BP_PUBLIC_URL=https://backplane.localhost
-BP_BIND_HOST=127.0.0.1
-BP_PORT=3000
-```
-
-Start the internal gateway with `docker compose -f compose.yaml -f compose.gateway.yaml --profile gateway up -d --wait` from the Backplane checkout.
+Set each stack's own required settings (`LG_BACKUP_DIR`, `LANGFUSE_INIT_USER_EMAIL`,
+`BP_BACKUP_DIR`, the Observability alert destination) in its `.env` first; the bundle never
+touches them. See [Install the bundle](docs/operations/ingress.md#install-the-bundle).
 
 The console also opens at `http://127.0.0.1`; verified direct HTTPS requires installing
 Edge's public CA root. For private access from other computers through Tailscale,
@@ -129,47 +101,11 @@ PE_VOLUME_PREFIX=platform-edge
 PE_BACKUP_DIR=./backups
 ```
 
-Gateway `.env`:
-
-```sh
-LG_ACCESS_MODE=proxy
-LG_PUBLIC_DOMAIN=example.com
-LG_SCHEME=https
-LG_BIND_HOST=127.0.0.1
-LG_HTTP_PORT=18080
-LG_PUBLIC_PORT_SUFFIX=
-LG_PLATFORM_NETWORK=platform
-LG_TRUSTED_PROXIES=172.30.0.2/32
-```
-
-Observability `.env`:
-
-```sh
-OB_ACCESS_MODE=proxy
-OB_PUBLIC_DOMAIN=example.com
-OB_SCHEME=https
-OB_BIND_HOST=127.0.0.1
-OB_HTTP_PORT=18180
-OB_PUBLIC_PORT_SUFFIX=
-OB_PLATFORM_NETWORK=platform
-OB_TRUSTED_PROXIES=172.30.0.2/32
-OB_GATEWAY_HEALTH_HOST=example.com
-OB_GATEWAY_URL=https://example.com
-OB_BACKPLANE_URL=https://backplane.example.com
-```
-
-`172.30.0.2/32` is Edge’s fixed address (`PE_EDGE_IP`) on the shared Docker network; the [ingress guide](docs/operations/ingress.md) describes the network allocation.
-
-Backplane `.env` (use the internal `gateway` profile; the standalone `edge` profile stays off):
-
-```sh
-BP_ACCESS_MODE=proxy
-BP_PUBLIC_URL=https://backplane.example.com
-BP_BIND_HOST=127.0.0.1
-BP_PORT=3000
-```
-
-Start Backplane and its internal gateway from the Backplane checkout with `docker compose -f compose.yaml -f compose.gateway.yaml --profile gateway up -d --wait`. Edge reaches it at `bp-gateway:80`; the internal gateway publishes no host ports. Keep the standalone `edge` profile off.
+Then run the same bundle command as in the local setup. It derives `example.com` and the
+HTTPS origins from the Edge `.env`, writes the
+[per-stack settings](docs/operations/ingress.md#per-stack-settings-behind-the-edge) and runs
+each stack's bootstrap. Edge reaches Backplane at `bp-gateway:80` through its internal gateway
+profile; the standalone `edge` profile stays off.
 The seven routed hosts are root, `litellm.`, `langfuse.`, `s3.`, `rustfs.`, `backplane.`
 and `grafana.` under the configured domain. Run shared-host acceptance after siblings
 are ready: `SMOKE_INTEGRATION=1 SMOKE_DOMAIN=example.com scripts/smoke.sh` (use

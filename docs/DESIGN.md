@@ -19,15 +19,15 @@ Multiple standalone stacks each ship an ingress, but only one ingress can own a 
 
 No high availability, dynamic service discovery, authentication, rate limiting or edge dashboards are promised.
 
-Selected host installation enters through bootstrap's `--stack`/`--dry-run` flags.
-`scripts/installation.py` preflights only selected sibling configuration;
-`scripts/installation_execution.py` qualifies existing image/mount custody, preserves
-owning env state atomically, and invokes each owning bootstrap after all selected
-checks pass. Edge's fixed address is verified before sibling trust is written. No lifecycle
-logic or secret generation moves out of the owning stacks. The
-[installation contract](operations/ingress.md#selected-installation) describes recovery,
-owner-interface limits and selected private Tailscale connection. Aggregate completion does
-not claim host acceptance or enrollment.
+Sibling stacks are installed behind Edge through bootstrap's `--with <stack>` flags.
+`scripts/bundle.py` preflights every selected checkout, then writes only the Platform
+Contract's bundle settings into each sibling `.env` under that stack's own lock, with an
+atomic replacement that keeps unrelated lines byte for byte and reads no secret, and runs
+the sibling's own bootstrap from its checkout, stopping at the first failure with the rerun
+command. No custody check, source parsing, lifecycle logic or secret generation moves out
+of the owning stacks. `--dry-run` prints the plan and writes nothing. The
+[bundle runbook](operations/ingress.md#install-the-bundle) describes the command, reruns
+and failure handling; completion claims neither host acceptance nor enrollment.
 
 ## Shape
 

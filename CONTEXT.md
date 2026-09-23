@@ -39,3 +39,7 @@ _Avoid_: Certificate mode, TLS provider
 **Health Path**:
 A stack's same-origin `/health/<component>` route that answers with a status code only.
 _Avoid_: Healthcheck endpoint, readiness probe
+
+**Bundle**:
+The sibling stacks installed behind Edge by one bootstrap run with `--with`, each receiving the Platform Contract's bundle settings and running its own bootstrap.
+_Avoid_: Orchestration, selected installation

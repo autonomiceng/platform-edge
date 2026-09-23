@@ -12,150 +12,44 @@ Edge owns host ports 80 and 443. Its default loopback binding makes them accessi
 | `backplane.example.com` | `bp-gateway:80` |
 | `grafana.example.com` | `ob-gateway:80` |
 
-## Selected installation
+## Install the bundle
 
-Repeat `bootstrap.py --stack NAME` to select `edge`, `gateway`, `backplane`, or
-`observability`. Edge is implicit. No `--stack` retains standalone Edge bootstrap.
-Omission never removes an installed stack, route, or Tailscale application.
+One command installs or reconfigures the sibling stacks behind Edge. Run it from the Edge
+checkout after choosing the Edge settings; Edge bootstraps first, then each selected stack:
 
 ```sh
-python3 scripts/bootstrap.py --stack backplane --stack observability \
-  --backplane-dir /srv/agent-backplane --observability-dir /srv/observability-stack \
-  --backplane-backup-dir /mnt/backplane-backups \
-  --capability-file /home/operator/private/backplane-enrollment --dry-run
+python3 scripts/bootstrap.py --with gateway --with observability --with backplane \
+  --capability-file /home/operator/private/backplane-enrollment
 ```
 
-Remove `--dry-run` to execute the selected owning bootstraps after all selected
-preflight checks pass. Dry-run writes nothing and reports `executable`, conflicts,
-ordered native Compose selection, listeners, origins, and owning recovery runbooks.
-It renders Compose with fixed, in-memory interpolation sentinels for missing fresh
-secrets. Only owning bootstraps generate and store actual secrets. A plan proves no
-runtime readiness or enrollment. `--dry-run` alone plans Edge only; render/probe
-flags cannot be combined with selected installation or dry-run.
+Checkouts default to the sibling directories `../llm-gateway-stack`, `../observability-stack`
+and `../agent-backplane`; `--gateway-dir`, `--observability-dir` and `--backplane-dir` point
+elsewhere. A missing checkout or `.env.example`, a missing `bun` for Backplane, and exported
+`LG_`, `OB_`, `BP_` or `COMPOSE_` shell settings are refused (exit 1) before anything is written.
 
-Checkout defaults are sibling `llm-gateway-stack`, `agent-backplane`, and
-`observability-stack` directories. Override them with `--gateway-dir`,
-`--backplane-dir`, and `--observability-dir`. Only selected sibling configuration is
-read. Configure Edge through its env or fresh `--template`. Unset selected stack,
-managed secret, and Compose exports. Env files must be owned, private, single-link
-regular files; their parent directories must be owned and not group/other writable.
+For each stack, in the order gateway, observability, backplane, bootstrap copies `.env.example`
+to `.env` (mode 0600) when it is absent, takes the stack's own env lock, writes the bundle keys
+of the [per-stack table](#per-stack-settings-behind-the-edge) with an atomic replacement that
+keeps every other line byte for byte, releases the lock and runs the stack's bootstrap from its
+checkout: `python3 scripts/bootstrap.py`, or for Backplane `bun infra/bootstrap/prepare.ts
+--capability-file PATH --access-mode proxy --public-url URL` plus `--profile gateway` until
+`COMPOSE_PROFILES` is recorded. Its output goes to the terminal; env contents are never printed.
+The values come from Edge: `PE_PUBLIC_DOMAIN`, `PE_SCHEME` (HTTPS when unset),
+`PE_PLATFORM_NETWORK`, `PE_EDGE_IP` as the `/32` trust entry, and the subnet and ip-range only
+when Edge overrides the contract defaults. Secrets and every other setting stay the stack's own:
+set `LG_BACKUP_DIR`, `LANGFUSE_INIT_USER_EMAIL`, `BP_BACKUP_DIR` and the Observability alert
+destination in those `.env` files first.
 
-Gateway needs `--gateway-backup-dir` and `--gateway-email` unless recorded as
-`LG_BACKUP_DIR` and `LANGFUSE_INIT_USER_EMAIL`. Backups must use an existing writable
-separate filesystem, without overlap with Postgres data, unless the owning
-`LG_ALLOW_SAME_FILESYSTEM_BACKUP=true` development policy permits the same filesystem.
-Backplane needs an existing writable backup directory and `--capability-file` with
-an absolute path and a private writable parent. Capability contents are never read
-by the installer. Existing backup/email values cannot be replaced by these inputs.
-An unchanged rerun does **not** require a retained Checkpoint. Empty configured
-backup directories are valid; live data, certificates, and credentials remain protected.
+Reruns are idempotent: a key that already holds its value is not rewritten, and the stack
+bootstraps run again. `--dry-run` validates the Edge settings, renders its Compose configuration,
+prints one JSON line per selected stack with the checkout, the keys it would write and the
+command it would run, and writes nothing.
 
-Observability requires its alert destination settings before setup. For a development
-installation, explicitly record `OB_ALERTS=placeholder` in its `.env` or selected
-`.env.example` to permit degraded alert delivery. The owning template leaves alert
-settings empty; the installer does not choose that exception automatically. This
-early guard checks only for a webhook or an email/SMTP pair, excluding the owner
-sentinel email suffix `@example.invalid`, or an explicit placeholder. The owning
-bootstrap validates destination syntax later; malformed settings can still refuse
-after Edge has started.
-
-Fresh Backplane uses its owning full default with gateway ingress; pass
-`--backplane-mode minimal` for filesystem Files without Functions. Recorded native
-files, profiles, backend, project and volume prefix remain authoritative on rerun.
-Conflicting modes require Backplane's upgrade/migration procedure. This requires the
-full/minimal owning bootstrap interface, including capability readiness checks.
-
-Fresh siblings use proxy mode on the shared Platform Network and loopback ports
-18080 (Gateway), 18180 (Observability), and 3000 (Backplane). Local Backplane uses
-HTTPS through Edge; install the public Edge CA root in client trust stores. Existing
-public origins and already connected Tailnet application origins are preserved.
-A newly added application uses direct Edge access unless `--tailscale` is selected.
-Selected Tailscale setup refuses recorded public access settings or origins that differ
-from both the original Edge origins and the requested Tailnet origins. Use the owning
-reconfiguration procedure for an intentional public-to-tailnet migration.
-Native console enable flags, login requirements, and client allowlists are preserved.
-
-Preflight requires trusted local Docker, Compose 2.24.4+, selected configuration
-files, known resource inventory, and free or qualified selected TCP listeners.
-Existing containers, including stopped containers, must match rendered effective
-image IDs, service selection, and named-volume/bind mounts. Unknown custody,
-missing saved secrets, foreign publications, or an upgrade stop all execution before
-env/container changes. Each action names the owning recovery runbook. Interrupted
-preparation resumes with complete private saved secrets and native selection, even
-after volume creation with no containers or only some services present. Every found
-or referenced existing volume must carry the selected `com.docker.compose.project`
-label, or be mounted only by containers that pass the image, service and mount checks.
-Unlabelled volumes without qualified containers and foreign-labelled volumes are refused,
-including unmounted prefix collisions. For an old unlabelled installation after teardown,
-restore its original owning containers before using selected installation; inspect foreign
-volume users independently. No relabelling or volume replacement is performed.
-Image-declared anonymous volumes are accepted only
-when Docker created them implicitly and all their users are qualified containers. Each present container must still qualify; the owning
-bootstrap completes missing services and checks its database/storage binding.
-
-Execution rechecks qualification under owning locks, publishes only selected public
-settings atomically, and calls the owning bootstraps serially from their checkouts.
-Edge starts first at its fixed address `PE_EDGE_IP`, which is verified before sibling
-proxy trust is written; network CIDRs are never trusted. A recorded `COMPOSE_FILE` that
-still lists the retired `compose.tailscale.yaml` overlay loses that entry. Existing native
-overlays retain their order.
-
-Backplane retains native image defaults and any explicit operator image overrides.
-The installer does not write image overrides. Each present container's image ID must
-match its rendered reference's current local image ID; default builds and workerd
-recipe verification remain the owning bootstrap's behavior.
-
-Edge labels newly created volumes with its selected Compose project. Existing
-unlabelled Edge and Gateway volumes can be qualified through their matching containers,
-without relabelling or replacing data. Gateway's owning bootstrap must label new volumes
-so interruption before container creation also leaves verifiable ownership.
-Observability custom overlays retain the recorded order for both configuration validation
-and startup. The base must remain first, with the selected storage and proxy overlays
-present and no duplicate files. No installer shadow selection is used.
-A running Edge that does not hold `PE_EDGE_IP` is refused; recreate it on the fixed
-address first (see the network cutover below). Do not run independent lifecycle commands
-concurrently.
-
-Exit 0 means the requested owning bootstraps completed; exit 1 means preflight refused,
-2 means usage, and 3 means execution stopped. The bounded JSON result lists
-`completed` stacks and `stopped_at`; raw child output is discarded to protect secrets.
-Infrastructure acceptance and enrollment remain unverified by this aggregate result.
-Correct the owning failure and rerun the same selection. There is no global rollback,
-volume deletion, aggregate env, or job database. Native owner status records remain
-the interruption evidence. SIGKILL can leave `<backplane-dir>/.env.lock`, which is
-preserved and blocks reruns. Following Backplane's documented stale-lock procedure,
-confirm no installer, preparation or bootstrap process is running, remove only that
-confirmed stale preparation lock, then rerun the same selection. Preserve env,
-capability files and enrollment checkpoints. A dead-looking PID is not authorization
-to unlink a lock; interruption recovery is not automatic across this boundary.
-
-Add `--tailscale` to derive private HTTPS origins before publishing any selected
-configuration or invoking an owning bootstrap. Preflight reads only selected sibling
-envs/checkouts and checks their application ports plus Edge. Missing omitted siblings
-are irrelevant. Existing omitted application entries, port settings, Route Files, and
-Serve listeners remain intact. Selected RustFS consoles are included only when enabled
-by the owning stack and its native storage selection. The saved Edge machine name
-cannot change during a selected connection. Existing exact proxy trust and complete
-Host forwarding remain required.
-
-The connection reuses this installation plan, custody checks, native Compose selection,
-and owning bootstraps. Existing Platform Network bridge details are checked before
-execution; a fresh network's exact bridge peer is discovered after Edge creates it and
-before any sibling starts. Edge retains loopback HTTP and HTTPS. The helper refuses
-selected custom handlers, foreign host listeners, and Funnel before execution. Matching
-Serve endpoints are read-only, including port 8450. A new endpoint can still need
-administrator permission: exit 3 reports completed stacks, `stopped_at=tailscale`,
-and the exact `sudo tailscale serve ...` command for a recognized permission denial.
-Other Serve failures report `command_failed`, the unprivileged command, an exit code
-when available, and a bounded diagnostic for HTTPS configuration, daemon connectivity,
-or an unknown failure. Raw command output is never included. Both reports count completed
-Serve changes and remaining commands; a failed command may still have changed state.
-Run a reported `sudo` command as administrator,
-then repeat the original selection as the installation user. No Docker privilege
-workaround or automatic rollback is used. The retry reads actual Serve state and checks
-HTTPS origins, application reachability, and anonymous protected API denial. A console
-blocked by its client allowlist is reported as `access_denied`; this does not establish
-successful native login. Authenticated acceptance and enrollment remain operator checks.
+The first failing stack bootstrap stops the run with exit 3 and a JSON error naming the stack,
+its exit code and the rerun command; earlier stacks stay ready and later stacks are untouched.
+Fix the reported problem and rerun the same command. Backplane enrollment (`bp bootstrap`)
+remains the separate step its bootstrap prints. A `.env.lock` left by a killed Backplane
+preparation blocks the run until its documented stale-lock procedure removes it.
 
 ## Image overrides
 
@@ -227,10 +121,8 @@ verify the actual HTTPS endpoints. Matching Serve endpoints require no rewrite. 
 missing stacks or create credentials. By default it looks for `.env` in the sibling
 `llm-gateway-stack`, `observability-stack`, and `agent-backplane` checkouts. Use
 `--gateway-dir`, `--observability-dir`, or `--backplane-dir` for other locations.
-Use `--env-file` for a different Edge environment file. This standalone helper keeps
-its original **all installed siblings** behavior: every sibling with an env is considered,
-and missing envs are skipped. Use bootstrap's `--stack ... --tailscale` for selected-only
-installation and connection; the standalone helper does not accept a stack selection.
+Use `--env-file` for a different Edge environment file. Every sibling with an env is
+considered, and missing envs are skipped.
 
 You get private HTTPS links on one machine name, without editing DNS or installing a
 certificate on your computer:
@@ -251,8 +143,7 @@ use an S3 client and your existing credentials. RustFS has a separate browser ad
 The LiteLLM operator pages become reachable through the private Edge connection;
 application authentication remains required. Your tailnet access rules must permit the
 chosen ports. Use `--https-port` for the landing page and `--port-base` to move the nine
-consecutive application ports together. Selected installation uses the recorded
-`PE_TAILSCALE_*_PORT` settings instead of resetting ports.
+consecutive application ports together.
 
 Each Tailscale listener created by this setup forwards to the configured Edge loopback
 HTTP endpoint at `http://127.0.0.1:<PE_HTTP_PORT>` (port 80 by default);
@@ -387,7 +278,8 @@ volumes; back them up with your PKI.
 
 ## Per-stack settings behind the edge
 
-The sibling host ports below are examples; choose unused loopback ports on your host.
+`--with` writes the settings below ([Install the bundle](#install-the-bundle)); this table is
+the reference for setting them by hand. The ports are the Platform Contract's bundle ports.
 The Platform Network has a known allocation, defined by the
 [platform contract](../conventions.md#platform-contract): whichever bootstrap runs first
 creates `platform` with `--subnet 172.30.0.0/24 --ip-range 172.30.0.128/25 --gateway
@@ -471,7 +363,7 @@ must remain independently startable when Backplane is not installed.
 1. Render the edge settings with `python3 scripts/bootstrap.py --render-only`, then edit `.env` for the desired mode. This writes only the env file, with mode 0600.
 2. If an installed stack already owns ports 80 or 443, give its gateway spare loopback ports and run its bootstrap to release those ports. For a new stack, prepare its env using its documented bootstrap. Keep the backplane’s optional `edge` profile off.
 3. Run `python3 scripts/bootstrap.py` in platform-edge. It creates the external network with the contract allocation if missing, or refuses one whose allocation differs (see the network cutover below), names a conflicting container before publishing, and starts Caddy with `docker compose up --wait`. It probes `127.0.0.1` on the selected HTTP or HTTPS port with the domain as Host. HTTPS uses that domain as SNI, validates the certificate against the system trust store, `PE_TLS_CA` or `PE_ACME_CA_ROOT`, or trusts the installation’s self-signed root certificate read from the volume, and reports the leaf `notAfter` (plus the root SHA-256 fingerprint for the internal CA). It never disables TLS verification. The publish address must accept loopback connections (use `127.0.0.1` or `0.0.0.0` for these host probes).
-4. Apply the per-stack settings above, including Edge’s fixed address in the trust lists. Run each stack’s bootstrap so it selects the matching Compose files and starts its services. Probe application hostnames through Edge. A missing stack must affect only its own hostnames. Edge `/health` proves only Edge readiness.
+4. Apply the per-stack settings above with `--with` ([Install the bundle](#install-the-bundle)) or by hand, including Edge’s fixed address in the trust lists, and run each stack’s bootstrap so it selects the matching Compose files and starts its services. Probe application hostnames through Edge. A missing stack must affect only its own hostnames. Edge `/health` proves only Edge readiness.
 
 Both sibling bootstraps must probe **their own local HTTP listener**, independently of
 public URLs: gateway uses `http://127.0.0.1:18080/health/<app>` and observability uses
@@ -747,5 +639,3 @@ native login check from an explicitly allowed client. Existing application
 routes retain their previous peer-address forwarding; only the new console
 routes forward the validated client address. Docker configurations with
 `userland-proxy: false` require explicit ingress-peer validation before use.
-
-The selected-stack preflight recognizes the Gateway template’s native `compose.${LG_ACCESS_MODE:-local}.yaml` selection. Other interpolated Compose paths require explicit recorded file paths before planning.
