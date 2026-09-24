@@ -36,7 +36,7 @@ def request(stack, method='GET', mode='', host='localhost'):
 
 
 for host in ('localhost', 'private.test.ts.net'):
-    for stack, alias in [('gateway', 'lg-gateway'), ('backplane', 'bp-gateway'),
+    for stack, alias in [('gateway', 'lg-gateway'), ('backplane', 'bp-server'),
                          ('observability', 'ob-gateway')]:
         if absent and stack == 'observability':
             assert request(stack, host=host) == (502, b'')

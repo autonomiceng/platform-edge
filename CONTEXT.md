@@ -17,7 +17,7 @@ The trusted shared network through which the Edge and installed stacks reach eac
 _Avoid_: Public network, application network
 
 **Upstream Alias**:
-A stable network name identifying a stack's ingress target independently of its individual instances.
+A stable network name identifying a stack's ingress target independently of its individual instances. Gateway and Observability expose a Caddy (`lg-gateway:80`, `ob-gateway:80`); Backplane exposes its server (`bp-server:3000`).
 _Avoid_: Container name, public hostname
 
 **Checkpoint**:

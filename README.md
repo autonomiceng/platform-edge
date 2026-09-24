@@ -105,8 +105,8 @@ PE_BACKUP_DIR=./backups
 Then run the same bundle command as in the local setup. It derives `example.com` and the
 HTTPS origins from the Edge `.env`, writes the
 [per-stack settings](docs/operations/ingress.md#per-stack-settings-behind-the-edge) and runs
-each stack's bootstrap. Edge reaches Backplane at `bp-gateway:80` through its internal gateway
-profile; the standalone `edge` profile stays off.
+each stack's bootstrap. Edge reaches the Backplane server directly at `bp-server:3000`; its
+`edge` and `gateway` profiles stay off.
 The seven routed hosts are root, `litellm.`, `langfuse.`, `s3.`, `rustfs.`, `backplane.`
 and `grafana.` under the configured domain. Run shared-host acceptance after siblings
 are ready: `SMOKE_INTEGRATION=1 SMOKE_DOMAIN=example.com scripts/smoke.sh` (use

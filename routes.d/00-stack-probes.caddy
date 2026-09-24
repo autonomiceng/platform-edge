@@ -94,7 +94,7 @@
 (stack-probes) {
 	import edge-status
 	import status-proxy /stack-status/gateway /status.json lg-gateway:80 {$PE_PUBLIC_DOMAIN}
-	import status-proxy /stack-status/backplane /status.json bp-gateway:80 backplane.{$PE_PUBLIC_DOMAIN}
+	import status-proxy /stack-status/backplane /status.json bp-server:3000 backplane.{$PE_PUBLIC_DOMAIN}
 	import status-proxy /stack-status/observability /status.json ob-gateway:80 {$PE_PUBLIC_DOMAIN}
 	# Unknown status endpoints never fall through to Gateway's producer.
 	handle /stack-status/* {
@@ -140,7 +140,7 @@
 	handle /health/backplane {
 		header Cache-Control "no-store"
 		rewrite * /health/ready
-		reverse_proxy bp-gateway:80 {
+		reverse_proxy bp-server:3000 {
 			import probe-response
 			header_up -Authorization
 			header_up -Cookie

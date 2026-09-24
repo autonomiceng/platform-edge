@@ -195,6 +195,7 @@ class BundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {}, clear=True):
             root = Path(temporary)
             backplane = checkout(root, "backplane", "COMPOSE_PROFILES=blobs,compute,gateway\nBP_AUTH_SECRET=s\n")
+            (backplane / "compose.gateway.yaml").write_text("")
             capability = root / "cap"
             [item] = bundle.plan(arguments(root, "backplane", capability=capability), root, EDGE)
             self.assertEqual(item["command"], [sys.executable, "scripts/bootstrap.py", "--capability-file", str(capability.resolve()),
@@ -202,10 +203,10 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(item["writes"], {"BP_ACCESS_MODE": "proxy", "BP_PUBLIC_URL": "https://backplane.example.com", "BP_BIND_HOST": "127.0.0.1",
                                               "BP_PORT": "3000", "BP_PLATFORM_NETWORK": "platform", "BP_PLATFORM_SUBNET": "172.30.0.0/24",
                                               "BP_PLATFORM_IP_RANGE": "172.30.0.128/25", "BP_TRUSTED_PROXIES": "172.30.0.2/32"})
+            # Edge reaches bp-server directly, so a recorded selection without the gateway profile is complete.
             (backplane / ".env").write_text("COMPOSE_PROFILES=blobs,compute\nBP_AUTH_SECRET=s\n")
-            with self.assertRaises(bootstrap.Refused) as refused:
-                bundle.plan(arguments(root, "backplane", capability=capability), root, EDGE)
-            self.assertEqual(refused.exception.code, "bundle_gateway_profile_required")
+            [item] = bundle.plan(arguments(root, "backplane", capability=capability), root, EDGE)
+            self.assertNotIn("--profile", item["command"])
             # An installation that predates a recorded selection must name its profiles itself.
             (backplane / ".env").write_text("BP_AUTH_SECRET=s\n")
             with self.assertRaises(bootstrap.Refused) as refused:
@@ -214,6 +215,16 @@ class BundleTests(unittest.TestCase):
             (backplane / ".env").write_text("BP_AUTH_SECRET=\n")
             [fresh] = bundle.plan(arguments(root, "backplane", capability=capability), root, EDGE)
             self.assertEqual(fresh["command"][-2:], ["--profile", "gateway"])
+            # Once the checkout drops its internal gateway overlay, the profile is neither passed nor accepted.
+            (backplane / "compose.gateway.yaml").unlink()
+            [direct] = bundle.plan(arguments(root, "backplane", capability=capability), root, EDGE)
+            self.assertEqual(direct["command"], fresh["command"][:-2])
+            (backplane / ".env").write_text("COMPOSE_PROFILES=blobs,compute,gateway\nBP_AUTH_SECRET=s\n")
+            with self.assertRaises(bootstrap.Refused) as refused:
+                bundle.plan(arguments(root, "backplane", capability=capability), root, EDGE)
+            self.assertEqual(refused.exception.code, "bundle_gateway_profile_retired")
+            self.assertIn("drop gateway from COMPOSE_PROFILES", refused.exception.detail)
+            (backplane / ".env").write_text("BP_AUTH_SECRET=\n")
             with self.assertRaises(bootstrap.Refused) as refused:
                 bundle.plan(arguments(root, "backplane"), root, EDGE)
             self.assertEqual(refused.exception.code, "bundle_capability_file")

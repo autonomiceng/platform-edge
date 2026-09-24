@@ -131,27 +131,29 @@ def source_text(env: Path) -> str:
         return handle.read()
 
 
-def command(stack: str, args, values: dict[str, str], source: str) -> list[str]:
+def command(stack: str, args, values: dict[str, str], source: str, directory: Path) -> list[str]:
     argv = [sys.executable, "scripts/bootstrap.py"]
     if stack != "backplane":
         return argv
     argv += ["--capability-file", str(args.capability_file.resolve()), "--access-mode", "proxy", "--public-url", values["BP_PUBLIC_URL"]]
-    # A recorded selection is authoritative for Backplane's bootstrap: repeating --profile conflicts with it,
-    # and one without the gateway profile would leave Edge's bp-gateway:80 alias unserved.
+    # Edge reaches bp-server:3000 directly. A checkout that still ships the internal gateway overlay
+    # gets its profile on a first run; once the overlay is gone, its bootstrap refuses that profile.
+    shipped = (directory / "compose.gateway.yaml").is_file()
+    # A recorded selection is authoritative for Backplane's bootstrap: repeating --profile conflicts with it.
     entries = {match.group("key"): unquoted(match.group("value")) for match in map(bootstrap.ENV_LINE.match, source.splitlines()) if match}
     recorded = entries.get("COMPOSE_PROFILES")
     if recorded is None:
         # Backplane requires an explicit selection for an env holding its secrets or a Compose file list;
-        # --profile gateway alone would record away that installation's other profiles.
+        # a bundle --profile would record away that installation's other profiles.
         if any(entries.get(key) for key in ("COMPOSE_FILE", "BP_AUTH_SECRET", "BP_POSTGRES_ADMIN_PASSWORD", "BP_POSTGRES_PASSWORD", "BP_OPERATIONS_TOKEN")):
             raise bootstrap.Refused("bundle_backplane_selection_required",
                                     "Backplane records an installation but no COMPOSE_PROFILES; run its bootstrap once with --profile for "
-                                    "each existing profile plus gateway so the selection is recorded, then rerun")
-        return argv + ["--profile", "gateway"]
-    if "gateway" not in recorded.split(","):
-        raise bootstrap.Refused("bundle_gateway_profile_required",
-                                f"Backplane records COMPOSE_PROFILES={recorded}; Edge needs its gateway profile, so change the "
-                                "selection through Backplane's own upgrade procedure first")
+                                    "each existing profile so the selection is recorded, then rerun")
+        return argv + (["--profile", "gateway"] if shipped else [])
+    if "gateway" in recorded.split(",") and not shipped:
+        raise bootstrap.Refused("bundle_gateway_profile_retired",
+                                f"Backplane records COMPOSE_PROFILES={recorded} but no longer ships its internal gateway; drop gateway "
+                                "from COMPOSE_PROFILES and compose.gateway.yaml from COMPOSE_FILE as its upgrade note describes, then rerun")
     return argv
 
 
@@ -186,7 +188,7 @@ def plan(args, root: Path, edge: dict[str, str], apps: tuple[str, ...] = ()) -> 
         source = source_text(env)
         _, writes = amended(source, values)
         plans.append({"stack": stack, "directory": directory, "env": env, "settings": values, "writes": writes,
-                      "command": command(stack, args, values, source)})
+                      "command": command(stack, args, values, source, directory)})
     return plans
 
 
