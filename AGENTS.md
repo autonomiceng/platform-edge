@@ -35,7 +35,7 @@ For delegated work, read `docs/agents/model-routing.md` for model choices and br
 
 ## Where things live
 
-- `compose.yaml`: the only service and image pin, the network and the certificate volumes. `compose.public.yaml`, `compose.proxy.yaml`, `compose.files.yaml`, `compose.acme-ca-root.yaml` and `compose.acme-eab.yaml`: the small overlays bootstrap records in `COMPOSE_FILE` for the mode and issuer. `compose.tailscale.yaml`: the profile-gated Tailscale node per hostname; `docker/tailscale/serve.json`: their one serve config.
+- `compose.yaml`: the only service and image pin, the network and the certificate volumes. `compose.public.yaml`, `compose.proxy.yaml`, `compose.files.yaml`, `compose.acme-ca-root.yaml` and `compose.acme-eab.yaml`: the small overlays bootstrap passes with `-f` for the mode and issuer on each run (direct Compose commands must list them; only the Tailscale selection is recorded in `COMPOSE_FILE`). `compose.tailscale.yaml`: the profile-gated Tailscale node per hostname; `docker/tailscale/serve.json`: their one serve config.
 - `.env.example`: every operator setting, prefixed `PE_`, one comment per assignment, no secrets.
 - `Caddyfile`: global policy, issuer snippets, the `site` and `tailnet-site` snippets and the route imports. Its root location is the Edge mount contract.
 - `routes.d/`: one Route File per stack, plus `00-stack-probes.caddy` for the status and health routes Edge owns.
@@ -54,4 +54,4 @@ Compose is the product. Keep logic in upstream apps and their config. Python sta
 
 ## Finish
 
-Run `scripts/validate.sh`, `python3 -m unittest discover -s tests`, `node --test tests/status*.test.cjs`, and `scripts/smoke.sh` when `compose.yaml`, the image pin, the `Caddyfile`, `routes.d/` or `scripts/bootstrap.py` changed. Report exact commands and counts, limitations, operator actions and every spec deviation. A failed or unverified gate is never a pass.
+Run `scripts/validate.sh`, `python3 -m unittest discover -s tests`, `node --test tests/status*.test.cjs`, and `scripts/smoke.sh` for image, configuration or bootstrap changes: any `compose*.yaml`, the `Caddyfile`, `routes.d/`, `docker/`, `scripts/bootstrap.py`, `scripts/bundle.py` or `scripts/tailnet.py`. Report exact commands and counts, limitations, operator actions and every spec deviation. A failed or unverified gate is never a pass.

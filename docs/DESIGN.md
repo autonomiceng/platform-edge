@@ -29,8 +29,9 @@ each stack's standalone deployment ([ADR-0001](adr/0001-one-edge-per-host.md)).
   HTTP in every access mode. The root serves the console with status 200 independently of
   sibling stacks.
 - Every application route sets `Host` to the requested hostname and `X-Forwarded-Proto` to
-  the scheme Edge received, or the configured external scheme in Proxy Mode. No forwarded
-  header from a client is trusted.
+  the scheme Edge received, or the configured external scheme in Proxy Mode. Forwarded headers are not trusted by
+  default; `PE_TRUSTED_PROXIES` (empty by default) lists the exact peers whose forwarded
+  client address Caddy accepts.
 - `/status.json` and `/stack-status/edge` are unauthenticated in every access mode and
   expose only the configured Caddy image (without digest), its version, the bootstrap time,
   whether backups are configured and the newest Checkpoint time.

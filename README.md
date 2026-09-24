@@ -37,7 +37,7 @@ Drop the `--with` entries for stacks you do not run (`--capability-file` belongs
 
 Set each stack's own required settings (`LG_BACKUP_DIR`, `LANGFUSE_INIT_USER_EMAIL`, `BP_BACKUP_DIR`, the Observability alert destination) in its `.env` before or after; the bundle never touches them. If an installed stack already owns port 80 or 443, Edge refuses to start (`port_conflict`): first move that stack's gateway to a spare loopback port with its own bootstrap, then rerun.
 
-The defaults are Local Mode on `localhost`: open `http://localhost/` for the console, `http://litellm.localhost/`, `http://langfuse.localhost/`, `http://grafana.localhost/` and `http://backplane.localhost/` for the applications. HTTPS works too once you install Edge's public CA root ([trusting local certificates](docs/operations/ingress.md#trusting-local-https-certificates)).
+The defaults are Local Mode on `localhost`. Open `http://localhost/` for the console. The applications behind Edge get HTTPS browser origins (the bundle writes `https` unless `PE_SCHEME` says otherwise, because login cookies and generated links need one scheme): `https://litellm.localhost/`, `https://langfuse.localhost/`, `https://grafana.localhost/`, `https://backplane.localhost/`. Install Edge's public CA root once so browsers trust them ([trusting local certificates](docs/operations/ingress.md#trusting-local-https-certificates)); HTTP stays available for health checks.
 
 ## Access modes
 

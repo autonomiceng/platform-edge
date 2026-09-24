@@ -153,8 +153,9 @@ docker compose logs ts-litellm
   (it rewrites `COMPOSE_PROFILES`). Removing also needs
   `docker compose --profile ts-<name> rm -sf ts-<name>` and deleting the machine in the
   admin console; delete the volume `${PE_VOLUME_PREFIX}_ts-<name>` only if you want the
-  identity gone. Restoring the name and rerunning re-enrolls from the kept volume without
-  the key.
+  identity gone. Restoring the name and rerunning reuses a kept volume's identity; a machine
+  deleted in the admin console enrolls again, so `PE_TS_AUTHKEY` must still be set (every
+  `--tailscale` run requires it).
 - **Rotate the key:** create a new key, replace `PE_TS_AUTHKEY`, revoke the old one.
   Enrolled nodes keep working; the key is used only when a node has no identity yet.
 - **Turn Tailscale off:** remove the nodes as above, remove `compose.tailscale.yaml` from
@@ -164,14 +165,20 @@ docker compose logs ts-litellm
 ## RustFS consoles
 
 The optional RustFS consoles of Backplane and Observability are not Tailnet Origins. For a
-session, enable the console in that stack and reach it over loopback through an SSH
-tunnel; never add RustFS to the Platform Network. Observability: set
-`OB_RUSTFS_CONSOLE=true`, run its bootstrap, then `ssh -L 18180:127.0.0.1:18180 <host>` and
-open `http://127.0.0.1:18180/rustfs/console/` with a hosts entry mapping `rustfs.<domain>`
-to `127.0.0.1` (its gateway routes the console by that host). Backplane publishes no RustFS
-port: add a private overlay that publishes `127.0.0.1:9001:9001` on its `rustfs` service,
-run its bootstrap, then `ssh -L 9001:127.0.0.1:9001 <host>` and open
-`http://127.0.0.1:9001/`. Remove the overlay after the session.
+session, reach them over loopback through an SSH tunnel; never add RustFS to the Platform
+Network.
+
+Observability: the console exists only on an installation with the `s3` storage profile
+(bootstrap refuses `rustfs_console_requires_s3` otherwise). Set `OB_RUSTFS_CONSOLE=true`,
+run its bootstrap, then `ssh -L 18180:127.0.0.1:18180 <host>`, add a hosts entry mapping
+`rustfs.<domain>` (or the configured `OB_RUSTFS_HOST`) to `127.0.0.1`, and open
+`http://rustfs.<domain>:18180/rustfs/console/`; its gateway routes the console by that
+hostname, so an IP URL does not reach it.
+
+Backplane: RustFS sits on its internal blob network only and publishes no port. Follow
+"Native RustFS console" in Backplane's `docs/operations/ingress.md`: read the container's
+address with `docker inspect`, then `ssh -L 9001:<address>:9001 <host>` and open
+`http://localhost:9001/rustfs/console/`.
 
 ## Troubleshooting
 

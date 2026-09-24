@@ -2,9 +2,11 @@
 
 What the two Edge volumes hold, how to capture and restore them, and what the drill proves.
 
+- [Prerequisites](#prerequisites)
 - [Existing installations](#existing-installations)
 - [Capture and restore](#capture-and-restore)
 - [RPO and RTO](#rpo-and-rto)
+- [Verification and troubleshooting](#verification-and-troubleshooting)
 
 `edge-data` holds public certificate account keys, server certificate keys and the local certificate authority. `edge-config`
 holds Caddy configuration state and the certificate metric. Both are external Docker
@@ -18,6 +20,17 @@ matching checkout and configuration. Deliberate retirement uses `scripts/destroy
 it displays the project and exact volumes and requires typing the project name. It
 stops that project and removes only those volumes, never the shared network. Run it
 only after explicitly deciding to lose that installation's certificate state.
+
+## Prerequisites
+
+- Docker, Compose 2.24.4 or newer, Python 3.11 or newer, Git, and the pinned Caddy image
+  pulled (`docker compose pull`).
+- Run as the checkout owner: backup resolves the Git commit and dirty status first and
+  refuses a checkout without Git metadata.
+- `PE_BACKUP_DIR` on a mounted, protected filesystem with more free space than the two
+  volumes; encryption at rest and off-host replication are yours to arrange.
+- Exactly one Edge Caddy container for the project (use `stop`, not `down`, before an
+  offline capture); the configured image reference pinned by digest.
 
 ## Existing installations
 
@@ -230,3 +243,21 @@ This covers a daemon stop request that completes after its CLI has already exite
 
 On a new host, pre-pull pinned images with `docker compose pull` before bootstrap or restore;
 slow image downloads can exhaust a helper's command deadline safely before extraction.
+
+## Verification and troubleshooting
+
+A capture succeeded when backup exited 0, the Checkpoint directory holds `manifest.json`,
+and Caddy answers `/health` again. A restore succeeded when restore exited 0, both volumes
+carry no `.pe-restore-incomplete` marker, bootstrap starts Caddy, and bootstrap's
+`certificate.ca_sha256` equals the manifest's `ca_sha256`. The drill proves both on a
+disposable project.
+
+| Symptom | Cause and fix |
+| --- | --- |
+| Backup refuses before stopping Caddy | Tag-only or local image, more than one Caddy container, a restore marker, or too little free space. The error names the check. |
+| `bootstrap_already_running` during a probe | A capture holds the env lock. Correlate with backup completion and require the next probe to succeed. |
+| `restore_incomplete` | A marker from an interrupted restore. Restore again into empty volumes; never delete markers by hand. |
+| `state_check_failed` | The helper could not read the volumes (Docker or image unavailable). Fix that and retry without replacing healthy volumes. |
+| Restore refuses populated volumes | Restore never clears a target. Use another `PE_VOLUME_PREFIX` or empty volumes deliberately. |
+| Fingerprint mismatch after restore | The wrong Checkpoint or prefix. Do not distribute the new root; restore the matching Checkpoint. |
+| Failed command details | `PE_BACKUP_DIR/.diagnostics/` holds stderr (0600); treat it as secret-bearing. |

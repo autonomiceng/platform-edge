@@ -391,11 +391,15 @@ request-bearing error diagnostics; do not put credentials in URL paths.
 
 The console reads each stack's public Status Document through same-origin routes that
 `routes.d/00-stack-probes.caddy` owns: `/stack-status/gateway`, `/stack-status/backplane`
-and `/stack-status/observability` proxy the owning gateway's `/status.json`;
+and `/stack-status/observability` proxy that stack's `/status.json` (the Gateway and
+Observability Caddys, the Backplane server);
 `/stack-status/edge` (also `/status.json`) serves the document bootstrap writes after
 readiness into the directory mounted at `/srv/state` (`data/console/` by default). These
-routes accept GET and HEAD, strip Authorization and Cookie, apply a four-second deadline,
-suppress upstream error and HTML bodies, and return uncached JSON. `/health` and
+routes accept GET and HEAD, strip Authorization and Cookie, bound connection setup,
+response headers and idle reads (2 s, 4 s, 4 s), suppress upstream error and HTML bodies,
+and return uncached JSON. Those Caddy timeouts are not a total body deadline: the console
+enforces a four-second total deadline and a 64 KiB body limit itself, and any other direct
+client of these routes must apply its own. `/health` and
 `/health/caddy` report Edge readiness only. When the status write fails, bootstrap exits 1
 with `status_write_failed` although Caddy is running. The field rules, limits and fixtures
 are in the [status contract](status-contract.md).
