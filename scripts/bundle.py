@@ -12,7 +12,6 @@ import fcntl
 import json
 import os
 import shlex
-import shutil
 import stat
 import subprocess
 import sys
@@ -26,7 +25,7 @@ ORDER = ("gateway", "observability", "backplane")
 STACKS = {
     "gateway": ("LG", "llm-gateway-stack", "scripts/bootstrap.py"),
     "observability": ("OB", "observability-stack", "scripts/bootstrap.py"),
-    "backplane": ("BP", "agent-backplane", "infra/bootstrap/prepare.ts"),
+    "backplane": ("BP", "agent-backplane", "scripts/bootstrap.py"),
 }
 # Loopback HTTP ports behind Edge (Platform Contract, "Bundle ports").
 PORTS = {"gateway": "18080", "observability": "18180", "backplane": "3000"}
@@ -54,7 +53,7 @@ def check_usage(parser, args) -> None:
 # bundle owns these keys: a selected node's Tailnet Origin, else the public-domain origin.
 ORIGIN_KEYS = {
     "gateway": {"LG_CONSOLE_URL": "console", "LG_LITELLM_URL": "litellm", "LG_LANGFUSE_URL": "langfuse", "LG_S3_URL": "s3",
-                "LG_RUSTFS_URL": "rustfs", "LG_GRAFANA_URL": "grafana", "LG_BACKPLANE_URL": "backplane"},
+                "LG_RUSTFS_URL": "rustfs"},
     "observability": {"OB_GRAFANA_URL": "grafana", "OB_GATEWAY_URL": "console", "OB_BACKPLANE_URL": "backplane"},
     "backplane": {"BP_PUBLIC_URL": "backplane"},
 }
@@ -133,15 +132,21 @@ def source_text(env: Path) -> str:
 
 
 def command(stack: str, args, values: dict[str, str], source: str) -> list[str]:
+    argv = [sys.executable, "scripts/bootstrap.py"]
     if stack != "backplane":
-        return [sys.executable, "scripts/bootstrap.py"]
-    argv = ["bun", "infra/bootstrap/prepare.ts", "--capability-file", str(args.capability_file.resolve()),
-            "--access-mode", "proxy", "--public-url", values["BP_PUBLIC_URL"]]
-    # A recorded selection is authoritative for prepare.ts: repeating --profile conflicts with it,
+        return argv
+    argv += ["--capability-file", str(args.capability_file.resolve()), "--access-mode", "proxy", "--public-url", values["BP_PUBLIC_URL"]]
+    # A recorded selection is authoritative for Backplane's bootstrap: repeating --profile conflicts with it,
     # and one without the gateway profile would leave Edge's bp-gateway:80 alias unserved.
-    recorded = next((unquoted(match.group("value")) for match in map(bootstrap.ENV_LINE.match, source.splitlines())
-                     if match and match.group("key") == "COMPOSE_PROFILES"), None)
+    entries = {match.group("key"): unquoted(match.group("value")) for match in map(bootstrap.ENV_LINE.match, source.splitlines()) if match}
+    recorded = entries.get("COMPOSE_PROFILES")
     if recorded is None:
+        # Backplane requires an explicit selection for an env holding its secrets or a Compose file list;
+        # --profile gateway alone would record away that installation's other profiles.
+        if any(entries.get(key) for key in ("COMPOSE_FILE", "BP_AUTH_SECRET", "BP_POSTGRES_ADMIN_PASSWORD", "BP_POSTGRES_PASSWORD", "BP_OPERATIONS_TOKEN")):
+            raise bootstrap.Refused("bundle_backplane_selection_required",
+                                    "Backplane records an installation but no COMPOSE_PROFILES; run its bootstrap once with --profile for "
+                                    "each existing profile plus gateway so the selection is recorded, then rerun")
         return argv + ["--profile", "gateway"]
     if "gateway" not in recorded.split(","):
         raise bootstrap.Refused("bundle_gateway_profile_required",
@@ -163,8 +168,6 @@ def plan(args, root: Path, edge: dict[str, str], apps: tuple[str, ...] = ()) -> 
     if "backplane" in args.stacks:
         if not args.capability_file:
             raise bootstrap.Refused("bundle_capability_file", "--capability-file is required with --with backplane; its bootstrap takes it on every run")
-        if shutil.which("bun") is None:
-            raise bootstrap.Refused("bundle_tool_missing", "install bun; Backplane's bootstrap runs with it")
     plans = []
     for stack in ORDER:
         if stack not in args.stacks:
@@ -177,6 +180,9 @@ def plan(args, root: Path, edge: dict[str, str], apps: tuple[str, ...] = ()) -> 
         if env.is_symlink():
             raise bootstrap.Refused("bundle_env_symlink", f"{env} must be a regular file")
         values = settings(stack, edge, origins)
+        if stack == "gateway" and "observability" in args.stacks:
+            # Observability scrapes the gateway's datastore exporters, which only this setting starts.
+            values["LG_METRICS"] = "true"
         source = source_text(env)
         _, writes = amended(source, values)
         plans.append({"stack": stack, "directory": directory, "env": env, "settings": values, "writes": writes,
@@ -193,17 +199,6 @@ def describe(item: dict) -> dict:
 def locked(stack: str, env: Path):
     """Hold the sibling's own env lock for the rewrite; it is released before its bootstrap runs."""
     lock = env.with_name(env.name + ".lock")
-    if stack == "backplane":
-        # prepare.ts creates this file exclusively for its run and removes it on exit.
-        try:
-            os.close(os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
-        except FileExistsError:
-            raise bootstrap.Refused("bundle_env_locked", f"{lock} exists: a Backplane preparation is running, or a stale lock needs its documented recovery") from None
-        try:
-            yield
-        finally:
-            lock.unlink(missing_ok=True)
-        return
     fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         try:

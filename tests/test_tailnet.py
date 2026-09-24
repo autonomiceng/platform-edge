@@ -126,8 +126,7 @@ class TailnetTests(unittest.TestCase):
             self.assertEqual(report["nodes"], ["ts-console", "ts-litellm", "ts-backplane"])
             self.assertEqual(report["probes"], "skipped: test")
             self.assertEqual(report["sibling_settings"]["gateway"], {"LG_CONSOLE_URL": "https://edge.tail1234.ts.net",
-                                                                     "LG_LITELLM_URL": "https://litellm.tail1234.ts.net",
-                                                                     "LG_BACKPLANE_URL": "https://backplane.tail1234.ts.net"})
+                                                                     "LG_LITELLM_URL": "https://litellm.tail1234.ts.net"})
             self.assertEqual(report["sibling_settings"]["backplane"], {"BP_PUBLIC_URL": "https://backplane.tail1234.ts.net"})
             self.assertNotIn("tskey", out + err)
             code, out, _ = run_main(["--env-file", str(env), "--tailscale", "--dry-run"], TailnetRunner())
