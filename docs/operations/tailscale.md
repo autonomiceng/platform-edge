@@ -176,10 +176,10 @@ address for the session. In the Observability checkout: set `OB_RUSTFS_CONSOLE=t
 the gateway printed by
 `docker network inspect observability-stack_default --format '{{(index .IPAM.Config 0).Gateway}}'`
 as a `/32` to `OB_RUSTFS_CONSOLE_ALLOW`, run its bootstrap, then
-`ssh -L 18180:127.0.0.1:18180 <host>`, add a hosts entry mapping `rustfs.<domain>` (or the
-configured `OB_RUSTFS_HOST`) to `127.0.0.1`, and open
-`http://rustfs.<domain>:18180/rustfs/console/`; its gateway routes the console by that
-hostname, so an IP URL does not reach it. Remove the address and rerun its bootstrap
+`ssh -L 18180:127.0.0.1:18180 <host>`, add a hosts entry mapping the console hostname
+(`rustfs.<domain>`, or `OB_RUSTFS_HOST` when set) to `127.0.0.1`, and open
+`http://<that hostname>:18180/rustfs/console/`; its gateway routes the console by that
+hostname, so an IP URL or the wrong name does not reach it. Remove the address and rerun its bootstrap
 afterwards. Details in Observability's ingress runbook.
 
 Backplane: RustFS sits on its internal blob network only and publishes no port. Follow
