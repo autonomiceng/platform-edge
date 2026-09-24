@@ -2,6 +2,7 @@
 
 import argparse
 import contextlib
+import fcntl
 import functools
 import io
 import json
@@ -79,7 +80,7 @@ class BundleTests(unittest.TestCase):
                              "LITELLM_MASTER_KEY='sk-secret$1'\nLG_HTTP_PORT=18080\nCUSTOM=kept\n"
                              "LG_BIND_HOST=127.0.0.1\nLG_PUBLIC_PORT_SUFFIX=\nLG_PLATFORM_NETWORK=platform\nLG_PLATFORM_SUBNET=172.30.0.0/24\n"
                              "LG_PLATFORM_IP_RANGE=172.30.0.128/25\nLG_TRUSTED_PROXIES=172.30.0.2/32\nLG_CONSOLE_URL=\nLG_LITELLM_URL=\n"
-                             "LG_LANGFUSE_URL=\nLG_S3_URL=\nLG_RUSTFS_URL=\nLG_GRAFANA_URL=\nLG_BACKPLANE_URL=\n")
+                             "LG_LANGFUSE_URL=\nLG_S3_URL=\nLG_RUSTFS_URL=\nLG_METRICS=true\n")
             created = observability / ".env"
             self.assertEqual(created.stat().st_mode & 0o777, 0o600)
             self.assertTrue(created.read_text().startswith("# template\nOB_ACCESS_MODE=proxy\n"))
@@ -191,13 +192,12 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(edge_env.read_bytes(), b"")
 
     def test_backplane_command_with_and_without_a_recorded_profile_set(self):
-        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {}, clear=True), \
-                patch.object(shutil, "which", return_value="/usr/bin/bun"):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {}, clear=True):
             root = Path(temporary)
             backplane = checkout(root, "backplane", "COMPOSE_PROFILES=blobs,compute,gateway\nBP_AUTH_SECRET=s\n")
             capability = root / "cap"
             [item] = bundle.plan(arguments(root, "backplane", capability=capability), root, EDGE)
-            self.assertEqual(item["command"], ["bun", "infra/bootstrap/prepare.ts", "--capability-file", str(capability.resolve()),
+            self.assertEqual(item["command"], [sys.executable, "scripts/bootstrap.py", "--capability-file", str(capability.resolve()),
                                               "--access-mode", "proxy", "--public-url", "https://backplane.example.com"])
             self.assertEqual(item["writes"], {"BP_ACCESS_MODE": "proxy", "BP_PUBLIC_URL": "https://backplane.example.com", "BP_BIND_HOST": "127.0.0.1",
                                               "BP_PORT": "3000", "BP_PLATFORM_NETWORK": "platform", "BP_PLATFORM_SUBNET": "172.30.0.0/24",
@@ -212,25 +212,24 @@ class BundleTests(unittest.TestCase):
             with self.assertRaises(bootstrap.Refused) as refused:
                 bundle.plan(arguments(root, "backplane"), root, EDGE)
             self.assertEqual(refused.exception.code, "bundle_capability_file")
-            (backplane / ".env.lock").write_text("locked\n")
-            with patch.object(bundle, "run_bootstrap", Runs()), self.assertRaises(bootstrap.Refused) as refused:
+            # A running Backplane bootstrap holds the flock on its .env.lock sidecar.
+            with open(backplane / ".env.lock", "w") as held, patch.object(bundle, "run_bootstrap", Runs()), \
+                    self.assertRaises(bootstrap.Refused) as refused:
+                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 bundle.install([fresh], ["--with", "backplane"])
             self.assertEqual(refused.exception.code, "sibling_bootstrap_failed")
             self.assertIn("was not started: " + str(backplane / ".env.lock"), refused.exception.detail)
             self.assertIn("rerun `python3 scripts/bootstrap.py --with backplane`", refused.exception.detail)
             self.assertEqual((backplane / ".env").read_text(), "BP_AUTH_SECRET=s\n")
-            (backplane / ".env.lock").unlink()
-            for failure, text in ((subprocess.TimeoutExpired("bun", bundle.TIMEOUT), "ran longer than 1800 s"),
-                                  (FileNotFoundError(2, "No such file", "bun"), "was not started: ")):
+            for failure, text in ((subprocess.TimeoutExpired("python3", bundle.TIMEOUT), "ran longer than 1800 s"),
+                                  (FileNotFoundError(2, "No such file", "python3"), "was not started: ")):
                 with patch.object(bundle, "run_bootstrap", side_effect=failure), self.assertRaises(bootstrap.Refused) as refused:
                     bundle.install([fresh], ["--with", "backplane"])
                 self.assertEqual(refused.exception.code, "sibling_bootstrap_failed")
                 self.assertIn(text, refused.exception.detail)
                 self.assertIn("rerun `python3 scripts/bootstrap.py --with backplane`", refused.exception.detail)
-                self.assertFalse((backplane / ".env.lock").exists())
             with patch.object(bundle, "run_bootstrap", Runs()), contextlib.redirect_stdout(io.StringIO()):
                 bundle.install([fresh], [])
-            self.assertFalse((backplane / ".env.lock").exists())
             self.assertTrue((backplane / ".env").read_text().startswith("BP_AUTH_SECRET=s\nBP_ACCESS_MODE=proxy\n"))
 
     def test_bundle_keys_carry_the_tailnet_origins_only_with_both_flags(self):
@@ -247,8 +246,7 @@ class BundleTests(unittest.TestCase):
                 self.assertEqual({key: value for key, value in plan["writes"].items() if key.endswith("_URL")},
                                  {"LG_CONSOLE_URL": "https://platform.tail1234.ts.net", "LG_LITELLM_URL": "https://litellm.tail1234.ts.net",
                                   "LG_LANGFUSE_URL": "https://langfuse.tail1234.ts.net", "LG_S3_URL": "https://s3.tail1234.ts.net",
-                                  "LG_RUSTFS_URL": "https://rustfs.tail1234.ts.net", "LG_GRAFANA_URL": "https://grafana.tail1234.ts.net",
-                                  "LG_BACKPLANE_URL": ""})
+                                  "LG_RUSTFS_URL": "https://rustfs.tail1234.ts.net"})
                 # The public domain stays the routing domain; only the browser origins move to the tailnet.
                 self.assertEqual((plan["writes"]["LG_SCHEME"], "LG_PUBLIC_DOMAIN" in plan["writes"]), ("https", False))
                 code, out, err = run_main(["--env-file", str(edge_env), "--dry-run", "--with", "gateway", "--gateway-dir", str(gateway)], runner)

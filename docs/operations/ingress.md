@@ -24,22 +24,22 @@ python3 scripts/bootstrap.py --with gateway --with observability --with backplan
 
 Checkouts default to the sibling directories `../llm-gateway-stack`, `../observability-stack`
 and `../agent-backplane`; `--gateway-dir`, `--observability-dir` and `--backplane-dir` point
-elsewhere. A missing checkout or `.env.example`, a missing `bun` for Backplane, and exported
-shell settings of a selected stack (`LG_`, `OB_`, `BP_`) or any `COMPOSE_` setting are refused
-(exit 1) before anything is written.
+elsewhere. A missing checkout or `.env.example` and exported shell settings of a selected stack
+(`LG_`, `OB_`, `BP_`) or any `COMPOSE_` setting are refused (exit 1) before anything is written.
 
 For each stack, in the order gateway, observability, backplane, bootstrap copies `.env.example`
 to `.env` (mode 0600) when it is absent, takes the stack's own env lock, writes the bundle keys
 of the [per-stack table](#per-stack-settings-behind-the-edge) with an atomic replacement that
 keeps every other line byte for byte, releases the lock and runs the stack's bootstrap from its
-checkout: `python3 scripts/bootstrap.py`, or for Backplane `bun infra/bootstrap/prepare.ts
---capability-file PATH --access-mode proxy --public-url URL` plus `--profile gateway` until
-`COMPOSE_PROFILES` is recorded. Its output goes to the terminal; env contents are never printed.
-The values come from Edge: `PE_PUBLIC_DOMAIN`, `PE_SCHEME` (HTTPS when unset),
-`PE_PLATFORM_NETWORK`, `PE_PLATFORM_SUBNET`, `PE_PLATFORM_IP_RANGE` and `PE_EDGE_IP` as the
-`/32` trust entry. Secrets and every other setting stay the stack's own:
-set `LG_BACKUP_DIR`, `LANGFUSE_INIT_USER_EMAIL`, `BP_BACKUP_DIR` and the Observability alert
-destination in those `.env` files first.
+checkout: `python3 scripts/bootstrap.py`, for Backplane with `--capability-file PATH
+--access-mode proxy --public-url URL` plus `--profile gateway` until `COMPOSE_PROFILES` is
+recorded; later runs reuse the recorded selection. Its output goes to the terminal; env
+contents are never printed. The values come from Edge: `PE_PUBLIC_DOMAIN`, `PE_SCHEME` (HTTPS
+when unset), `PE_PLATFORM_NETWORK`, `PE_PLATFORM_SUBNET`, `PE_PLATFORM_IP_RANGE` and
+`PE_EDGE_IP` as the `/32` trust entry. With observability also selected, the gateway receives
+`LG_METRICS=true` so its datastore exporters run for Observability to scrape. Secrets and
+every other setting stay the stack's own: set `LG_BACKUP_DIR`, `LANGFUSE_INIT_USER_EMAIL`,
+`BP_BACKUP_DIR` and the Observability alert destination in those `.env` files first.
 
 Reruns are idempotent: a key that already holds its value is not rewritten, and the stack
 bootstraps run again. `--dry-run` validates the Edge settings, renders its Compose configuration,
@@ -49,8 +49,7 @@ command it would run, and writes nothing.
 The first failing stack bootstrap stops the run with exit 3 and a JSON error naming the stack,
 its exit code and the rerun command; earlier stacks stay ready and later stacks are untouched.
 Fix the reported problem and rerun the same command. Backplane enrollment (`bp bootstrap`)
-remains the separate step its bootstrap prints. A `.env.lock` left by a killed Backplane
-preparation blocks the run until its documented stale-lock procedure removes it.
+remains the separate step its bootstrap prints.
 
 ## Image overrides
 
@@ -183,9 +182,9 @@ until `--tailscale` completes. Reruns are idempotent: enrolled nodes stay enroll
 
 The origins are the applications' browser URLs, and the bundle owns the settings that hold
 them: `LG_CONSOLE_URL`, `LG_LITELLM_URL`, `LG_LANGFUSE_URL`, `LG_S3_URL`, `LG_RUSTFS_URL`,
-`LG_GRAFANA_URL`, `LG_BACKPLANE_URL`, `OB_GRAFANA_URL`, `OB_GATEWAY_URL`, `OB_BACKPLANE_URL`
-and `BP_PUBLIC_URL`. While the selection is recorded, every `--with` run writes the Tailnet
-Origin of each selected node into them; a key whose node is not selected, or any run after
+`OB_GRAFANA_URL`, `OB_GATEWAY_URL`, `OB_BACKPLANE_URL` and `BP_PUBLIC_URL`. While the
+selection is recorded, every `--with` run writes the Tailnet Origin of each selected node into
+them; a key whose node is not selected, or any run after
 the selection is removed, gets the public-domain origin (`BP_PUBLIC_URL`, `OB_GATEWAY_URL`,
 `OB_BACKPLANE_URL`) or an empty value that the stack derives from its public domain. The
 public-domain settings stay as they are, so the public hostnames keep working beside the
@@ -367,6 +366,8 @@ LG_PUBLIC_PORT_SUFFIX=
 LG_PLATFORM_NETWORK=platform
 LG_TRUSTED_PROXIES=172.30.0.2/32
 ```
+
+When the observability stack scrapes the gateway, also set `LG_METRICS=true`.
 
 In the observability stack `.env`:
 
