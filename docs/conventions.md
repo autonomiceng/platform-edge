@@ -49,8 +49,8 @@ differs from it is a contract change, made here first.
 | Tailnet Origins | Optional. Edge runs one `tailscale/tailscale` node per routed hostname (`compose.tailscale.yaml`, profiles `ts-<name>`, external volume `${PE_VOLUME_PREFIX}_ts-<name>`); each serves `https://<name>.<tailnet>.ts.net` with a Tailscale certificate and proxies to `pe-edge:80` with the original Host. Edge sets `X-Forwarded-Proto: https` for requests from the Platform Network's dynamic range and trusts no forwarded header. `bootstrap.py --tailscale` records the selection and the tailnet domain in `.env`; the bundle writes the origins into the sibling browser-origin settings (`LG_CONSOLE_URL`, `LG_LITELLM_URL`, `LG_LANGFUSE_URL`, `LG_S3_URL`, `LG_RUSTFS_URL`, `OB_GRAFANA_URL`, `BP_PUBLIC_URL`). All nodes form one authorization domain. | `PE_TS_AUTHKEY` (secret), `PE_TS_TAG` (template `tag:platform`), `PE_TS_APPS` (default all seven), `PE_TAILNET_DOMAIN` (recorded by bootstrap) |
 | TLS issuers | `internal`: the stack Caddy's own CA (default in `local`). `acme`: an ACME directory (default in `public`; Let's Encrypt when no directory is set). `files`: an operator directory mounted read-only at `/certs` containing `tls.crt` and `tls.key`; bootstrap validates that the SAN list covers every configured hostname; replacement is swap files then `docker compose exec caddy caddy reload`; a stack Caddy with `admin off` has no reload, so it replaces certificates by `docker compose restart caddy` followed by bootstrap. Bootstrap's own HTTPS readiness probe trusts the CA file when one is given. Public ACME needs TCP 80 and 443 reachable; DNS-01 is not offered. | `*_TLS_ISSUER` (`internal`, `acme`, `files`), `*_ACME_EMAIL`, `*_ACME_CA` (directory URL), `*_ACME_CA_ROOT` (trust file for a private ACME server), `*_ACME_EAB_KEY_ID`, `*_ACME_EAB_HMAC`, `*_TLS_DIR`, `*_TLS_CA` |
 | Status v2 | Each stack serves `GET /status.json` (schema in "Status v2") and `GET /health/<component>` (status only, empty body publicly). Gateway, Observability and Edge write a static file at bootstrap; Backplane serves it from the server through an explicit public projection. Consumers show tags as configured, never running. No host observers, timers or `docker exec`. | none |
-| Secrets | Each bootstrap generates its missing secrets once into `.env`: mode 0600, atomic write, unrelated lines preserved byte for byte, present values never rewritten, and a refusal when installation state exists but a secret is missing. Secrets never appear in argv, container labels or world-readable rendered files. No secret manager; `sops` or `infisical run` are documented options for off-host storage. | none |
-| Bootstrap | `python3 scripts/bootstrap.py` in every repo, standard library only. Required flags: `--dry-run` (render and validate, write nothing) and `--env-file <path>` (default `.env`). Exit codes: 0 ready, 1 refused, 2 usage, 3 not ready. Errors are one JSON line on stderr. Once `.env` exists, plain `docker compose up` starts the stack. Backplane's bootstrap also takes `--capability-file <path>` on a fresh installation and enrolls the first user in a container from the server image (`compose.enroll.yaml`), so the host needs only Docker and Python. | none |
+| Secrets | Each bootstrap generates its missing secrets once into `.env`: mode 0600, atomic write, unrelated lines preserved byte for byte, present values never rewritten, and a refusal when installation state exists but a secret is missing. Secrets never appear in argv, container labels or world-readable rendered files; a password a service would otherwise take on its command line is injected as a Compose config file (Gateway's Valkey). No secret manager; `sops` or `infisical run` are documented options for off-host storage. | none |
+| Bootstrap | `python3 scripts/bootstrap.py` in every repo, standard library only. Required flags: `--dry-run` (render and validate, write nothing) and `--env-file <path>` (default `.env`). Exit codes: 0 ready, 1 refused, 2 usage, 3 not ready. Errors are one JSON line on stderr. Once `.env` exists, plain `docker compose up` starts the stack. Backplane's bootstrap also takes `--capability-file <path>` on a fresh installation, exports the pending enrollment capability there and prints the enrollment command, which runs in a container from the server image (`compose.enroll.yaml`), so the host needs only Docker and Python. | none |
 | UI kit | `platform-ui`: `platform.css` (tokens plus header, card, badge and endpoint components) and `docs/ui-kit.md`, canonical in platform-edge, vendored with the source revision and a checksum. Layout and application styles stay local. | none |
 
 ### Metrics interfaces
@@ -99,8 +99,9 @@ Rules:
 - `health` is always the same-origin path `/health/<id>`. `GET` returns 200 when the
   component's documented bounded probe passes, 503 when it fails, 404 for an unknown or
   disabled component, with an empty body publicly.
-- `version` is the configured image tag as shipped, including any leading `v`, when it is a
-  recognized release; null otherwise. Consumers label it "configured", never "running". `image` is the
+- `version` is the release version from the configured image tag, keeping a leading `v`
+  where the tag has one (a variant suffix such as `-alpine` is dropped), null when the tag is
+  not a recognized release. Consumers label it "configured", never "running". `image` is the
   configured reference without digest.
 - An absent or unreachable producer means unknown, never unhealthy, and never blocks another
   stack's card or the console.
@@ -174,12 +175,14 @@ mode records a default Langfuse login with a generated password.
   metrics interfaces above over the Platform Network. Collection failures never prevent
   another stack from starting. Domain data (LLM traces, backplane audit), WAL, backups and
   protected one-off recovery diagnostics remain durable where specified.
-- Health: each stack exposes `/health/<component>` through its gateway for the console and
-  bootstrap. Use container healthchecks where supported. Observability's Caddy healthcheck
-  probes Caddy only; its distroless backends are probed by bootstrap and smoke HTTP
-  assertions through Caddy. Health paths return only a status with an empty body to every
-  caller; Gateway and Observability have no address-based operator tier. Backplane's
-  readiness detail stays on its loopback port behind `BP_OPERATIONS_TOKEN`.
+- Health: each stack exposes `/health/<component>` for the console and bootstrap, through
+  its Caddy (Backplane: its server). Use container healthchecks where supported.
+  Observability's Caddy healthcheck probes Caddy only; its distroless backends are probed by
+  bootstrap and smoke HTTP assertions through Caddy. Component probes return only a status
+  with an empty body to every caller; Observability's `/health/alerts` is a JSON delivery
+  state, not a component probe. Gateway and Observability gate no health path by client
+  address. Backplane's readiness detail stays on its loopback port behind
+  `BP_OPERATIONS_TOKEN`.
 - Versions bump through Renovate PRs; majors of stateful stores are labelled and applied only
   from a Checkpoint following `docs/operations/maintenance.md`.
 
