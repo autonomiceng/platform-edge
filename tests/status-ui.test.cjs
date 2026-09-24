@@ -114,7 +114,7 @@ test("configured versions, Not enabled and features come only from the document"
     run(`${expression}(services().find(s => s.id === '${id}'))`);
   assert.equal(service("edge", "serviceVersion"), "Configured 2.11.4");
   assert.equal(service("edge", "state"), "Configured");
-  assert.equal(service("lite", "serviceVersion"), "Configured 1.101.0");
+  assert.equal(service("lite", "serviceVersion"), "Configured v1.101.0");
   assert.equal(service("pg-export", "state"), "Not enabled");
   assert.equal(service("b-rust", "state"), "Not enabled");
   assert.equal(service("workerd", "serviceVersion"), "");
