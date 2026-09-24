@@ -3,7 +3,10 @@
 Private access to every application from your own devices, without exposing anything to
 the internet. Each routed hostname runs as its own Tailscale node inside the Edge project
 and answers at `https://<name>.<tailnet>.ts.net` with a certificate issued by Tailscale.
-No host `tailscale serve`, no sudo, no ports, no certificate installed on clients. The
+Who can reach those names is decided by your tailnet policy, not by Edge. No host
+`tailscale serve`, no sudo, no ports, no certificate installed on clients. One trade-off:
+Tailscale certificates put the node names in public Certificate Transparency logs, so keep
+the names generic (the defaults are) rather than descriptive of anything private. The
 full reference is the [ingress runbook](ingress.md#access-everything-through-tailscale);
 this page is the short path.
 
@@ -71,8 +74,8 @@ sibling stacks before running their bootstraps. The result lists the origins.
 
 From a device covered by the access rule, open `https://platform.<tailnet>.ts.net/` and
 follow the application links. The first request to each name can take a few seconds while
-the node fetches its certificate. In the admin console the seven machines appear under
-your tag.
+the node fetches its certificate. In the admin console the selected machines (up to
+seven) appear under your tag.
 
 ## Day two
 
