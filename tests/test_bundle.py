@@ -232,7 +232,7 @@ class BundleTests(unittest.TestCase):
             with open(backplane / ".env.lock", "w") as held, patch.object(bundle, "run_bootstrap", Runs()), \
                     self.assertRaises(bootstrap.Refused) as refused:
                 fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                bundle.install([fresh], ["--with", "backplane"])
+                bundle.install([direct], ["--with", "backplane"])
             self.assertEqual(refused.exception.code, "sibling_bootstrap_failed")
             self.assertIn("was not started: " + str(backplane / ".env.lock"), refused.exception.detail)
             self.assertIn("rerun `python3 scripts/bootstrap.py --with backplane`", refused.exception.detail)
@@ -240,12 +240,12 @@ class BundleTests(unittest.TestCase):
             for failure, text in ((subprocess.TimeoutExpired("python3", bundle.TIMEOUT), "ran longer than 1800 s"),
                                   (FileNotFoundError(2, "No such file", "python3"), "was not started: ")):
                 with patch.object(bundle, "run_bootstrap", side_effect=failure), self.assertRaises(bootstrap.Refused) as refused:
-                    bundle.install([fresh], ["--with", "backplane"])
+                    bundle.install([direct], ["--with", "backplane"])
                 self.assertEqual(refused.exception.code, "sibling_bootstrap_failed")
                 self.assertIn(text, refused.exception.detail)
                 self.assertIn("rerun `python3 scripts/bootstrap.py --with backplane`", refused.exception.detail)
             with patch.object(bundle, "run_bootstrap", Runs()), contextlib.redirect_stdout(io.StringIO()):
-                bundle.install([fresh], [])
+                bundle.install([direct], [])
             self.assertTrue((backplane / ".env").read_text().startswith("BP_AUTH_SECRET=\nBP_ACCESS_MODE=proxy\n"))
 
     def test_bundle_keys_carry_the_tailnet_origins_only_with_both_flags(self):
