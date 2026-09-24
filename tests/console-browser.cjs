@@ -119,7 +119,7 @@ const assert = require("node:assert/strict");
     );
     assert.ok(
       !(await page.locator(".version").allTextContents()).some((text) =>
-        text.startsWith("Configured 1.101.0"),
+        text.startsWith("Configured v1.101.0"),
       ),
       "A missing Gateway producer never borrows another version source",
     );

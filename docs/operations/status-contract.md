@@ -52,7 +52,7 @@ Each component has these fields and no others:
 | `kind` | `app`, `datastore`, `gateway`, `collector` or `runtime`. |
 | `enabled` | Boolean: the component is selected by the configured Compose profiles and overlays. |
 | `image` | The configured image reference (registry, repository, tag) without digest, 1 to 256 characters. |
-| `version` | The release version parsed from the configured tag with a component-specific allowlist, matching `^[A-Za-z0-9._+-]{1,128}$`, or null when the tag is not a recognized release. |
+| `version` | The release version from the configured tag with a component-specific allowlist, keeping a leading `v` where the tag has one (a variant suffix such as `-alpine` is dropped), matching `^[A-Za-z0-9._+-]{1,128}$`, or null when the tag is not a recognized release. |
 | `health` | Same-origin path `/health/<id>`. Required for every component; a disabled component's path answers 404 and is never probed. |
 | `url` | Optional. The component's configured browser or API origin. Omitted when the component has none. |
 

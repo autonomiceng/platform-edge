@@ -9,7 +9,7 @@
      "image": "grafana/grafana:13.2.2", "version": "13.2.2",
      "health": "/health/grafana", "url": "https://grafana.example.com"},
     {"id": "alloy", "name": "Alloy", "kind": "collector", "enabled": true,
-     "image": "grafana/alloy:v1.19.2", "version": "1.19.2", "health": "/health/alloy"},
+     "image": "grafana/alloy:v1.19.2", "version": "v1.19.2", "health": "/health/alloy"},
     {"id": "loki", "name": "Loki", "kind": "datastore", "enabled": true,
      "image": "grafana/loki:3.7.7", "version": "3.7.7", "health": "/health/loki"},
     {"id": "mimir", "name": "Mimir", "kind": "datastore", "enabled": true,
