@@ -206,7 +206,12 @@ class BundleTests(unittest.TestCase):
             with self.assertRaises(bootstrap.Refused) as refused:
                 bundle.plan(arguments(root, "backplane", capability=capability), root, EDGE)
             self.assertEqual(refused.exception.code, "bundle_gateway_profile_required")
+            # An installation that predates a recorded selection must name its profiles itself.
             (backplane / ".env").write_text("BP_AUTH_SECRET=s\n")
+            with self.assertRaises(bootstrap.Refused) as refused:
+                bundle.plan(arguments(root, "backplane", capability=capability), root, EDGE)
+            self.assertEqual(refused.exception.code, "bundle_backplane_selection_required")
+            (backplane / ".env").write_text("BP_AUTH_SECRET=\n")
             [fresh] = bundle.plan(arguments(root, "backplane", capability=capability), root, EDGE)
             self.assertEqual(fresh["command"][-2:], ["--profile", "gateway"])
             with self.assertRaises(bootstrap.Refused) as refused:
@@ -220,7 +225,7 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(refused.exception.code, "sibling_bootstrap_failed")
             self.assertIn("was not started: " + str(backplane / ".env.lock"), refused.exception.detail)
             self.assertIn("rerun `python3 scripts/bootstrap.py --with backplane`", refused.exception.detail)
-            self.assertEqual((backplane / ".env").read_text(), "BP_AUTH_SECRET=s\n")
+            self.assertEqual((backplane / ".env").read_text(), "BP_AUTH_SECRET=\n")
             for failure, text in ((subprocess.TimeoutExpired("python3", bundle.TIMEOUT), "ran longer than 1800 s"),
                                   (FileNotFoundError(2, "No such file", "python3"), "was not started: ")):
                 with patch.object(bundle, "run_bootstrap", side_effect=failure), self.assertRaises(bootstrap.Refused) as refused:
@@ -230,7 +235,7 @@ class BundleTests(unittest.TestCase):
                 self.assertIn("rerun `python3 scripts/bootstrap.py --with backplane`", refused.exception.detail)
             with patch.object(bundle, "run_bootstrap", Runs()), contextlib.redirect_stdout(io.StringIO()):
                 bundle.install([fresh], [])
-            self.assertTrue((backplane / ".env").read_text().startswith("BP_AUTH_SECRET=s\nBP_ACCESS_MODE=proxy\n"))
+            self.assertTrue((backplane / ".env").read_text().startswith("BP_AUTH_SECRET=\nBP_ACCESS_MODE=proxy\n"))
 
     def test_bundle_keys_carry_the_tailnet_origins_only_with_both_flags(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {}, clear=True):

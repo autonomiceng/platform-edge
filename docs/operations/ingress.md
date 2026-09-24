@@ -33,7 +33,9 @@ of the [per-stack table](#per-stack-settings-behind-the-edge) with an atomic rep
 keeps every other line byte for byte, releases the lock and runs the stack's bootstrap from its
 checkout: `python3 scripts/bootstrap.py`, for Backplane with `--capability-file PATH
 --access-mode proxy --public-url URL` plus `--profile gateway` until `COMPOSE_PROFILES` is
-recorded; later runs reuse the recorded selection. Its output goes to the terminal; env
+recorded; later runs reuse the recorded selection. A Backplane `.env` that holds core secrets or
+`COMPOSE_FILE` but no `COMPOSE_PROFILES` is refused (`bundle_backplane_selection_required`):
+run Backplane's bootstrap once with `--profile` for each existing profile plus `gateway`. Its output goes to the terminal; env
 contents are never printed. The values come from Edge: `PE_PUBLIC_DOMAIN`, `PE_SCHEME` (HTTPS
 when unset), `PE_PLATFORM_NETWORK`, `PE_PLATFORM_SUBNET`, `PE_PLATFORM_IP_RANGE` and
 `PE_EDGE_IP` as the `/32` trust entry. With observability also selected, the gateway receives

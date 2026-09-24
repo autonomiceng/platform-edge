@@ -138,9 +138,15 @@ def command(stack: str, args, values: dict[str, str], source: str) -> list[str]:
     argv += ["--capability-file", str(args.capability_file.resolve()), "--access-mode", "proxy", "--public-url", values["BP_PUBLIC_URL"]]
     # A recorded selection is authoritative for Backplane's bootstrap: repeating --profile conflicts with it,
     # and one without the gateway profile would leave Edge's bp-gateway:80 alias unserved.
-    recorded = next((unquoted(match.group("value")) for match in map(bootstrap.ENV_LINE.match, source.splitlines())
-                     if match and match.group("key") == "COMPOSE_PROFILES"), None)
+    entries = {match.group("key"): unquoted(match.group("value")) for match in map(bootstrap.ENV_LINE.match, source.splitlines()) if match}
+    recorded = entries.get("COMPOSE_PROFILES")
     if recorded is None:
+        # Backplane requires an explicit selection for an env holding its secrets or a Compose file list;
+        # --profile gateway alone would record away that installation's other profiles.
+        if any(entries.get(key) for key in ("COMPOSE_FILE", "BP_AUTH_SECRET", "BP_POSTGRES_ADMIN_PASSWORD", "BP_POSTGRES_PASSWORD", "BP_OPERATIONS_TOKEN")):
+            raise bootstrap.Refused("bundle_backplane_selection_required",
+                                    "Backplane records an installation but no COMPOSE_PROFILES; run its bootstrap once with --profile for "
+                                    "each existing profile plus gateway so the selection is recorded, then rerun")
         return argv + ["--profile", "gateway"]
     if "gateway" not in recorded.split(","):
         raise bootstrap.Refused("bundle_gateway_profile_required",
