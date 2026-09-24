@@ -106,7 +106,8 @@ Then run the same bundle command as in the local setup. It derives `example.com`
 HTTPS origins from the Edge `.env`, writes the
 [per-stack settings](docs/operations/ingress.md#per-stack-settings-behind-the-edge) and runs
 each stack's bootstrap. Edge reaches the Backplane server directly at `bp-server:3000`; its
-`edge` and `gateway` profiles stay off.
+`edge` profile stays off and its `gateway` profile is needed only by Backplane checkouts that
+still ship it.
 The seven routed hosts are root, `litellm.`, `langfuse.`, `s3.`, `rustfs.`, `backplane.`
 and `grafana.` under the configured domain. Run shared-host acceptance after siblings
 are ready: `SMOKE_INTEGRATION=1 SMOKE_DOMAIN=example.com scripts/smoke.sh` (use

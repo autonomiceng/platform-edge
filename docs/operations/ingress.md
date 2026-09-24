@@ -39,7 +39,7 @@ is gone, a recorded `COMPOSE_PROFILES` that still lists `gateway` is refused
 (`bundle_gateway_profile_retired`) until it is dropped as Backplane's upgrade note describes.
 A Backplane `.env` that holds core secrets or `COMPOSE_FILE` but no `COMPOSE_PROFILES` is
 refused (`bundle_backplane_selection_required`): run Backplane's bootstrap once with
-`--profile` for each existing profile. Its output goes to the terminal; env
+`--profile` for each existing profile, or `--profile ''` for core only. Its output goes to the terminal; env
 contents are never printed. The values come from Edge: `PE_PUBLIC_DOMAIN`, `PE_SCHEME` (HTTPS
 when unset), `PE_PLATFORM_NETWORK`, `PE_PLATFORM_SUBNET`, `PE_PLATFORM_IP_RANGE` and
 `PE_EDGE_IP` as the `/32` trust entry. With observability also selected, the gateway receives
@@ -412,7 +412,9 @@ Every stack also takes `*_PLATFORM_SUBNET` and `*_PLATFORM_IP_RANGE` from Edge's
 `172.30.0.128/25`); `--with` always writes them.
 
 Edge reaches the Backplane server directly at `bp-server:3000` on the Platform Network; no
-Backplane Caddy runs behind Edge, so keep the `edge` and `gateway` profiles off. Edge keeps
+Backplane Caddy is needed behind Edge, so keep the `edge` profile off and drop `gateway` once
+Backplane no longer ships `compose.gateway.yaml` (a recorded `gateway` profile keeps running
+unused until then). Edge keeps
 the operator-route denial (`/health/operations` and `/metrics` answer 404), strips
 `Authorization` from `/health/ready`, forwards `Host` and `X-Forwarded-Proto`, and streams
 event responses unbuffered. Backplane ignores forwarded headers by design; `BP_PUBLIC_URL`

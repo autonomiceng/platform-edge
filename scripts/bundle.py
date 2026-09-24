@@ -148,7 +148,7 @@ def command(stack: str, args, values: dict[str, str], source: str, directory: Pa
         if any(entries.get(key) for key in ("COMPOSE_FILE", "BP_AUTH_SECRET", "BP_POSTGRES_ADMIN_PASSWORD", "BP_POSTGRES_PASSWORD", "BP_OPERATIONS_TOKEN")):
             raise bootstrap.Refused("bundle_backplane_selection_required",
                                     "Backplane records an installation but no COMPOSE_PROFILES; run its bootstrap once with --profile for "
-                                    "each existing profile so the selection is recorded, then rerun")
+                                    "each existing profile, or --profile '' for core only, so the selection is recorded, then rerun")
         return argv + (["--profile", "gateway"] if shipped else [])
     if "gateway" in recorded.split(",") and not shipped:
         raise bootstrap.Refused("bundle_gateway_profile_retired",

@@ -99,7 +99,7 @@ cat > "$work/stub.caddy" <<'CADDY'
 {
 	admin off
 }
-:80, :3000 {
+:{$STUB_PORT:80} {
 	header X-Smoke-Forwarded-For {http.request.header.X-Forwarded-For}
 	header X-Smoke-Forwarded-Host {http.request.header.X-Forwarded-Host}
 	header X-Smoke-Authorization {http.request.header.Authorization}
@@ -145,7 +145,7 @@ printf '%s\n' '{"producer":"ob-gateway","host":"localhost","scheme":"http"}' > "
 lg_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias lg-gateway -e STUB_ALIAS=lg-gateway \
   -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" -v "$work/respond-status.caddy:/etc/caddy/respond-status.caddy:ro" \
   "$caddy_image")
-bp_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias bp-server -e STUB_ALIAS=bp-server \
+bp_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias bp-server -e STUB_ALIAS=bp-server -e STUB_PORT=3000 \
   -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" -v "$work/respond-status.caddy:/etc/caddy/respond-status.caddy:ro" \
   "$caddy_image")
 ob_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias ob-gateway -e STUB_ALIAS=ob-gateway \
