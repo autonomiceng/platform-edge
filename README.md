@@ -6,130 +6,90 @@ One Caddy for ports 80 and 443 when several stacks share a host. It gets the cer
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Caddy 2.11](https://img.shields.io/badge/Caddy-2.11-1F88C0)](https://github.com/caddyserver/caddy)
 
+- [What it is](#what-it-is)
+- [Quick start](#quick-start)
+- [Access modes](#access-modes)
+- [What's inside](#whats-inside)
+- [Upgrade](#upgrade)
+- [Day two](#day-two)
+- [The other stacks](#the-other-stacks)
+- [Development](#development)
+- [Security](#security)
+- [License](#license)
+
 ## What it is
 
-The LLM gateway, the agent backplane and the observability stack each ship their own Caddy and each want port 80. On a host that runs more than one of them, this project takes the ports instead. It handles HTTPS once and forwards each hostname over the shared `platform` Docker network to the stack that owns it, with the original Host and scheme.
+The LLM gateway, the agent backplane and the observability stack each ship their own Caddy and each want port 80. On a host that runs more than one of them, this project takes the ports instead. It handles HTTPS once and forwards each hostname over the shared `platform` Docker network to the stack that owns it, with the original Host and scheme. The root hostname serves a console with links, health and configured versions for every installed stack.
 
 Every stack still works on its own without it. Add the edge when you add the second stack.
 
 ## Quick start
 
-You need a Linux Docker host with journald, Compose 2.24.4 or newer, and Python 3.11 or newer.
+You need a Linux Docker host with journald, Compose 2.24.4 or newer, and Python 3.11 or newer. Clone the sibling stacks next to this checkout (`../llm-gateway-stack`, `../observability-stack`, `../agent-backplane`), or pass `--<stack>-dir`.
 
 ```sh
-git clone https://github.com/autonomiceng/platform-edge.git
-cd platform-edge
-python3 scripts/bootstrap.py --render-only
-```
-
-Choose the local or public Edge settings below, then run `python3 scripts/bootstrap.py` here; add `--with` for each sibling stack to install behind it (below). If an existing stack already owns ports 80 or 443, first move its gateway to spare loopback ports.
-Bootstrap creates the shared network with the platform contract's allocation (or validates an existing one), creates external certificate volumes, checks port
-conflicts, starts Caddy and verifies both local listeners, including HTTPS certificate trust. No sibling stack is required for Edge readiness.
-
-## Local integration
-
-Local Mode serves HTTP on 80 and self-signed HTTPS on 443, without redirecting HTTP or telling browsers to require HTTPS. Sibling ingresses use HTTP internally. A missing stack returns 502 on its hostnames while other stacks continue working. The root always serves the Edge project console, including when Gateway is absent.
-
-The shared setup below uses HTTPS application URLs for browser login. Install Edge’s
-public root certificate on clients once; HTTP remains available for health checks and
-transport access. A standalone stack can still start with its own HTTP defaults.
-
-Edge `.env`:
-
-```sh
-PE_ACCESS_MODE=local
-PE_PUBLIC_DOMAIN=localhost
-PE_SCHEME=https
-PE_BIND_HOST=127.0.0.1
-PE_HTTP_PORT=80
-PE_HTTPS_PORT=443
-PE_PLATFORM_NETWORK=platform
-PE_ACME_EMAIL=
-PE_VOLUME_PREFIX=platform-edge
-PE_BACKUP_DIR=./backups
-```
-
-Then install the stacks behind it with one command. It writes the
-[per-stack settings](docs/operations/ingress.md#per-stack-settings-behind-the-edge) into each
-sibling `.env` (`../llm-gateway-stack`, `../observability-stack` and `../agent-backplane` by
-default) and runs each stack's own bootstrap; add `--dry-run` to see the plan first:
-
-```sh
+git clone https://github.com/autonomiceng/platform-edge.git && cd platform-edge
 python3 scripts/bootstrap.py --with gateway --with observability --with backplane \
   --capability-file ~/private/backplane-enrollment
 ```
 
-Set each stack's own required settings (`LG_BACKUP_DIR`, `LANGFUSE_INIT_USER_EMAIL`,
-`BP_BACKUP_DIR`, the Observability alert destination) in its `.env` first; the bundle never
-touches them. See [Install the bundle](docs/operations/ingress.md#install-the-bundle).
+Drop the `--with` entries for stacks you do not run (`--capability-file` belongs to `--with backplane`). Bootstrap writes `.env` from `.env.example`, creates the shared network with the contract's allocation (or validates an existing one), creates the certificate volumes, checks port conflicts, starts Caddy and verifies both loopback listeners including HTTPS trust. Then, for each selected stack in turn, it writes the [bundle settings](docs/operations/ingress.md#bundle-settings-per-stack) into that stack's `.env` and runs that stack's own bootstrap. Add `--dry-run` first to see the plan without writing anything.
 
-The console also opens at `http://127.0.0.1`; verified direct HTTPS requires installing
-Edge's public CA root. For private access from other computers through Tailscale, put a
-reusable tagged auth key in `.env` as `PE_TS_AUTHKEY` and run:
+Set each stack's own required settings (`LG_BACKUP_DIR`, `LANGFUSE_INIT_USER_EMAIL`, `BP_BACKUP_DIR`, the Observability alert destination) in its `.env` before or after; the bundle never touches them. If an installed stack already owns port 80 or 443, Edge refuses to start (`port_conflict`): first move that stack's gateway to a spare loopback port with its own bootstrap, then rerun.
 
-```sh
-python3 scripts/bootstrap.py --tailscale --with gateway --with observability --with backplane \
-  --capability-file ~/private/backplane-enrollment
-```
+The defaults are Local Mode on `localhost`. Open `http://localhost/` for the console. The applications behind Edge get HTTPS browser origins (the bundle writes `https` unless `PE_SCHEME` says otherwise, because login cookies and generated links need one scheme): `https://litellm.localhost/`, `https://langfuse.localhost/`, `https://grafana.localhost/`, `https://backplane.localhost/`. Install Edge's public CA root once so browsers trust them ([trusting local certificates](docs/operations/ingress.md#trusting-local-https-certificates)); HTTP stays available for health checks.
 
-This starts one Tailscale node per hostname inside the Edge project and gives each
-application its own `https://<name>.<tailnet>.ts.net` origin with a Tailscale-issued
-certificate: no host `tailscale serve`, no sudo, no port table, no client CA install.
-Localhost HTTP and self-signed HTTPS remain available. See the
-[Tailscale setup](docs/operations/tailscale.md) for the short path, and the
-[ingress guide](docs/operations/ingress.md#access-everything-through-tailscale) for the full reference.
+## Access modes
 
-Runtime logs go to stdout/stderr and Docker journald, without Docker log files or cache.
-Alloy collection is optional; `docker compose logs -f caddy` works without observability.
-Host journal persistence remains the operator's choice. Fresh installs provide HTTP and self-signed HTTPS. Choose public mode for your own domain, or proxy mode when another gateway handles HTTPS.
+`PE_ACCESS_MODE` in `.env` selects how the host is reached. Rerun the bundle command after changing it; the siblings receive the matching origins. Details in the [ingress runbook](docs/operations/ingress.md).
 
-## Public integration
+| You want | Settings | Read |
+| --- | --- | --- |
+| Localhost only (default) | `PE_ACCESS_MODE=local`; HTTP and self-signed HTTPS on loopback, no redirects | [Local Mode](docs/operations/ingress.md#local-mode-default) |
+| Private access from your devices over Tailscale | `PE_TS_AUTHKEY` plus `python3 scripts/bootstrap.py --tailscale --with ...`; one Tailscale node per hostname, `https://<name>.<tailnet>.ts.net` | [Tailscale setup](docs/operations/tailscale.md) |
+| Public hostnames with Let's Encrypt | `PE_ACCESS_MODE=public`, `PE_PUBLIC_DOMAIN`, `PE_BIND_HOST=0.0.0.0`, `PE_ACME_EMAIL` | [Public Mode](docs/operations/ingress.md#public-mode) |
+| Corporate CA or certificate files | `PE_TLS_ISSUER=acme` with `PE_ACME_CA`, or `PE_TLS_ISSUER=files` with `PE_TLS_DIR` | [Corporate certificates](docs/operations/ingress.md#corporate-certificates-and-private-acme) |
+| Behind another HTTPS gateway | `PE_ACCESS_MODE=proxy`; Edge publishes HTTP only | [Proxy Mode](docs/operations/ingress.md#proxy-mode) |
 
-Point DNS for the root and six subdomains at the host and open TCP 80/443. Certificate issuance requires all seven names to be reachable. For private DNS, select `PE_ACCESS_MODE=local` with the private domain and distribute its public CA root. A private ACME CA or certificate files from your own PKI: set `PE_TLS_ISSUER` as described in [corporate certificates and private ACME](docs/operations/ingress.md#corporate-certificates-and-private-acme).
-
-Edge `.env`:
-
-```sh
-PE_ACCESS_MODE=public
-PE_PUBLIC_DOMAIN=example.com
-PE_SCHEME=https
-PE_BIND_HOST=0.0.0.0
-PE_HTTP_PORT=80
-PE_HTTPS_PORT=443
-PE_PLATFORM_NETWORK=platform
-PE_ACME_EMAIL=ops@example.com
-PE_VOLUME_PREFIX=platform-edge
-PE_BACKUP_DIR=./backups
-```
-
-Then run the same bundle command as in the local setup. It derives `example.com` and the
-HTTPS origins from the Edge `.env`, writes the
-[per-stack settings](docs/operations/ingress.md#per-stack-settings-behind-the-edge) and runs
-each stack's bootstrap. Edge reaches the Backplane server directly at `bp-server:3000`; its
-`edge` profile stays off and its `gateway` profile is needed only by Backplane checkouts that
-still ship it.
-The seven routed hosts are root, `litellm.`, `langfuse.`, `s3.`, `rustfs.`, `backplane.`
-and `grafana.` under the configured domain. Run shared-host acceptance after siblings
-are ready: `SMOKE_INTEGRATION=1 SMOKE_DOMAIN=example.com scripts/smoke.sh` (use
-`localhost` for Local Mode). A missing-sibling skip is not a pass.
+Runtime logs go to Linux journald; see [runtime logs](docs/operations/ingress.md#runtime-logs).
 
 ## What's inside
 
 | Service | Job | Data |
 | --- | --- | --- |
-| Caddy | TLS, hostname routing, a health path, a project console | `edge-data` (certificates and CA keys) and `edge-config` volumes |
+| Caddy | TLS, hostname routing, a health path, the project console | `edge-data` (certificates and CA keys) and `edge-config` volumes |
+| Tailscale nodes (optional, `--tailscale`) | One HTTPS origin per hostname on your tailnet | one `ts-<name>` volume per node |
 
-Routes live in `routes.d/`, one file per stack. The validated default image is pinned as `tag@sha256` in `compose.yaml`.
-Set `PE_CADDY_IMAGE` in `.env` to a complete image reference for an unvalidated local
-experiment; empty or unset keeps that default, including with bare `docker compose`.
-See [image overrides](docs/operations/ingress.md#image-overrides) for validation and Checkpoint limits.
+Routes live in `routes.d/`, one file per stack:
 
-## Built on
+| Hostname | Upstream |
+| --- | --- |
+| `<domain>` | Edge console at `/`; other paths go to `lg-gateway:80` |
+| `litellm.`, `langfuse.`, `s3.`, `rustfs.` | `lg-gateway:80` |
+| `backplane.` | `bp-server:3000` |
+| `grafana.` | `ob-gateway:80` |
 
-| Project | Stars | What we use it for |
-| --- | --- | --- |
-| [Caddy](https://github.com/caddyserver/caddy) | ![stars](https://img.shields.io/github/stars/caddyserver/caddy?style=flat) | Routing and automatic HTTPS |
-| [Docker Compose](https://github.com/docker/compose) | ![stars](https://img.shields.io/github/stars/docker/compose?style=flat) | Running it |
+The validated default image is pinned as `tag@sha256` in `compose.yaml`. Set `PE_CADDY_IMAGE` in `.env` to a complete image reference for a local experiment; see [image overrides](docs/operations/ingress.md#image-overrides).
+
+## Upgrade
+
+```sh
+scripts/backup.sh          # Checkpoint of the certificate volumes
+git pull
+docker compose pull
+python3 scripts/bootstrap.py --with gateway --with observability --with backplane \
+  --capability-file ~/private/backplane-enrollment
+```
+
+Bootstrap recreates what changed and waits for readiness; the siblings' own upgrade steps are in their READMEs. Route changes in `routes.d/` apply on the next `docker compose restart caddy` when the container was not recreated.
+
+## Day two
+
+- [Ingress: modes, certificates, bundle settings, metrics, logs](docs/operations/ingress.md)
+- [Tailscale setup](docs/operations/tailscale.md)
+- [Backup, restore, CA preservation and RPO/RTO](docs/operations/backup.md)
+- [Public stack status contract](docs/operations/status-contract.md)
+- [Design](docs/DESIGN.md), [vocabulary](CONTEXT.md), [decisions](docs/adr/)
 
 ## The other stacks
 
@@ -137,23 +97,15 @@ See [image overrides](docs/operations/ingress.md#image-overrides) for validation
 - [agent-backplane](https://github.com/autonomiceng/agent-backplane): shared state, queues and approvals for agents.
 - [observability-stack](https://github.com/autonomiceng/observability-stack): Grafana, Loki, Tempo and Mimir.
 
-All four deploy the same way. Shared conventions are in [docs/conventions.md](docs/conventions.md).
-The [platform contract](docs/conventions.md#platform-contract) in that file fixes the network, ingress, TLS, status and bootstrap interfaces the four stacks share; it is canonical here and vendored into the siblings with `scripts/sync-conventions.sh`.
-
-## Day two
-
-- [Ingress: per-stack settings, DNS, certificates, CA export](docs/operations/ingress.md)
-- [Backup, restore, CA preservation and RPO/RTO](docs/operations/backup.md)
-- [Design](docs/DESIGN.md), [vocabulary](CONTEXT.md), [decisions](docs/adr/)
-
-Run `scripts/backup.sh` for both Edge state volumes (`edge-data` and `edge-config`) and replicate the encrypted Checkpoint off-host. Read the migration instructions before upgrading from managed volumes.
+All four deploy the same way. Shared conventions and the [platform contract](docs/conventions.md#platform-contract) (network, ingress, TLS, status and bootstrap interfaces) live in [docs/conventions.md](docs/conventions.md); it is canonical here and vendored into the siblings with `scripts/sync-conventions.sh`.
 
 ## Development
 
 ```sh
 scripts/validate.sh                    # static checks, what CI runs on every push
 python3 -m unittest discover -s tests  # unit tests, no Docker
-scripts/smoke.sh                       # disposable edge: HTTP and verified self-signed HTTPS
+node --test tests/status*.test.cjs     # status consumer tests
+scripts/smoke.sh                       # disposable edge with stub upstreams: routing, HTTPS, hardening
 scripts/backup-drill.sh                # prove CA and TLS survive restore; print RTO
 ```
 

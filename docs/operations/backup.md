@@ -1,5 +1,13 @@
 # Certificate state and Checkpoints
 
+What the two Edge volumes hold, how to capture and restore them, and what the drill proves.
+
+- [Prerequisites](#prerequisites)
+- [Existing installations](#existing-installations)
+- [Capture and restore](#capture-and-restore)
+- [RPO and RTO](#rpo-and-rto)
+- [Verification and troubleshooting](#verification-and-troubleshooting)
+
 `edge-data` holds public certificate account keys, server certificate keys and the local certificate authority. `edge-config`
 holds Caddy configuration state and the certificate metric. Both are external Docker
 volumes named `${PE_VOLUME_PREFIX}_edge-data` and `${PE_VOLUME_PREFIX}_edge-config`.
@@ -12,6 +20,17 @@ matching checkout and configuration. Deliberate retirement uses `scripts/destroy
 it displays the project and exact volumes and requires typing the project name. It
 stops that project and removes only those volumes, never the shared network. Run it
 only after explicitly deciding to lose that installation's certificate state.
+
+## Prerequisites
+
+- Docker, Compose 2.24.4 or newer, Python 3.11 or newer, Git, and the pinned Caddy image
+  pulled (`docker compose pull`).
+- Run as the checkout owner: backup resolves the Git commit and dirty status first and
+  refuses a checkout without Git metadata.
+- `PE_BACKUP_DIR` on a mounted, protected filesystem with more free space than the two
+  volumes; encryption at rest and off-host replication are yours to arrange.
+- Exactly one Edge Caddy container for the project (use `stop`, not `down`, before an
+  offline capture); the configured image reference pinned by digest.
 
 ## Existing installations
 
@@ -42,9 +61,11 @@ Retain the old volumes until a restore drill has passed; never run the old revis
 
 ## Capture and restore
 
-Configure the [Checkpoint settings](ingress.md#checkpoint-settings) in `.env`.
-If it is a mounted repository, verify the mount before each run: the script cannot
-distinguish a missing mount from an ordinary directory. Encrypt at rest, replicate
+`PE_BACKUP_DIR` selects the backup repository (relative paths resolve against this
+checkout; default `./backups`; created if absent) and `PE_BACKUP_KEEP` (default `7`, minimum
+`1`) how many complete Checkpoints a successful capture keeps. If the repository is a
+mounted filesystem, verify the mount before each run: the script cannot distinguish a
+missing mount from an ordinary directory. Encrypt at rest, replicate
 off-host over encrypted transport, and verify the replica. The tools do not implement
 encryption or replication. Checkpoints contain **private keys**, even though their
 manifests contain no secrets. New directories/files use 0700/0600 permissions.
@@ -65,7 +86,7 @@ stopping Caddy. Run it as the checkout owner with Git installed; a source-only t
 without Git metadata is refused before any outage. For another backup account, arrange
 Git ownership/trust explicitly for this checkout before scheduling it.
 
-Checkpoint capture and restore require a digest-qualified effective image reference,
+Checkpoint capture and restore require an effective image reference pinned by digest,
 including when `PE_CADDY_IMAGE` overrides the default. Tag-only references and local
 image IDs are refused before capture stops Caddy or restore writes volumes. To checkpoint
 an experiment, publish the image to a registry and configure its complete `name@sha256:...`
@@ -78,7 +99,7 @@ effective digest reference. Restore requires the same reference in the target co
 so existing digest-pinned Checkpoints remain compatible. An unavailable configured image
 fails preflight without stopping Caddy.
 
-Capture requires exactly one existing Caddy container to attest its image and mounts;
+Capture requires exactly one existing Caddy container whose image and mounts it checks;
 use `stop`, not `down`, before an offline capture. Restore also requires the configured
 image locally before creating volumes. To restore an older Checkpoint after an image
 bump, set `PE_CADDY_IMAGE` to its `manifest.json` Caddy reference and pull that image first.
@@ -129,7 +150,7 @@ storage/cleanup; if execution deadlines change, increase this allowance accordin
 A forced kill after that timeout
 cannot guarantee resumption; alert and verify Caddy manually.
 
-Git fields describe the checkout at preflight. They do not attest which file contents
+Git fields describe the checkout at preflight. They do not prove which file contents
 the running Caddy loaded. Immutable image identity and volume mounts are checked against the container;
 keep the matching configuration separately. Compose's service config hash does not
 hash the contents of bind-mounted Route Files or Caddyfile.
@@ -222,3 +243,21 @@ This covers a daemon stop request that completes after its CLI has already exite
 
 On a new host, pre-pull pinned images with `docker compose pull` before bootstrap or restore;
 slow image downloads can exhaust a helper's command deadline safely before extraction.
+
+## Verification and troubleshooting
+
+A capture succeeded when backup exited 0, the Checkpoint directory holds `manifest.json`,
+and Caddy answers `/health` again. A restore succeeded when restore exited 0, both volumes
+carry no `.pe-restore-incomplete` marker, bootstrap starts Caddy, and bootstrap's
+`certificate.ca_sha256` equals the manifest's `ca_sha256`. The drill proves both on a
+disposable project.
+
+| Symptom | Cause and fix |
+| --- | --- |
+| Backup refuses before stopping Caddy | Tag-only or local image, more than one Caddy container, a restore marker, or too little free space. The error names the check. |
+| `bootstrap_already_running` during a probe | A capture holds the env lock. Correlate with backup completion and require the next probe to succeed. |
+| `restore_incomplete` | A marker from an interrupted restore. Restore again into empty volumes; never delete markers by hand. |
+| `state_check_failed` | The helper could not read the volumes (Docker or image unavailable). Fix that and retry without replacing healthy volumes. |
+| Restore refuses populated volumes | Restore never clears a target. Use another `PE_VOLUME_PREFIX` or empty volumes deliberately. |
+| Fingerprint mismatch after restore | The wrong Checkpoint or prefix. Do not distribute the new root; restore the matching Checkpoint. |
+| Failed command details | `PE_BACKUP_DIR/.diagnostics/` holds stderr (0600); treat it as secret-bearing. |

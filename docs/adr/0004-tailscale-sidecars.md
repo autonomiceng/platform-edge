@@ -1,6 +1,6 @@
 # Serve each hostname from its own Tailscale node
 
-Supersedes [ADR-0002](0002-tailscale-application-ports.md).
+Status: accepted (2026-09-23); supersedes [ADR-0002](0002-tailscale-application-ports.md).
 
 Tailscale access runs one `tailscale/tailscale` container per routed hostname inside the Edge Compose project (`compose.tailscale.yaml`, profiles `ts-<name>`). Each node enrolls with one reusable tagged auth key under the hostname's own name (`litellm`, `langfuse`, `s3`, `rustfs`, `backplane`, `grafana`, and the console as `PE_ROOT_HOST`, default `platform`), obtains its certificate from Tailscale, and proxies `https://<name>.<tailnet>.ts.net` to `pe-edge:80` over the Platform Network with the original Host. Edge serves those hosts on its HTTP listener only when the overlay is active and marks the upstream scheme HTTPS for requests from the Platform Network's dynamic range, where the nodes live. Bootstrap `--tailscale` starts the selected nodes, records `PE_TAILNET_DOMAIN` once after enrollment, and probes every origin from the host.
 

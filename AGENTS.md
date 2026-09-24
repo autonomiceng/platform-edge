@@ -23,7 +23,7 @@ Short, direct, precise, industry standard language. State the result, then the e
 
 ## Documentation
 
-Update `CONTEXT.md` when a term changes meaning. Add an ADR only for a hard-to-reverse decision with a real trade-off. Keep per-stack env settings in `docs/operations/ingress.md`.
+Update `CONTEXT.md` when a term changes meaning. Add an ADR only for a hard-to-reverse decision with a real trade-off. Keep per-stack env settings in `docs/operations/ingress.md`. `docs/conventions.md` is canonical here: after editing it, run `scripts/sync-conventions.sh` for each sibling.
 
 ## Plans and scratch
 
@@ -35,24 +35,23 @@ For delegated work, read `docs/agents/model-routing.md` for model choices and br
 
 ## Where things live
 
-- `compose.yaml`: the only service and image pin, networks and certificate volumes. `compose.tailscale.yaml`: the profile-gated Tailscale node per hostname; `docker/tailscale/serve.json`: their one serve config.
+- `compose.yaml`: the only service and image pin, the network and the certificate volumes. `compose.public.yaml`, `compose.proxy.yaml`, `compose.files.yaml`, `compose.acme-ca-root.yaml` and `compose.acme-eab.yaml`: the small overlays bootstrap passes with `-f` for the mode and issuer on each run (direct Compose commands must list them; only the Tailscale selection is recorded in `COMPOSE_FILE`). `compose.tailscale.yaml`: the profile-gated Tailscale node per hostname; `docker/tailscale/serve.json`: their one serve config.
 - `.env.example`: every operator setting, prefixed `PE_`, one comment per assignment, no secrets.
-- `Caddyfile`: global policy, issuer snippets and route imports. Its root location is the Edge mount contract.
-- `routes.d/`: one Route File per stack. `docker/console/index.html`: one fallback page.
-- `scripts/bootstrap.py`: env locking, port checks, network, readiness and the Edge Status Document in `data/console/status.json`.
-- `scripts/bundle.py`: the `--with` bundle: sibling env rewrites under the sibling's lock and its bootstrap hand-off.
-- `scripts/tailnet.py`: the `--tailscale` nodes: selection, enrollment readiness, the recorded tailnet domain and origin probes.
-- `scripts/retire-status-timer.sh`: one-time upgrade step removing the version 1 status timer.
-- `scripts/validate.sh`, `scripts/smoke.sh`: static gates and the Smoke Contract.
-- `tests/`: Python unittest with a fake runner; no Docker calls.
-- `docs/operations/`: runbooks. `docs/conventions.md`: the canonical shared conventions and Platform Contract; `scripts/sync-conventions.sh` vendors it into siblings.
+- `Caddyfile`: global policy, issuer snippets, the `site` and `tailnet-site` snippets and the route imports. Its root location is the Edge mount contract.
+- `routes.d/`: one Route File per stack, plus `00-stack-probes.caddy` for the status and health routes Edge owns.
+- `docker/console/`: the static console (`index.html`, `app.js`, `catalog.js`, `status.js`, `style.css`, `config.json`, `icons/`), mounted read-only, no build step.
+- `scripts/bootstrap.py`: env locking, port checks, network, readiness and the Edge Status Document in `data/console/status.json`. `scripts/bundle.py`: the `--with` bundle (sibling env rewrites under the sibling's lock, then its bootstrap). `scripts/tailnet.py`: the `--tailscale` nodes (selection, enrollment, recorded domain, origin probes).
+- `scripts/backup.sh`, `scripts/restore.sh`, `scripts/checkpoint.py`, `scripts/backup-drill.sh`, `scripts/backup_drill.py`: Checkpoints of the certificate volumes and the drill. `scripts/destroy.sh`: deliberate removal. `scripts/retire-status-timer.sh`: one-time removal of the version 1 status timer.
+- `scripts/validate.sh`, `scripts/smoke.sh`, `scripts/integration_smoke.py`: static gates, the Smoke Contract and the shared-host acceptance. `scripts/sync-conventions.sh`: vendors `docs/conventions.md` into siblings.
+- `tests/`: Python unittest with a fake runner (no Docker calls), `node --test tests/status*.test.cjs` for the status consumer, `tests/console-browser.cjs` for the Playwright console check, `tests/status_proxy.py` run by smoke.
+- `docs/DESIGN.md` the map, `docs/adr/` decisions, `docs/operations/` runbooks, `docs/conventions.md` the canonical shared conventions and Platform Contract.
 
 Only Caddy publishes ports. Caddy joins the external Platform Network as `pe-edge`; the optional Tailscale nodes join it too and nothing else does. There is no default network. List the service environment explicitly. Service names, volume names and Upstream Aliases are interfaces: renaming one needs a migration.
 
 ## Taste
 
-Compose is the product. Keep logic in upstream apps and their config. Python standard library and POSIX shell, no build step. Make the smallest coherent change. Comments explain constraints. The fallback page uses system fonts and the gateway palette; checks update without continuous animation.
+Compose is the product. Keep logic in upstream apps and their config. Python standard library and POSIX shell, no build step. Make the smallest coherent change. Comments explain constraints. The console uses system fonts and the shared palette; checks update without continuous animation.
 
 ## Finish
 
-Run `scripts/validate.sh`, `python3 -m unittest discover -s tests`, and `scripts/smoke.sh` for image, config or bootstrap changes. Report exact commands and counts, limitations, operator actions and every spec deviation. A failed or unverified gate is never a pass.
+Run `scripts/validate.sh`, `python3 -m unittest discover -s tests`, `node --test tests/status*.test.cjs`, and `scripts/smoke.sh` for image, configuration or bootstrap changes: any `compose*.yaml`, the `Caddyfile`, `routes.d/`, `docker/`, `scripts/bootstrap.py`, `scripts/bundle.py` or `scripts/tailnet.py`. Report exact commands and counts, limitations, operator actions and every spec deviation. A failed or unverified gate is never a pass.

@@ -1,8 +1,8 @@
 # Change map
 
 For Compose, Caddyfile or Route File changes, read the ingress contract in
-`docs/operations/ingress.md`. Preserve Host/scheme forwarding, readiness-token
-handling, operator restrictions and the `pe-edge` alias. Service, network and
+`docs/operations/ingress.md`. Preserve Host and scheme forwarding, the
+operator-route denial on the Backplane route, and the `pe-edge` alias. Service, network and
 certificate-volume names require a migration when changed.
 
 For bootstrap and environment changes, preserve existing secrets and unmanaged
