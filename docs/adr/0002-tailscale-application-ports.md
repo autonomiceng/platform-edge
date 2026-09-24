@@ -1,6 +1,6 @@
 # Use one Tailscale machine name with separate application ports
 
-Superseded by [ADR-0004](0004-tailscale-sidecars.md) (2026-09-23): one Tailscale node per hostname replaces the per-port design, its helper and its settings.
+Status: superseded by [ADR-0004](0004-tailscale-sidecars.md) (2026-09-23); one Tailscale node per hostname replaces the per-port design, its helper and its settings.
 
 For optional Tailscale access, give each application an HTTPS port on the machine's existing Tailscale name. This is an exception to ADR-0001's preference for public application subdomains: the machine certificate does not cover invented subdomains, and application path prefixes would require fragile rewriting of login URLs and signed S3 requests. Edge preserves the original hostname and port, while each application receives an explicit browser URL; public-domain and standalone installations retain their existing routes.
 

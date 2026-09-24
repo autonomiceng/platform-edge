@@ -1,5 +1,11 @@
 # Certificate state and Checkpoints
 
+What the two Edge volumes hold, how to capture and restore them, and what the drill proves.
+
+- [Existing installations](#existing-installations)
+- [Capture and restore](#capture-and-restore)
+- [RPO and RTO](#rpo-and-rto)
+
 `edge-data` holds public certificate account keys, server certificate keys and the local certificate authority. `edge-config`
 holds Caddy configuration state and the certificate metric. Both are external Docker
 volumes named `${PE_VOLUME_PREFIX}_edge-data` and `${PE_VOLUME_PREFIX}_edge-config`.
@@ -42,9 +48,11 @@ Retain the old volumes until a restore drill has passed; never run the old revis
 
 ## Capture and restore
 
-Configure the [Checkpoint settings](ingress.md#checkpoint-settings) in `.env`.
-If it is a mounted repository, verify the mount before each run: the script cannot
-distinguish a missing mount from an ordinary directory. Encrypt at rest, replicate
+`PE_BACKUP_DIR` selects the backup repository (relative paths resolve against this
+checkout; default `./backups`; created if absent) and `PE_BACKUP_KEEP` (default `7`, minimum
+`1`) how many complete Checkpoints a successful capture keeps. If the repository is a
+mounted filesystem, verify the mount before each run: the script cannot distinguish a
+missing mount from an ordinary directory. Encrypt at rest, replicate
 off-host over encrypted transport, and verify the replica. The tools do not implement
 encryption or replication. Checkpoints contain **private keys**, even though their
 manifests contain no secrets. New directories/files use 0700/0600 permissions.
@@ -65,7 +73,7 @@ stopping Caddy. Run it as the checkout owner with Git installed; a source-only t
 without Git metadata is refused before any outage. For another backup account, arrange
 Git ownership/trust explicitly for this checkout before scheduling it.
 
-Checkpoint capture and restore require a digest-qualified effective image reference,
+Checkpoint capture and restore require an effective image reference pinned by digest,
 including when `PE_CADDY_IMAGE` overrides the default. Tag-only references and local
 image IDs are refused before capture stops Caddy or restore writes volumes. To checkpoint
 an experiment, publish the image to a registry and configure its complete `name@sha256:...`
@@ -78,7 +86,7 @@ effective digest reference. Restore requires the same reference in the target co
 so existing digest-pinned Checkpoints remain compatible. An unavailable configured image
 fails preflight without stopping Caddy.
 
-Capture requires exactly one existing Caddy container to attest its image and mounts;
+Capture requires exactly one existing Caddy container whose image and mounts it checks;
 use `stop`, not `down`, before an offline capture. Restore also requires the configured
 image locally before creating volumes. To restore an older Checkpoint after an image
 bump, set `PE_CADDY_IMAGE` to its `manifest.json` Caddy reference and pull that image first.
@@ -129,7 +137,7 @@ storage/cleanup; if execution deadlines change, increase this allowance accordin
 A forced kill after that timeout
 cannot guarantee resumption; alert and verify Caddy manually.
 
-Git fields describe the checkout at preflight. They do not attest which file contents
+Git fields describe the checkout at preflight. They do not prove which file contents
 the running Caddy loaded. Immutable image identity and volume mounts are checked against the container;
 keep the matching configuration separately. Compose's service config hash does not
 hash the contents of bind-mounted Route Files or Caddyfile.

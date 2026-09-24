@@ -1,10 +1,34 @@
 # Ingress and access modes
 
-Edge owns host ports 80 and 443. Its default loopback binding makes them accessible only on that host. Stacks join the same external network and retain their private HTTP ingresses. Replace `example.com` below with one domain shared by all three stacks.
+How Edge is reached and how the sibling stacks sit behind it: hostnames, the three access
+modes, certificates, the bundle settings each stack receives, metrics, logs and the checks
+that prove a shared host works. Replace `example.com` below with the one domain shared by
+every stack.
+
+- [Hostnames and modes](#hostnames-and-modes)
+- [Local Mode (default)](#local-mode-default)
+- [Public Mode](#public-mode)
+- [Proxy Mode](#proxy-mode)
+- [Corporate certificates and private ACME](#corporate-certificates-and-private-acme)
+- [Access everything through Tailscale](#access-everything-through-tailscale)
+- [Install the bundle](#install-the-bundle)
+- [Bundle settings per stack](#bundle-settings-per-stack)
+- [Trusting local HTTPS certificates](#trusting-local-https-certificates)
+- [Image overrides](#image-overrides)
+- [Metrics and certificate expiry](#metrics-and-certificate-expiry)
+- [Runtime logs](#runtime-logs)
+- [Status routes](#status-routes)
+- [Shared-host acceptance](#shared-host-acceptance)
+- [Troubleshooting](#troubleshooting)
+
+## Hostnames and modes
+
+Edge owns host ports 80 and 443. Its default loopback binding makes them reachable only on
+that host. Stacks join the same external network and keep their private HTTP ingresses.
 
 | Hostname | Upstream Alias |
 | --- | --- |
-| `example.com` | Edge console at `/`; other Gateway paths use `lg-gateway:80` |
+| `example.com` | Edge console at `/`; other paths go to `lg-gateway:80` |
 | `litellm.example.com` | `lg-gateway:80` |
 | `langfuse.example.com` | `lg-gateway:80` |
 | `s3.example.com` | `lg-gateway:80` |
@@ -12,250 +36,47 @@ Edge owns host ports 80 and 443. Its default loopback binding makes them accessi
 | `backplane.example.com` | `bp-server:3000` |
 | `grafana.example.com` | `ob-gateway:80` |
 
-## Install the bundle
+All seven hostnames are configured even when some stacks are absent; a missing stack
+returns 502 on its own hostnames and nothing else changes. `PE_ACCESS_MODE` selects the
+listeners; `PE_SCHEME` and `PE_PUBLIC_DOMAIN` form the browser URLs the siblings receive:
 
-One command installs or reconfigures the sibling stacks behind Edge. Run it from the Edge
-checkout after choosing the Edge settings; Edge bootstraps first, then each selected stack:
-
-```sh
-python3 scripts/bootstrap.py --with gateway --with observability --with backplane \
-  --capability-file /home/operator/private/backplane-enrollment
-```
-
-Checkouts default to the sibling directories `../llm-gateway-stack`, `../observability-stack`
-and `../agent-backplane`; `--gateway-dir`, `--observability-dir` and `--backplane-dir` point
-elsewhere. A missing checkout or `.env.example` and exported shell settings of a selected stack
-(`LG_`, `OB_`, `BP_`) or any `COMPOSE_` setting are refused (exit 1) before anything is written.
-
-For each stack, in the order gateway, observability, backplane, bootstrap copies `.env.example`
-to `.env` (mode 0600) when it is absent, takes the stack's own env lock, writes the bundle keys
-of the [per-stack table](#per-stack-settings-behind-the-edge) with an atomic replacement that
-keeps every other line byte for byte, releases the lock and runs the stack's bootstrap from its
-checkout: `python3 scripts/bootstrap.py`, for Backplane with `--capability-file PATH
---access-mode proxy --public-url URL`; later runs reuse the recorded selection. Edge reaches
-Backplane's server directly, so no profile is needed for ingress. A Backplane checkout that
-still ships `compose.gateway.yaml` gets `--profile gateway` on a first run; once that overlay
-is gone, a recorded `COMPOSE_PROFILES` that still lists `gateway` is refused
-(`bundle_gateway_profile_retired`) until it is dropped as Backplane's upgrade note describes.
-A Backplane `.env` that holds core secrets or `COMPOSE_FILE` but no `COMPOSE_PROFILES` is
-refused (`bundle_backplane_selection_required`): run Backplane's bootstrap once with
-`--profile` for each existing profile, or `--profile ''` for core only. Its output goes to the terminal; env
-contents are never printed. The values come from Edge: `PE_PUBLIC_DOMAIN`, `PE_SCHEME` (HTTPS
-when unset), `PE_PLATFORM_NETWORK`, `PE_PLATFORM_SUBNET`, `PE_PLATFORM_IP_RANGE` and
-`PE_EDGE_IP` as the `/32` trust entry. With observability also selected, the gateway receives
-`LG_METRICS=true` so its datastore exporters run for Observability to scrape. Secrets and
-every other setting stay the stack's own: set `LG_BACKUP_DIR`, `LANGFUSE_INIT_USER_EMAIL`,
-`BP_BACKUP_DIR` and the Observability alert destination in those `.env` files first.
-
-Reruns are idempotent: a key that already holds its value is not rewritten, and the stack
-bootstraps run again. `--dry-run` validates the Edge settings, renders its Compose configuration,
-prints one JSON line per selected stack with the checkout, the keys it would write and the
-command it would run, and writes nothing.
-
-The first failing stack bootstrap stops the run with exit 3 and a JSON error naming the stack,
-its exit code and the rerun command; earlier stacks stay ready and later stacks are untouched.
-Fix the reported problem and rerun the same command. Backplane enrollment (`bp bootstrap`)
-remains the separate step its bootstrap prints.
-
-## Image overrides
-
-`PE_CADDY_IMAGE` accepts a complete image reference, for example `local/edge:experiment`
-or `registry.example/team/caddy:test`, in `.env`. Empty or unset selects the shipped
-validated tag and digest in `compose.yaml`. Native `docker compose` interpolation applies;
-a shell value takes precedence over `.env`. Bootstrap preserves the setting and env lock.
-Use a literal reference: bootstrap refuses `$`, `#` and whitespace in setting values,
-including nested environment expressions that bare Compose would expand.
-Local experiments are unvalidated and must provide the Caddy and shell tools used by Edge.
-
-`scripts/validate.sh`, `scripts/smoke.sh` and the backup drill always exercise the shipped
-default, ignoring local image overrides. Clearing the override returns to that default
-on the next authorized deployment. Checkpoints require a digest-qualified reference;
-see [capture and restore](backup.md#capture-and-restore) before changing an installed image.
-
-## Access modes
-
-Fresh installs select `PE_ACCESS_MODE=local`. The modes describe the listener independently
-of the application's configured browser URL (`PE_SCHEME` and `PE_PUBLIC_DOMAIN`):
-
-| Mode | HTTP | HTTPS | Issuer (`PE_TLS_ISSUER`) | Intended use |
+| Mode | HTTP | HTTPS | Issuer (`PE_TLS_ISSUER`) | Use |
 | --- | --- | --- | --- | --- |
-| Local (`local`) | Available without redirects | Self-signed HTTPS | `internal` (default) or `files` | Start without a domain; trust the local certificate authority to remove browser warnings |
-| Public (`public`) | Redirects to HTTPS, except `/health` | Automatically renewed certificate, or your own files | `acme` (default; Let's Encrypt or `PE_ACME_CA`) or `files` | Use your own domain |
-| Behind another gateway (`proxy`) | Internal connection from that gateway | Handled by the other gateway | Unused | Run behind Platform Edge or another HTTPS gateway |
+| Local (`local`) | Served without redirects | Self-signed, on loopback | `internal` (default) or `files` | Start without a domain; install the local CA root to remove browser warnings |
+| Public (`public`) | Redirects to HTTPS, except `/health` | Trusted certificate for your domain | `acme` (default; Let's Encrypt or `PE_ACME_CA`) or `files` | Your own domain |
+| Proxy (`proxy`) | From the other gateway | Handled by the other gateway | Unused | Behind another HTTPS gateway |
 
-Choose the mode; the default issuer follows. For local HTTPS, Caddy creates a self-signed
-root certificate and uses it to sign the server certificates. The trust guide below
-explains how to install that public root. Public mode obtains trusted certificates for your
-domain. Behind another gateway, that gateway owns the certificates. Bootstrap refuses an
-issuer the mode cannot use. [Corporate certificates and private ACME](#corporate-certificates-and-private-acme)
-covers `files` and a private `PE_ACME_CA`.
+Bootstrap selects `compose.public.yaml` or `compose.proxy.yaml` for those modes, and the
+issuer's overlays after it. Direct Compose commands must list the same files, for example
+`docker compose -f compose.yaml -f compose.public.yaml config`; Compose 2.24.4 or newer is
+required. Bootstrap refuses an issuer the mode cannot use.
 
-The template uses `PE_PUBLIC_DOMAIN=localhost`, `PE_SCHEME=http` for browser URLs, and
-`PE_BIND_HOST=127.0.0.1`. Both 80 and 443 serve real listeners in local mode. Readiness
-checks both protocols, verifies HTTPS using the exported public CA root, and reports its
-fingerprint and leaf expiry. Browsers need that root in their trust store for direct HTTPS;
-HTTP stays usable without trust setup. Binding `127.0.0.1` does not bind every loopback IP.
-LAN exposure is an explicit bind-address choice. Configured application hostnames receive
-local certificates; `127.0.0.1` also has an HTTPS console and health endpoint.
+## Local Mode (default)
 
-The HTTP console accepts arbitrary hostnames. Unknown-host `/health` is 200; other unknown
-paths remain 404, including `/metrics`. Application routes still require their configured
-hostnames. Console links use the Tailnet Origins of the selected nodes once a tailnet is
-recorded, and the configured application domain otherwise, instead of inventing subdomains
-under an IP.
-The configured root hostname serves the Edge console independently of Gateway. Other
-Gateway paths still proxy to the Gateway and report upstream failures. Bootstrap does
-not require any sibling stack.
+The template uses `PE_ACCESS_MODE=local`, `PE_PUBLIC_DOMAIN=localhost`, an empty
+`PE_SCHEME` (HTTP browser URLs) and `PE_BIND_HOST=127.0.0.1`. Both 80 and 443 serve real
+listeners. Readiness checks both protocols, verifies HTTPS with the exported public CA root
+and reports its fingerprint and leaf expiry. Browsers need that root in their trust store
+for direct HTTPS ([trusting local HTTPS certificates](#trusting-local-https-certificates));
+HTTP works without it. Binding `127.0.0.1` does not bind every loopback IP, and LAN
+exposure is an explicit bind-address choice.
 
-For local sibling stacks behind Edge, choose their proxy access mode, keep internal HTTP,
-and configure the configured browser URL for the address customers will use. Applications
-with authentication or generated links still need one configured application URL even though Edge
-accepts both HTTP and HTTPS. Give sibling Caddys spare loopback HTTP ports. Backplane needs no Caddy behind Edge; set its explicit `BP_PUBLIC_URL`.
+The HTTP console accepts arbitrary hostnames: unknown-host `/health` is 200, other unknown
+paths are 404, including `/metrics`. Application routes require their configured
+hostnames. Configured hostnames receive local certificates; `127.0.0.1` also has an HTTPS
+console and health endpoint. Console links use the Tailnet Origins of the selected nodes
+once a tailnet is recorded, and the configured domain otherwise.
 
-## Access everything through Tailscale
+For private DNS, keep `local`, set your domain and `PE_SCHEME=https`, and distribute the
+public CA root. The siblings then use HTTPS browser URLs and HTTP behind Edge.
 
-Short path: [Tailscale setup](tailscale.md). This section is the full reference.
+## Public Mode
 
-Every routed hostname gets its own Tailscale node inside the Edge project and its own
-`https://<name>.<tailnet>.ts.net` origin with a Tailscale-issued certificate: `platform`
-(the console, `PE_ROOT_HOST`), `litellm`, `langfuse`, `s3`, `rustfs`, `backplane` and
-`grafana`. Nothing runs on the host's own Tailscale daemon, nothing needs sudo, and clients
-install no certificate. [ADR-0004](../adr/0004-tailscale-sidecars.md) records the design.
-
-Prerequisites, once per tailnet in the Tailscale admin console:
-
-1. MagicDNS and HTTPS certificates enabled (DNS page). HTTPS publishes the node names in
-   public certificate transparency logs.
-2. A tag for the nodes, with an owner, in the policy file, and an access rule that lets your
-   users reach it on port 443. Every node shares the tag, so this rule grants every
-   application at once; application login remains the per-application boundary.
-
-   ```json
-   "tagOwners": { "tag:platform": ["autogroup:admin"] },
-   "grants": [{ "src": ["autogroup:member"], "dst": ["tag:platform"], "ip": ["443"] }]
-   ```
-
-3. An auth key (Settings, Keys): reusable, not ephemeral, tagged `tag:platform`, with the
-   expiry you want for enrollments. Tagged nodes have no key expiry of their own.
-
-Then, in the Edge checkout:
-
-```sh
-python3 scripts/bootstrap.py --tailscale --dry-run
-python3 scripts/bootstrap.py --tailscale --with gateway --with observability --with backplane \
-  --capability-file /home/operator/private/backplane-enrollment
-```
-
-Edge `.env` settings:
-
-```sh
-PE_ACCESS_MODE=local
-PE_BIND_HOST=127.0.0.1
-PE_TS_AUTHKEY=tskey-auth-...
-PE_TS_TAG=tag:platform
-PE_TS_APPS=console,litellm,langfuse,s3,rustfs,backplane,grafana
-PE_ROOT_HOST=
-PE_TAILNET_DOMAIN=
-```
-
-`PE_TS_AUTHKEY` is a secret: keep `.env` at mode 0600 and never commit it. `--tailscale`
-needs local or proxy mode with the loopback bind, because the Tailnet hosts are plain-HTTP
-sites on Edge's listener. `PE_TS_APPS` lists the nodes to run; drop the names of stacks you
-do not install. `PE_TS_TAG` must be one of the key's tags; the template sets `tag:platform`,
-and an empty or absent value omits `--advertise-tags` so the key's tags apply. Leave
-`PE_TAILNET_DOMAIN` empty on the first run.
-
-What bootstrap does with `--tailscale`: it refuses without the key, creates one external
-volume per node (`${PE_VOLUME_PREFIX}_ts-<name>`, the node's identity), starts the nodes and
-waits up to 120 s until every node reports `Running` under its expected MagicDNS name. A
-name already taken on the tailnet enrolls as `<name>-1` and is refused
-(`tailscale_name_taken`): remove or rename the other machine, remove the new one, and rerun.
-It then records the tailnet domain in `PE_TAILNET_DOMAIN` and the selection in `.env`
-(`COMPOSE_FILE` gains `compose.tailscale.yaml`, `COMPOSE_PROFILES` gains one `ts-<name>` per
-selected node, other files and profiles untouched; a failed enrollment records nothing),
-starts Edge with the overlay so the Tailnet hosts are routed, and probes `https://<name>.<tailnet>.ts.net/health` for every
-node from this host with the system trust store (the first handshake waits for the
-certificate). When MagicDNS on this host does not resolve the names to Tailscale addresses
-the probe is skipped with a message; verify from a tailnet member instead. The result lists
-the origins, the probe statuses and, without `--with`, the sibling settings to set by hand.
-
-Because the selection is recorded, plain `docker compose up` and ordinary `bootstrap.py`
-reruns keep the nodes and Edge's Tailnet routes; only `--tailscale` enrolls, re-selects
-after a `PE_TS_APPS` change, and probes. Bootstrap refuses a recorded selection unless the
-mode is local or proxy and `PE_BIND_HOST` is `127.0.0.1`; plain Compose enforces nothing,
-so never change `PE_BIND_HOST` while the selection is recorded without running bootstrap,
-which would otherwise publish the plain-HTTP Tailnet hosts on that interface. A recorded selection without a recorded domain is refused (`tailnet_not_enrolled`)
-until `--tailscale` completes. Reruns are idempotent: enrolled nodes stay enrolled
-(`TS_AUTH_ONCE`), and a recorded domain that differs from the enrolled one is refused.
-
-The origins are the applications' browser URLs, and the bundle owns the settings that hold
-them: `LG_CONSOLE_URL`, `LG_LITELLM_URL`, `LG_LANGFUSE_URL`, `LG_S3_URL`, `LG_RUSTFS_URL`,
-`OB_GRAFANA_URL`, `OB_GATEWAY_URL`, `OB_BACKPLANE_URL` and `BP_PUBLIC_URL`. While the
-selection is recorded, every `--with` run writes the Tailnet Origin of each selected node into
-them; a key whose node is not selected, or any run after
-the selection is removed, gets the public-domain origin (`BP_PUBLIC_URL`, `OB_GATEWAY_URL`,
-`OB_BACKPLANE_URL`) or an empty value that the stack derives from its public domain. The
-public-domain settings stay as they are, so the public hostnames keep working beside the
-Tailnet Origins.
-
-How a request flows: the node terminates TLS, keeps the original Host and proxies to
-`pe-edge:80` over the Platform Network. Edge routes the Tailnet host to the same stack as the
-public hostname and sets `X-Forwarded-Proto: https` because the request comes from the
-Platform Network's dynamic range; the same Host from the loopback listener keeps its own
-scheme, and no forwarded header from any client is trusted. Applications therefore see the
-node's Platform Network address as the client, not the tailnet member; Tailscale's identity
-headers pass through unverified and must not be trusted behind Edge. Every node can reach
-every Tailnet host through Edge, so the nodes form one authorization domain: the tailnet
-policy grants the tag as a whole.
-
-With the selection recorded in `.env`, plain Compose commands see the nodes:
-
-```sh
-docker compose logs ts-litellm
-```
-
-Removing a node: drop its name from `PE_TS_APPS`, rerun `bootstrap --tailscale` (which
-rewrites `COMPOSE_PROFILES`), remove the now orphaned container with `docker compose
---profile ts-<name> rm -sf ts-<name>`, delete the machine in the admin console, and only
-then delete the volume `${PE_VOLUME_PREFIX}_ts-<name>` if you want the identity gone.
-Restore the name to `PE_TS_APPS` and rerun to add it back; the kept volume re-enrolls
-without the key. Turning Tailscale off entirely: remove the nodes the same way, delete
-`compose.tailscale.yaml` from `COMPOSE_FILE` and the `ts-` entries from `COMPOSE_PROFILES`,
-clear `PE_TAILNET_DOMAIN`, then rerun bootstrap with `--with` so the siblings return to
-their public-domain origins.
-
-Rotating the key: create the new key, replace `PE_TS_AUTHKEY`, revoke the old one. Enrolled
-nodes are unaffected; the key is used only when a node has no identity yet. An expired key
-shows up as a node that never reaches `Running`; the bootstrap error names the log command.
-
-The optional RustFS consoles of Backplane and Observability are not Tailnet Origins. For a
-session, enable the console in that stack and reach it over loopback through an SSH tunnel;
-never add RustFS to the Platform Network. Observability: set `OB_RUSTFS_CONSOLE=true`, run
-its bootstrap, then `ssh -L 18180:127.0.0.1:18180 <host>` and open
-`http://127.0.0.1:18180/rustfs/console/` with a hosts entry mapping `rustfs.<domain>` to
-`127.0.0.1` (its gateway routes the console by that host). Backplane publishes no RustFS
-port: add a private overlay that publishes `127.0.0.1:9001:9001` on its `rustfs` service,
-run its bootstrap, then
-`ssh -L 9001:127.0.0.1:9001 <host>` and open `http://127.0.0.1:9001/`. Remove the overlay
-after the session.
-
-For `PE_ACCESS_MODE=proxy`, bootstrap automatically selects `compose.proxy.yaml` to
-publish only HTTP. Direct Compose commands must use both files:
-
-```sh
-docker compose -f compose.yaml -f compose.proxy.yaml config
-```
-
-This requires Compose 2.24.4+. Behind another gateway, browser URLs default to HTTPS; set `PE_SCHEME=http` only for an HTTP origin.
-Edge forwards that configured scheme, not an arbitrary incoming forwarded header. Keep
-this HTTP ingress bound to loopback or a trusted ingress network. Real client-IP trust is
-not enabled automatically and metrics authorization remains based on socket peers.
-
-## Public HTTPS with your own domain
-
-Set A and, where IPv6 is configured, AAAA records for all seven names to the host. The root needs its own record even if a wildcard record covers subdomains. Every configured name must resolve correctly and reach Caddy to obtain trusted certificates, whether or not its application stack is running. Forward TCP 80 and 443 through the host firewall and any NAT. An AAAA record must not point to an unreachable IPv6 listener.
-
-Set these exact lines in the edge `.env`:
+Set A and, where IPv6 is configured, AAAA records for all seven names to the host. The
+root needs its own record even if a wildcard covers the subdomains. Every name must
+resolve and reach Caddy to obtain a certificate, whether or not its stack runs. Forward
+TCP 80 and 443 through the host firewall and any NAT; an AAAA record must not point to an
+unreachable IPv6 listener. Then set in the Edge `.env`:
 
 ```sh
 PE_ACCESS_MODE=public
@@ -264,20 +85,34 @@ PE_SCHEME=https
 PE_BIND_HOST=0.0.0.0
 PE_HTTP_PORT=80
 PE_HTTPS_PORT=443
-PE_PLATFORM_NETWORK=platform
 PE_ACME_EMAIL=ops@example.com
 ```
 
-Bootstrap selects `compose.public.yaml` in public mode so an empty `PE_SCHEME` uses HTTPS. When running Compose directly, include both `-f compose.yaml -f compose.public.yaml`.
+Run the [bundle](#install-the-bundle) again so the siblings receive the HTTPS origins. Only
+the `acme` issuer uses `PE_ACME_EMAIL`. Caddy stores and renews certificates in
+`edge-data`. HTTP `/health` stays available without a redirect; healthy means Caddy
+answers, not that upstreams are healthy. Other HTTP requests for configured hosts redirect
+to HTTPS; the `:80` catch-all returns 404 for unknown hosts on every path except `/health`.
+HSTS is `max-age=31536000` without preload or `includeSubDomains`. For public
+certificates, the externally reachable ports remain 80 and 443 even if NAT maps them to
+other `PE_HTTP_PORT` and `PE_HTTPS_PORT` values; nonstandard direct HTTPS URLs need an
+explicit port in clients, and the redirect targets port 443.
 
-Only the `acme` issuer uses `PE_ACME_EMAIL`. Caddy stores and renews certificates in `edge-data`. HTTP `/health` intentionally stays available without a redirect. Healthy means Caddy answers, not that upstreams are healthy. Other HTTP requests for configured hosts redirect to HTTPS; the `:80` catch-all returns 404 for unknown hosts on every path except `/health`. For public certificates, externally reachable ports remain 80 and 443 even if NAT maps them to different `PE_HTTP_PORT` and `PE_HTTPS_PORT` values. Nonstandard direct HTTPS URLs require an explicit port in clients; the normal redirect targets port 443.
+## Proxy Mode
+
+`PE_ACCESS_MODE=proxy` publishes only HTTP (`compose.proxy.yaml`) for another gateway that
+handles HTTPS in front of Edge. Browser URLs default to HTTPS; set `PE_SCHEME=http` only
+for an HTTP origin. Edge forwards that configured scheme to the stacks, never an incoming
+forwarded header. Keep the listener bound to loopback or a trusted ingress network. Client
+addresses are not trusted automatically (`PE_TRUSTED_PROXIES` lists exact peers), and
+metrics authorization stays based on socket peers.
 
 ## Corporate certificates and private ACME
 
 `PE_TLS_ISSUER` selects where certificates come from, independently of the access mode:
-`internal` (Edge's own CA, local mode), `acme` (public mode) or `files` (local or public).
-Behind another gateway the setting is unused. Relative `PE_TLS_DIR`, `PE_TLS_CA` and
-`PE_ACME_CA_ROOT` paths resolve against this checkout.
+`internal` (Edge's own CA, Local Mode), `acme` (Public Mode) or `files` (Local or Public
+Mode). Proxy Mode ignores it. Relative `PE_TLS_DIR`, `PE_TLS_CA` and `PE_ACME_CA_ROOT`
+paths resolve against this checkout.
 
 ### Private or alternative ACME CA
 
@@ -328,7 +163,7 @@ read-only at `/certs` and never creates it; direct Compose commands add `-f comp
 Caddy runs as uid 0 with every capability dropped, so it reads the files by permission
 bits: own `tls.key` by root with mode 0600, and keep `tls.crt` and the CA file readable.
 Bootstrap checks this from a throwaway container before starting and refuses with
-`tls_files_unreadable`. In local mode, `127.0.0.1` keeps its internal-CA certificate for
+`tls_files_unreadable`. In Local Mode, `127.0.0.1` keeps its internal-CA certificate for
 the console and health endpoint; application hostnames use the files.
 
 Replace a certificate by writing the new pair into the directory, then reload:
@@ -341,26 +176,77 @@ python3 scripts/bootstrap.py --probe-only
 `--force` matters: the configuration is unchanged, and without it Caddy skips the reload
 and keeps serving the old certificate. Edge does not watch the directory or renew file
 certificates, so alert on `pe_certificate_not_after_seconds`, which `--probe-only`
-refreshes after verifying the handshake; compare its `not_after` with the new certificate. File certificates are outside the Checkpoint
+refreshes after verifying the handshake. File certificates are outside the Checkpoint
 volumes; back them up with your PKI.
 
-## Per-stack settings behind the edge
+## Access everything through Tailscale
 
-`--with` writes the settings below ([Install the bundle](#install-the-bundle)); this table is
-the reference for setting them by hand. The ports are the Platform Contract's bundle ports.
-The Platform Network has a known allocation, defined by the
+Private access from your own devices without exposing anything to the internet: one
+Tailscale node per hostname inside the Edge project, each serving
+`https://<name>.<tailnet>.ts.net`. Setup, day two and troubleshooting are in the
+[Tailscale runbook](tailscale.md); the design is [ADR-0004](../adr/0004-tailscale-sidecars.md).
+
+## Install the bundle
+
+One command installs or reconfigures the sibling stacks behind Edge. Run it from the Edge
+checkout after choosing the Edge settings; Edge bootstraps first, then each selected stack:
+
+```sh
+python3 scripts/bootstrap.py --with gateway --with observability --with backplane \
+  --capability-file /home/operator/private/backplane-enrollment
+```
+
+Checkouts default to the sibling directories `../llm-gateway-stack`, `../observability-stack`
+and `../agent-backplane`; `--gateway-dir`, `--observability-dir` and `--backplane-dir` point
+elsewhere. `--capability-file` is required with `--with backplane`. A missing checkout or
+`.env.example`, exported shell settings of a selected stack (`LG_`, `OB_`, `BP_`) or any
+`COMPOSE_` setting are refused (exit 1) before anything is written.
+
+For each stack, in the order gateway, observability, backplane, bootstrap copies
+`.env.example` to `.env` (mode 0600) when it is absent, takes the stack's own env lock,
+writes the [bundle settings](#bundle-settings-per-stack) with an atomic replacement that
+keeps every other line byte for byte, releases the lock and runs the stack's bootstrap from
+its checkout: `python3 scripts/bootstrap.py`, for Backplane with `--capability-file PATH
+--access-mode proxy --public-url URL`. Later runs reuse Backplane's recorded selection; a
+Backplane `.env` that holds core secrets or `COMPOSE_FILE` but no `COMPOSE_PROFILES` is
+refused (`bundle_backplane_selection_required`) until its bootstrap has run once with
+`--profile` for each existing profile, or `--profile ''` for core only, and a recorded
+`gateway` profile from before Backplane removed its internal gateway is refused
+(`bundle_gateway_profile_retired`) until it is dropped. The sibling's output goes to the
+terminal; env contents are never printed. With observability selected, the gateway also
+receives `LG_METRICS=true` so its datastore exporters run for Observability to scrape.
+Secrets and every other setting stay the stack's own: set `LG_BACKUP_DIR`,
+`LANGFUSE_INIT_USER_EMAIL`, `BP_BACKUP_DIR` and the Observability alert destination in
+those `.env` files yourself.
+
+Reruns are idempotent: a key that already holds its value is not rewritten, and the stack
+bootstraps run again. `--dry-run` validates the Edge settings, renders its Compose
+configuration, prints one JSON line per selected stack with the checkout, the keys it would
+write and the command it would run, and writes nothing.
+
+The first failing stack bootstrap stops the run with exit 3 and a JSON error naming the
+stack, its exit code and the rerun command; earlier stacks stay ready and later stacks are
+untouched. Fix the reported problem and rerun the same command. Backplane enrollment
+(`bp bootstrap`) remains the separate step its bootstrap prints.
+
+## Bundle settings per stack
+
+`--with` writes the settings below; this table is the reference for setting them by hand.
+The values come from Edge: `PE_PUBLIC_DOMAIN`, `PE_SCHEME` (HTTPS when unset),
+`PE_PLATFORM_NETWORK`, `PE_PLATFORM_SUBNET`, `PE_PLATFORM_IP_RANGE` and `PE_EDGE_IP` as the
+`/32` trust entry. The ports are the Platform Contract's bundle ports; the public port
+suffix stays empty because browsers use Edge on 443 and the loopback HTTP port is for
+local diagnostics only.
+
+The Platform Network has one allocation, defined by the
 [platform contract](../conventions.md#platform-contract): whichever bootstrap runs first
 creates `platform` with `--subnet 172.30.0.0/24 --ip-range 172.30.0.128/25 --gateway
 172.30.0.1` (`PE_PLATFORM_SUBNET`, `PE_PLATFORM_IP_RANGE`; the gateway is derived), and
 every bootstrap refuses an existing network whose subnet or ip-range differs
-(`platform_network_mismatch`). Edge always holds `PE_EDGE_IP` (`172.30.0.2`), a fixed
-`ipv4_address` outside the dynamic range, so nothing is reserved by hand and no address is
-inspected before configuring the siblings. Change the three settings together, in every
-stack, only when the default subnet collides with your host's routing.
-
-`172.30.0.2/32` below is that fixed address. The trust list lets the stack accept the
-browser's protocol and client address from Edge. It does not grant operator access to
-every request through Edge.
+(`platform_network_mismatch`, see [troubleshooting](#network-cutover)). Edge always holds
+`PE_EDGE_IP` (`172.30.0.2`), a fixed `ipv4_address` outside the dynamic range, so the
+siblings trust that one address and nothing is discovered. Change the three settings
+together, in every stack, only when the default subnet collides with your host's routing.
 
 In the LLM gateway `.env`:
 
@@ -372,10 +258,16 @@ LG_BIND_HOST=127.0.0.1
 LG_HTTP_PORT=18080
 LG_PUBLIC_PORT_SUFFIX=
 LG_PLATFORM_NETWORK=platform
+LG_PLATFORM_SUBNET=172.30.0.0/24
+LG_PLATFORM_IP_RANGE=172.30.0.128/25
 LG_TRUSTED_PROXIES=172.30.0.2/32
+LG_METRICS=true
 ```
 
-When the observability stack scrapes the gateway, also set `LG_METRICS=true`.
+`LG_METRICS=true` is written only when observability is also selected. The five browser
+origin keys (`LG_CONSOLE_URL`, `LG_LITELLM_URL`, `LG_LANGFUSE_URL`, `LG_S3_URL`,
+`LG_RUSTFS_URL`) are written empty, so the gateway derives them from its public domain,
+or with the Tailnet Origins when a tailnet selection is recorded.
 
 In the observability stack `.env`:
 
@@ -387,13 +279,14 @@ OB_BIND_HOST=127.0.0.1
 OB_HTTP_PORT=18180
 OB_PUBLIC_PORT_SUFFIX=
 OB_PLATFORM_NETWORK=platform
+OB_PLATFORM_SUBNET=172.30.0.0/24
+OB_PLATFORM_IP_RANGE=172.30.0.128/25
 OB_TRUSTED_PROXIES=172.30.0.2/32
-OB_GATEWAY_HEALTH_HOST=example.com
-OB_GATEWAY_URL=https://example.com
-OB_BACKPLANE_URL=https://backplane.example.com
 ```
 
-Trust only Edge's fixed address, not the entire network; recreating Edge does not change it. The public port suffix stays empty: the spare loopback HTTP port is for local diagnostics, while browsers use Edge on 443. Behind another gateway, stacks publish only their HTTP port.
+`OB_GRAFANA_URL` is written empty or with the Grafana Tailnet Origin. The bundle also
+writes `OB_GATEWAY_HEALTH_HOST`, `OB_GATEWAY_URL` and `OB_BACKPLANE_URL`; current
+Observability revisions no longer read them, and the lines are harmless.
 
 In the backplane `.env`:
 
@@ -403,51 +296,158 @@ BP_PUBLIC_URL=https://backplane.example.com
 BP_BIND_HOST=127.0.0.1
 BP_PORT=3000
 BP_PLATFORM_NETWORK=platform
+BP_PLATFORM_SUBNET=172.30.0.0/24
+BP_PLATFORM_IP_RANGE=172.30.0.128/25
 ```
 
-`BP_TRUSTED_PROXIES` is written as well until Backplane removes it with its internal gateway.
+The bundle also writes `BP_TRUSTED_PROXIES=172.30.0.2/32`; Backplane ignores forwarded
+headers by design and no longer reads it. Edge reaches the Backplane server directly at
+`bp-server:3000`, so Backplane needs no Caddy behind Edge: keep its `edge` profile off and
+set `BP_PUBLIC_URL` as the explicit browser origin. Edge keeps the operator-route denial
+(`/health/operations` and `/metrics` answer 404), strips `Authorization` from
+`/health/ready`, forwards `Host` and `X-Forwarded-Proto`, and streams event responses
+unbuffered.
 
-Every stack also takes `*_PLATFORM_SUBNET` and `*_PLATFORM_IP_RANGE` from Edge's
-`PE_PLATFORM_SUBNET` and `PE_PLATFORM_IP_RANGE` (contract defaults `172.30.0.0/24` and
-`172.30.0.128/25`); `--with` always writes them.
+Behind Edge every stack publishes only its loopback HTTP port and issues no certificates.
+Trust only Edge's fixed address, never the whole network. Do not attach a datastore to the
+Platform Network; all members of this network are trusted infrastructure. To run a stack
+on its own again, select its local or public access mode, set its domain and free host
+ports, then run its bootstrap; stop Edge first to reuse ports 80 and 443, and preserve the
+Edge volumes unless you are retiring its certificates.
 
-Edge reaches the Backplane server directly at `bp-server:3000` on the Platform Network; no
-Backplane Caddy is needed behind Edge, so keep the `edge` profile off and drop `gateway` once
-Backplane no longer ships `compose.gateway.yaml` (a recorded `gateway` profile keeps running
-unused until then). Edge keeps
-the operator-route denial (`/health/operations` and `/metrics` answer 404), strips
-`Authorization` from `/health/ready`, forwards `Host` and `X-Forwarded-Proto`, and streams
-event responses unbuffered. Backplane ignores forwarded headers by design; `BP_PUBLIC_URL`
-remains the explicit browser origin.
+## Trusting local HTTPS certificates
 
-Do not attach a datastore to the Platform Network. All members of this network are trusted infrastructure.
-
-## Rollout and diagnosis
-
-When upgrading an existing Backplane installation from its internal gateway, bootstrap
-Edge with these routes first (the server already answers on `bp-server:3000`), then drop
-the `gateway` profile and `compose.gateway.yaml` from Backplane's recorded selection and run
-its bootstrap. Fresh installs may start Edge first to create its
-network; Backplane remains unavailable until its selected stack starts. Edge itself
-must remain independently startable when Backplane is not installed.
-
-
-1. Render the edge settings with `python3 scripts/bootstrap.py --render-only`, then edit `.env` for the desired mode. This writes only the env file, with mode 0600.
-2. If an installed stack already owns ports 80 or 443, give its gateway spare loopback ports and run its bootstrap to release those ports. For a new stack, prepare its env using its documented bootstrap. Keep the backplane’s optional `edge` profile off.
-3. Run `python3 scripts/bootstrap.py` in platform-edge. It creates the external network with the contract allocation if missing, or refuses one whose allocation differs (see the network cutover below), names a conflicting container before publishing, and starts Caddy with `docker compose up --wait`. It probes `127.0.0.1` on the selected HTTP or HTTPS port with the domain as Host. HTTPS uses that domain as SNI, validates the certificate against the system trust store, `PE_TLS_CA` or `PE_ACME_CA_ROOT`, or trusts the installation’s self-signed root certificate read from the volume, and reports the leaf `notAfter` (plus the root SHA-256 fingerprint for the internal CA). It never disables TLS verification. The publish address must accept loopback connections (use `127.0.0.1` or `0.0.0.0` for these host probes).
-4. Apply the per-stack settings above with `--with` ([Install the bundle](#install-the-bundle)) or by hand, including Edge’s fixed address in the trust lists, and run each stack’s bootstrap so it selects the matching Compose files and starts its services. Probe application hostnames through Edge. A missing stack must affect only its own hostnames. Edge `/health` proves only Edge readiness.
-
-Both sibling bootstraps must probe **their own local HTTP listener**, independently of
-public URLs: gateway uses `http://127.0.0.1:18080/health/<app>` and observability uses
-`http://127.0.0.1:18180/health/<app>`, each with `Host: example.com`. Their internal HTTP ports must not appear in browser URLs. Use the current gateway
-and observability revisions, which select these probes automatically.
+Local Mode issues certificates from Caddy's own CA in `edge-data`. Export the public root
+after Edge starts and install it into each client's trust store; keep certificate
+verification enabled:
 
 ```sh
-curl -fsS -H 'Host: example.com' http://127.0.0.1:18080/health/litellm
-curl -fsS -H 'Host: example.com' http://127.0.0.1:18180/health/grafana
+docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./platform-edge-root.crt
 ```
 
-Inspect `docker compose logs caddy` for certificate or upstream errors. Caddy's admin API listens only on `localhost:2019` inside its container, with no published port; apply route changes with `docker compose restart caddy`. Bootstrap can be rerun safely; it allows its own existing Caddy to hold the requested ports. Unexpected host processes or a concurrent port claim cause a Compose error, reported with exit code 3. Other refusals are exit 1, bad CLI usage is exit 2, readiness is exit 0. Runtime failures and argparse usage errors are one JSON line on stderr with `error` and `detail`.
+Internal CA private keys stay in `edge-data`; export only `root.crt`. Losing that volume
+replaces the internal CA and requires redistributing trust, so take a
+[Checkpoint](backup.md) before distributing the root and after any intentional CA change.
+
+## Image overrides
+
+`PE_CADDY_IMAGE` accepts a complete image reference, for example `local/edge:experiment`
+or `registry.example/team/caddy:test`, in `.env`. Empty or unset selects the shipped
+validated tag and digest in `compose.yaml`. Native `docker compose` interpolation applies;
+a shell value takes precedence over `.env`. Use a literal reference: bootstrap refuses `$`,
+`#` and whitespace in setting values. Local experiments are unvalidated and must provide
+the Caddy and shell tools Edge uses.
+
+`scripts/validate.sh`, `scripts/smoke.sh` and the backup drill always exercise the shipped
+default, ignoring local overrides. Clearing the override returns to that default on the
+next deployment. Checkpoints require a reference pinned by digest; see
+[capture and restore](backup.md#capture-and-restore) before changing an installed image.
+
+## Metrics and certificate expiry
+
+The root `/metrics` is restricted by the socket peer's IP using `PE_METRICS_ALLOW`
+(default `127.0.0.0/8 ::1`). Add only the scraper container's Platform Network address
+as a `/32` (IPv6 `/128`), for example `PE_METRICS_ALLOW="127.0.0.0/8 ::1 172.30.0.130/32"`,
+after reserving that address in the scraper's Compose configuration and verifying it.
+Scrape `http://pe-edge:80/metrics` on the Platform Network in every access mode; set
+`OB_SCRAPE_EDGE=true` in observability once the scraper is allowed, and leave it off when
+Edge is absent.
+
+Never allow the whole subnet or the Docker bridge gateway: published-port connections
+relayed by Docker can all appear as that gateway, including remote clients under rootless
+Docker or IPv6-to-IPv4 proxying, so allowing it can make metrics public. Edge does not
+trust forwarded client IP headers, and in a cloud VPC "private" address space means every
+tenant.
+
+The response combines native Caddy metrics (`/metrics/caddy`, same restriction) with
+`pe_certificate_not_after_seconds` and `pe_certificate_checked_seconds` from the
+bootstrap-generated `/config/pe-certificate.prom` textfile. Run
+`python3 scripts/bootstrap.py --probe-only` every five minutes to refresh the root leaf
+observation after automatic renewal ([backup](backup.md) shows the cron line). Failure
+leaves the last successful value; alert on expiry, stale or absent observations and scrape
+failure. The root's expiry does not cover independently issued subdomain certificates:
+external TLS probes must cover all seven names.
+
+## Runtime logs
+
+Caddy emits JSON access logs on stdout and runtime diagnostics on stderr. Docker uses
+`journald` with `cache-disabled=true`: no application-managed or Docker JSON log files.
+Journal persistence and retention are host policy; bootstrap never changes them. On a host
+without journald, choose a supported Docker logging driver through an operator-owned
+Compose override before starting the stack.
+
+```sh
+docker compose logs --tail=100 -f caddy
+journalctl CONTAINER_NAME=platform-edge-caddy-1
+```
+
+The observability stack is optional. Its Alloy Docker discovery collects this container
+through Docker's journal reader, labelled `compose_project=platform-edge` and
+`service=caddy`. The Tailscale nodes log the same way (`CONTAINER_NAME=platform-edge-ts-<name>-1`).
+Caddy removes request and response headers and query strings from access logs and
+request-bearing error diagnostics; do not put credentials in URL paths.
+
+## Status routes
+
+The console reads each stack's public Status Document through same-origin routes that
+`routes.d/00-stack-probes.caddy` owns: `/stack-status/gateway`, `/stack-status/backplane`
+and `/stack-status/observability` proxy the owning gateway's `/status.json`;
+`/stack-status/edge` (also `/status.json`) serves the document bootstrap writes after
+readiness into the directory mounted at `/srv/state` (`data/console/` by default). These
+routes accept GET and HEAD, strip Authorization and Cookie, apply a four-second deadline,
+suppress upstream error and HTML bodies, and return uncached JSON. `/health` and
+`/health/caddy` report Edge readiness only. When the status write fails, bootstrap exits 1
+with `status_write_failed` although Caddy is running. The field rules, limits and fixtures
+are in the [status contract](status-contract.md).
+
+## Shared-host acceptance
+
+After all sibling bootstraps pass, run:
+
+```sh
+SMOKE_INTEGRATION=1 SMOKE_DOMAIN=example.com PE_PLATFORM_NETWORK=platform scripts/smoke.sh
+```
+
+Use `localhost` for Local Mode. It requires running siblings with `lg-gateway`,
+`ob-gateway` and `bp-server` on that network and prints `SKIP` with the missing aliases
+when one is absent; a skip is not acceptance. The test starts its own edge on spare
+loopback ports (`SMOKE_HTTP_PORT=18280`, `SMOKE_HTTPS_PORT=18643`, `SMOKE_PROJECT=platform-edge-smoke`
+by default; override all three for another disposable instance), uses its project name as
+its volume prefix and leaves sibling containers and volumes alone. `SMOKE_DOMAIN` must
+equal the siblings' configured public domain. Six real application endpoints must return
+200, first over HTTP and then over verified self-signed HTTPS:
+
+| Host | Health endpoint |
+| --- | --- |
+| root | `/health/litellm` (real LiteLLM, not Edge liveness) |
+| litellm | `/health/liveliness` |
+| langfuse | `/api/public/health` |
+| s3 | `/health/ready` |
+| backplane | `/health/ready` |
+| grafana | `/api/health` |
+
+The ordinary smoke (without `SMOKE_INTEGRATION`) uses stubs on a disjoint `172.16.x.0/24`
+network (`SMOKE_PLATFORM_SUBNET` moves it) to also exercise missing siblings, forwarding,
+local HTTPS without HSTS on all seven hosts, console probes, metrics and container
+hardening. Neither proves external DNS, port forwarding or public certificate issuance;
+verify those from an external client as the final public check.
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `port_conflict` | Another container publishes 80 or 443 (the message names it). Move that stack's gateway to a spare loopback port with its own bootstrap, then rerun. Bootstrap allows its own existing Caddy to hold the ports. |
+| Compose error, exit 3 | A host process or a concurrent claim took the port after preflight, or Caddy did not become ready. Read `docker compose logs caddy`. |
+| `platform_network_mismatch` | The `platform` network has another subnet or range. See [network cutover](#network-cutover). |
+| `legacy_setting` naming `PE_TAILSCALE_EDGE_IP` | Remove the setting and any retired overlay from `COMPOSE_FILE`, then follow the network cutover. |
+| `tls_files_unreadable` | Caddy cannot read `tls.key`, `tls.crt` or the CA file in `PE_TLS_DIR`. Check ownership, mode bits and symlink targets. |
+| A sibling hostname answers 502 | That stack is not running or not on the Platform Network under its alias. Check `docker network inspect platform` for `lg-gateway`, `ob-gateway` or `bp-server`. |
+| A route change has no effect | Caddy reads `routes.d/` at start. `docker compose restart caddy`; the admin API listens only on `localhost:2019` inside the container. |
+| Sibling probes fail behind Edge | Each sibling probes its own loopback listener with the domain as Host: `curl -fsS -H 'Host: example.com' http://127.0.0.1:18080/health/litellm` and `http://127.0.0.1:18180/health/grafana`. |
+| Edge cards show Unknown | The stack does not publish [status contract 2](status-contract.md) yet, or its producer is unreachable. Edge itself needs the version 1 timer retired once; see below. |
+
+Exit codes: 0 ready, 1 refused, 2 usage, 3 not ready. Runtime failures are one JSON line on
+stderr with `error` and `detail`.
 
 ### Network cutover
 
@@ -470,11 +470,10 @@ data and env files are untouched:
    subnet and ip-range, `docker inspect --format '{{.NetworkSettings.Networks.platform.IPAddress}}' "$(docker compose ps -q caddy)"`
    prints `172.30.0.2`, and every application hostname answers through Edge.
 
-### Status version 2 upgrade
+### Retiring the version 1 status timer
 
-Edge reads only [status contract 2](status-contract.md) and no longer runs a host
-observer. On an installation that enabled the version 1 status timer, run once after
-updating the checkout:
+Edge reads only [status contract 2](status-contract.md) and runs no host observer. On an
+installation that enabled the version 1 status timer, run once after updating the checkout:
 
 ```sh
 scripts/retire-status-timer.sh
@@ -484,176 +483,5 @@ python3 scripts/bootstrap.py
 The script disables and stops `platform-edge-status.timer` and its service, removes both
 unit files from `~/.config/systemd/user/`, reloads the user manager, and deletes the old
 `data/status/bootstrap.json` record and `data/console/.status.lock`. It prints each action
-and is safe to rerun; when it cannot stop the timer it exits 1 before removing anything. Bootstrap then recreates Caddy without the retired `init` setting and
-replaces the version 1 `data/console/status.json` with the version 2 document. Until a
-sibling ships its version 2 producer, its cards show Unknown.
-
-To run a stack on its own again, select its local or public access mode, set its domain and free host ports, then run its bootstrap. Stop Edge first if you want to reuse ports 80 and 443. Preserve the Edge volumes unless explicitly retiring its certificates.
-
-## Trusting local HTTPS certificates
-
-For private DNS, use `PE_ACCESS_MODE=local`, your configured domain, and `PE_SCHEME=https` if HTTPS is the configured application URL. The stack settings remain HTTPS publicly and HTTP internally. Export the Edge root after it starts:
-
-```sh
-docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./platform-edge-root.crt
-```
-
-Install this public root certificate into each client's trust store. Keep certificate verification enabled. Back up the `edge-data` and `edge-config` volumes securely before upgrades. Internal CA private keys stay in `edge-data`; export only `root.crt` to clients. Losing this volume replaces the internal CA and requires redistributing trust. Apply new image pins only after validation and smoke pass, and preserve volumes when rolling back the image.
-
-## Shared-host acceptance
-
-After all sibling bootstraps pass locally, run:
-
-```sh
-SMOKE_INTEGRATION=1 SMOKE_DOMAIN=example.com PE_PLATFORM_NETWORK=platform scripts/smoke.sh
-```
-
-This requires running Compose siblings with `lg-gateway`, `ob-gateway` and `bp-server`
-on that network. It prints `SKIP` with the missing aliases/network and zero checked
-routes when a sibling is absent; a skip is **not acceptance**. The test starts its own
-edge on spare loopback ports, uses its project name as its disposable volume prefix,
-and leaves sibling containers and volumes alone. Compose 2.24.4+ is required for the
-integration override that prevents shadowing the installed `pe-edge` alias. Set
-`SMOKE_HTTP_PORT`, `SMOKE_HTTPS_PORT` or `SMOKE_PROJECT` to avoid existing resources;
-the stub smoke and the backup drill take `SMOKE_PLATFORM_SUBNET` (a /24) when their
-default `172.16.x.0/24` overlaps a host network.
-`SMOKE_DOMAIN` must equal the siblings' configured public domain (default `localhost`);
-these controls are explicit shell settings, not inferred from the installed `.env`.
-
-Six real application endpoints must return 200, first over HTTP and then verified
-self-signed HTTPS, using the host's loopback listener and configured Host/SNI:
-
-| Host | Health endpoint |
-| --- | --- |
-| root | `/health/litellm` (real LiteLLM, not Edge liveness) |
-| litellm | `/health/liveliness` |
-| langfuse | `/api/public/health` |
-| s3 | `/health/ready` |
-| backplane | `/health/ready` |
-| grafana | `/api/health` |
-
-LiteLLM and Langfuse probes require HTTP 200 and empty public response bodies.
-Backplane and Grafana probes validate their JSON health responses.
-The S3 route uses RustFS's [documented health endpoints](https://docs.rustfs.com/en/operations/status-check).
-The normal smoke uses stubs to also exercise missing siblings, forwarding, local HTTPS without HSTS on all
-seven hosts, empty uncached console probes, metrics and container hardening.
-This integration does not prove external DNS, port forwarding or public certificate issuance; verify those from
-an external client as the final public rollout check.
-
-## Metrics and certificate expiry
-
-The root `/metrics` is restricted by the socket peer's IP using `PE_METRICS_ALLOW`
-(default `127.0.0.0/8 ::1`). Add only the scraper container's Platform Network IPv4
-address as a `/32` (IPv6 `/128`), for example
-`PE_METRICS_ALLOW="127.0.0.0/8 ::1 172.20.0.10/32"` for a scraper at `172.20.0.10`.
-Reserve that address in the scraper's Compose configuration and verify its actual
-address before allowing it. Scrape `http://pe-edge:80/metrics` on the Platform Network in every access mode.
-This explicit internal hostname serves metrics only and uses the same socket-peer
-allowlist as the application root metrics route. Set `OB_SCRAPE_EDGE=true` in observability
-after reserving and allowing its scraper IP; leave it disabled when Edge is absent.
-Never allow the whole subnet or its Docker bridge gateway. Published-port connections
-relayed by Docker can all appear as that gateway, including remote clients under
-rootless Docker or IPv6-to-IPv4 proxying. Allowing it can make metrics public. A host
-probe seen as the gateway must stay denied; use the scraper's network path instead.
-The outermost Edge does not trust forwarded client IP headers; they cannot grant access.
-In a cloud VPC, "private" means every tenant, so private address ranges are not an access policy.
-It combines native Caddy metrics (`/metrics/caddy`, under the same restriction) with
-`pe_certificate_not_after_seconds` and `pe_certificate_checked_seconds` from the
-bootstrap-generated `/config/pe-certificate.prom` textfile. Admin stays container-local.
-[Caddy metrics](https://caddyserver.com/docs/metrics) do not expose leaf certificate
-expiry; the combined response uses [Caddy templates](https://caddyserver.com/docs/caddyfile/directives/templates).
-
-Run `python3 scripts/bootstrap.py --probe-only` every five minutes to refresh the root
-leaf observation after automatic renewal, as shown in [backup](backup.md). Failure
-leaves the last successful value; alert on expiry, stale/absent observations and scrape
-failure. The root's expiry does not cover independently issued subdomain certificates:
-external TLS probes must cover all seven names. HSTS is `max-age=31536000` in public mode, with no preload or includeSubDomains. Local mode deliberately has no HSTS. Console probes expose status and an empty
-body, with `Cache-Control: no-store`, including failed upstream connections.
-
-See [backup and restore](backup.md) before adopting the external volume names or changing
-image pins. `down -v` is not a safe retirement workflow for old revisions.
-
-## Checkpoint settings
-
-`PE_BACKUP_DIR` selects the protected backup repository. Relative paths resolve against
-this checkout; the default is `./backups`. The directory is created if absent. Verify
-an expected mount before capture. `PE_BACKUP_KEEP` defaults to `7`, has a minimum of `1`,
-and retains that many complete Checkpoints after a successful capture and resumption.
-Incomplete sets and diagnostics are retained for operator inspection. See the
-[backup procedure](backup.md) for encryption, replication and recovery.
-
-## Runtime logs
-
-Caddy emits JSON access logs on stdout and runtime/error diagnostics on stderr. Docker
-uses `journald` with `cache-disabled=true`: there are no application-managed or Docker
-JSON/cache log files. Journal persistence and retention remain the host's policy; bootstrap
-never changes it. This default requires a Docker host with journald. On a non-systemd host,
-choose a supported Docker logging driver via an operator-owned Compose override and
-review its storage behavior before starting the stack.
-
-```sh
-docker compose logs --tail=100 -f caddy
-journalctl CONTAINER_NAME=platform-edge-caddy-1
-```
-
-The observability stack is optional. Its Alloy Docker discovery and `loki.source.docker`
-reader can collect this container through Docker's journal reader, labelling it with
-`compose_project=platform-edge` and `service=caddy`. Loki's retained data is observability
-product state, not a second local runtime log file. Without Alloy, Caddy continues running
-and the host journal remains available. The Tailscale nodes log to journald the same way
-(`CONTAINER_NAME=platform-edge-ts-<name>-1`).
-
-Caddy removes request and response headers and query strings from access logs and
-request-bearing error diagnostics. Do not put credentials in URL paths. URLs and request
-IDs remain log fields, not Loki index labels.
-
-## Project console
-
-The Edge console groups applications and supporting services by project. Search filters
-service names and descriptions. Project overview links narrow the same interface; Map
-shows application and log-collection paths with independent toggles. Component details
-link to the component’s upstream repository; project headers link to the stack repository.
-
-Refresh and automatic checks every 30 seconds update application addresses, HTTP
-reachability and each stack's Status Document. Network polling pauses while hidden. Three
-concurrent requests share four-second per-request deadlines; status documents are limited
-to 64 KiB and 32 components. Everything in a document is configuration: an enabled
-component shows Configured with "Configured <version>", a disabled one shows Not enabled,
-and `features.backups`/`features.alerts` form one line under the project name. A missing,
-malformed or failed document makes that stack's components Unknown and leaves other cards
-usable; a failed refresh never keeps a previous answer. HTTP 200 alone never makes a
-component healthy; application probes appear as HTTP reachability evidence only. Component
-links come exclusively from validated Edge access configuration, never from a document
-`url`, and remain available when producer support is unknown. Setup jobs and capabilities
-are architecture entries that no document reports; they stay Unknown.
-
-`/stack-status/gateway`, `/stack-status/backplane` and `/stack-status/observability`
-proxy their owning gateway's `/status.json`. The Edge card reads `/stack-status/edge`
-(also `/status.json`), the document bootstrap writes after readiness into the directory
-Compose mounts at `/srv/state` (`data/console/` by default): one `caddy` component with the
-configured image without digest, its release version, `configuredAt` of that bootstrap
-run, the Health Path `/health/caddy`, and `features.backups` from `PE_BACKUP_DIR`.
-When that write fails, bootstrap exits 1 with `status_write_failed` although Caddy is running.
-
-Metadata routes accept GET/HEAD, remove Authorization and Cookie, suppress upstream error
-and HTML fallback bodies, and return uncached JSON. **Each producer must enforce the contract's
-closed public field allowlist.** Edge checks transport and the browser validates schema;
-Caddy does not sanitize fields inside successful JSON. No backend administration route,
-Docker socket or host observer is involved. Gateway, Backplane and Observability status
-producers can roll out independently; there are no new operator environment settings.
-Missing sibling producers need no workaround. Before the first bootstrap writes the Edge
-document, `/stack-status/edge` returns empty JSON 404 and the Edge card is Unknown.
-`/health` and `/health/caddy` report Edge HTTP readiness only.
-
-Consumer checks use `node --test tests/status*.test.cjs` and the existing
-`tests/console-browser.cjs` Playwright acceptance runner. `scripts/smoke.sh` owns disposable
-Docker resources and invokes `tests/status_proxy.py` to check methods, credentials,
-404/HTML/error suppression, forwarding and partial producer failure, and parses the Edge
-document bootstrap published. Fixture tests do not attest deployed sibling producers.
-
-The status consumer enforces a four-second total request deadline, including body
-reads, and a 64 KiB body limit. It aborts and cancels a slow or oversized response.
-The Caddy status proxy separately limits connection setup, response headers and
-idle reads; its read timeout is not a total response-body deadline. Direct clients
-of these routes must apply their own total deadline and size limit. Producers are
-trusted stack services publishing bounded public metadata.
+and is safe to rerun; when it cannot stop the timer it exits 1 before removing anything.
+Bootstrap then replaces the version 1 `data/console/status.json` with the version 2 document.
