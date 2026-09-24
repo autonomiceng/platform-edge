@@ -9,7 +9,7 @@ Edge owns host ports 80 and 443. Its default loopback binding makes them accessi
 | `langfuse.example.com` | `lg-gateway:80` |
 | `s3.example.com` | `lg-gateway:80` |
 | `rustfs.example.com` | `lg-gateway:80` (admin console) |
-| `backplane.example.com` | `bp-gateway:80` |
+| `backplane.example.com` | `bp-server:3000` |
 | `grafana.example.com` | `ob-gateway:80` |
 
 ## Install the bundle
@@ -32,10 +32,14 @@ to `.env` (mode 0600) when it is absent, takes the stack's own env lock, writes 
 of the [per-stack table](#per-stack-settings-behind-the-edge) with an atomic replacement that
 keeps every other line byte for byte, releases the lock and runs the stack's bootstrap from its
 checkout: `python3 scripts/bootstrap.py`, for Backplane with `--capability-file PATH
---access-mode proxy --public-url URL` plus `--profile gateway` until `COMPOSE_PROFILES` is
-recorded; later runs reuse the recorded selection. A Backplane `.env` that holds core secrets or
-`COMPOSE_FILE` but no `COMPOSE_PROFILES` is refused (`bundle_backplane_selection_required`):
-run Backplane's bootstrap once with `--profile` for each existing profile plus `gateway`. Its output goes to the terminal; env
+--access-mode proxy --public-url URL`; later runs reuse the recorded selection. Edge reaches
+Backplane's server directly, so no profile is needed for ingress. A Backplane checkout that
+still ships `compose.gateway.yaml` gets `--profile gateway` on a first run; once that overlay
+is gone, a recorded `COMPOSE_PROFILES` that still lists `gateway` is refused
+(`bundle_gateway_profile_retired`) until it is dropped as Backplane's upgrade note describes.
+A Backplane `.env` that holds core secrets or `COMPOSE_FILE` but no `COMPOSE_PROFILES` is
+refused (`bundle_backplane_selection_required`): run Backplane's bootstrap once with
+`--profile` for each existing profile, or `--profile ''` for core only. Its output goes to the terminal; env
 contents are never printed. The values come from Edge: `PE_PUBLIC_DOMAIN`, `PE_SCHEME` (HTTPS
 when unset), `PE_PLATFORM_NETWORK`, `PE_PLATFORM_SUBNET`, `PE_PLATFORM_IP_RANGE` and
 `PE_EDGE_IP` as the `/32` trust entry. With observability also selected, the gateway receives
@@ -106,7 +110,7 @@ not require any sibling stack.
 For local sibling stacks behind Edge, choose their proxy access mode, keep internal HTTP,
 and configure the configured browser URL for the address customers will use. Applications
 with authentication or generated links still need one configured application URL even though Edge
-accepts both HTTP and HTTPS. Give sibling Caddys spare loopback HTTP ports. Use Backplane’s internal gateway overlay and set its explicit `BP_PUBLIC_URL`.
+accepts both HTTP and HTTPS. Give sibling Caddys spare loopback HTTP ports. Backplane needs no Caddy behind Edge; set its explicit `BP_PUBLIC_URL`.
 
 ## Access everything through Tailscale
 
@@ -229,9 +233,9 @@ session, enable the console in that stack and reach it over loopback through an 
 never add RustFS to the Platform Network. Observability: set `OB_RUSTFS_CONSOLE=true`, run
 its bootstrap, then `ssh -L 18180:127.0.0.1:18180 <host>` and open
 `http://127.0.0.1:18180/rustfs/console/` with a hosts entry mapping `rustfs.<domain>` to
-`127.0.0.1` (its gateway routes the console by that host). Backplane's internal gateway
-publishes no host port: set `BP_RUSTFS_CONSOLE=true`, add a private overlay that publishes
-`127.0.0.1:9001:9001` on its `rustfs` service, run its bootstrap, then
+`127.0.0.1` (its gateway routes the console by that host). Backplane publishes no RustFS
+port: add a private overlay that publishes `127.0.0.1:9001:9001` on its `rustfs` service,
+run its bootstrap, then
 `ssh -L 9001:127.0.0.1:9001 <host>` and open `http://127.0.0.1:9001/`. Remove the overlay
 after the session.
 
@@ -399,35 +403,31 @@ BP_PUBLIC_URL=https://backplane.example.com
 BP_BIND_HOST=127.0.0.1
 BP_PORT=3000
 BP_PLATFORM_NETWORK=platform
-BP_TRUSTED_PROXIES=172.30.0.2/32
 ```
+
+`BP_TRUSTED_PROXIES` is written as well until Backplane removes it with its internal gateway.
 
 Every stack also takes `*_PLATFORM_SUBNET` and `*_PLATFORM_IP_RANGE` from Edge's
 `PE_PLATFORM_SUBNET` and `PE_PLATFORM_IP_RANGE` (contract defaults `172.30.0.0/24` and
 `172.30.0.128/25`); `--with` always writes them.
 
-Start Backplane with its internal gateway overlay (Compose 2.24.4+):
-
-```sh
-docker compose -f compose.yaml -f compose.gateway.yaml --profile gateway up -d --wait
-```
-
-This runs Caddy as `bp-gateway:80` without publishing host ports. Keep the standalone
-`edge` profile off. The gateway joins Backplane’s private network and the shared
-Platform Network. Backplane ignores forwarded headers by design; `BP_PUBLIC_URL`
-remains the explicit browser origin. Existing direct `bp-server` access remains
-available for internal telemetry; Edge routes application requests through `bp-gateway`.
-For an existing installation, start and verify the gateway before updating Edge’s routes.
+Edge reaches the Backplane server directly at `bp-server:3000` on the Platform Network; no
+Backplane Caddy is needed behind Edge, so keep the `edge` profile off and drop `gateway` once
+Backplane no longer ships `compose.gateway.yaml` (a recorded `gateway` profile keeps running
+unused until then). Edge keeps
+the operator-route denial (`/health/operations` and `/metrics` answer 404), strips
+`Authorization` from `/health/ready`, forwards `Host` and `X-Forwarded-Proto`, and streams
+event responses unbuffered. Backplane ignores forwarded headers by design; `BP_PUBLIC_URL`
+remains the explicit browser origin.
 
 Do not attach a datastore to the Platform Network. All members of this network are trusted infrastructure.
 
 ## Rollout and diagnosis
 
-When upgrading an existing Backplane installation from direct server routing, start
-and verify `bp-gateway` before applying the new Edge routes. Use the Backplane
-command above; verify `docker compose -f compose.yaml -f compose.gateway.yaml
---profile gateway exec edge wget -qO- http://127.0.0.1/health/ready` reports ready.
-Then reload or bootstrap Edge. Fresh installs may start Edge first to create its
+When upgrading an existing Backplane installation from its internal gateway, bootstrap
+Edge with these routes first (the server already answers on `bp-server:3000`), then drop
+the `gateway` profile and `compose.gateway.yaml` from Backplane's recorded selection and run
+its bootstrap. Fresh installs may start Edge first to create its
 network; Backplane remains unavailable until its selected stack starts. Edge itself
 must remain independently startable when Backplane is not installed.
 
@@ -508,7 +508,7 @@ After all sibling bootstraps pass locally, run:
 SMOKE_INTEGRATION=1 SMOKE_DOMAIN=example.com PE_PLATFORM_NETWORK=platform scripts/smoke.sh
 ```
 
-This requires running Compose siblings with `lg-gateway`, `ob-gateway` and `bp-gateway`
+This requires running Compose siblings with `lg-gateway`, `ob-gateway` and `bp-server`
 on that network. It prints `SKIP` with the missing aliases/network and zero checked
 routes when a sibling is absent; a skip is **not acceptance**. The test starts its own
 edge on spare loopback ports, uses its project name as its disposable volume prefix,

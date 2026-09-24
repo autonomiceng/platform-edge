@@ -99,7 +99,7 @@ cat > "$work/stub.caddy" <<'CADDY'
 {
 	admin off
 }
-:80, :3000 {
+:{$STUB_PORT:80} {
 	header X-Smoke-Forwarded-For {http.request.header.X-Forwarded-For}
 	header X-Smoke-Forwarded-Host {http.request.header.X-Forwarded-Host}
 	header X-Smoke-Authorization {http.request.header.Authorization}
@@ -145,7 +145,7 @@ printf '%s\n' '{"producer":"ob-gateway","host":"localhost","scheme":"http"}' > "
 lg_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias lg-gateway -e STUB_ALIAS=lg-gateway \
   -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" -v "$work/respond-status.caddy:/etc/caddy/respond-status.caddy:ro" \
   "$caddy_image")
-bp_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias bp-gateway -e STUB_ALIAS=bp-gateway \
+bp_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias bp-server -e STUB_ALIAS=bp-server -e STUB_PORT=3000 \
   -v "$work/stub.caddy:/etc/caddy/Caddyfile:ro" -v "$work/respond-status.caddy:/etc/caddy/respond-status.caddy:ro" \
   "$caddy_image")
 ob_stub=$(docker run -d --network "$PE_PLATFORM_NETWORK" --network-alias ob-gateway -e STUB_ALIAS=ob-gateway \
@@ -194,7 +194,7 @@ for scheme in http https; do
   fi
   for host in localhost litellm.localhost langfuse.localhost s3.localhost backplane.localhost grafana.localhost; do
     case "$host" in
-      backplane.*) upstream=bp-gateway ;;
+      backplane.*) upstream=bp-server ;;
       grafana.*) upstream=ob-gateway ;;
       *) upstream=lg-gateway ;;
     esac
@@ -238,7 +238,7 @@ PY
         --resolve "backplane.localhost:$PE_HTTPS_PORT:127.0.0.1" -H 'Host: backplane.localhost' \
         -H 'Authorization: Bearer smoke-operator-token' "https://backplane.localhost:$PE_HTTPS_PORT$path")
     fi
-    [ "$body" = "bp-gateway|backplane.localhost|$scheme" ] || fail "readiness variant $path did not reach backplane"
+    [ "$body" = "bp-server|backplane.localhost|$scheme" ] || fail "readiness variant $path did not reach backplane"
     if grep -iq 'smoke-operator-token' "$work/headers"; then fail "readiness variant $path retained Authorization"; fi
   done
   ok "$scheme readiness variants strip Authorization"
@@ -352,7 +352,7 @@ ok 'console settings remain available and uncached when the gateway is absent'
 
 body=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -fsS --resolve "backplane.localhost:$PE_HTTPS_PORT:127.0.0.1" \
   -H 'Host: backplane.localhost' "https://backplane.localhost:$PE_HTTPS_PORT/")
-[ "$body" = 'bp-gateway|backplane.localhost|https' ] || fail 'backplane failed with other stacks absent'
+[ "$body" = 'bp-server|backplane.localhost|https' ] || fail 'backplane failed with other stacks absent'
 for path in /metrics /health/operations /METRICS/ //health//operations; do
   code=$(curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -s -o /dev/null -w '%{http_code}' --resolve "backplane.localhost:$PE_HTTPS_PORT:127.0.0.1" \
     -H 'Host: backplane.localhost' "https://backplane.localhost:$PE_HTTPS_PORT$path")
@@ -422,7 +422,7 @@ ok 'files issuer: bootstrap verified HTTPS readiness against PE_TLS_CA'
 # Gateway and Observability stubs are stopped here; the root health route and Backplane still answer.
 for host in localhost backplane.localhost; do
   path=/health expected=200
-  [ "$host" = localhost ] || { path=/ expected='bp-gateway|backplane.localhost|https'; }
+  [ "$host" = localhost ] || { path=/ expected='bp-server|backplane.localhost|https'; }
   body=$(curl --noproxy '*' --max-time 10 --cacert "$work/ca.crt" -fsS --resolve "$host:$PE_HTTPS_PORT:127.0.0.1" \
     -H "Host: $host" -o "$work/body" -w '%{http_code}' "https://$host:$PE_HTTPS_PORT$path")
   [ "$host" != backplane.localhost ] || body=$(cat "$work/body")
@@ -437,7 +437,7 @@ export PE_ACCESS_MODE=proxy PE_SCHEME=https
 export COMPOSE_FILE="$root/compose.yaml:$root/compose.proxy.yaml"
 python3 scripts/bootstrap.py --env-file "$env_file" >/dev/null
 body=$(curl --noproxy '*' --max-time 10 -fsS -H 'Host: backplane.localhost' -H 'X-Forwarded-Proto: forged' "http://127.0.0.1:$PE_HTTP_PORT/")
-[ "$body" = 'bp-gateway|backplane.localhost|https' ] || fail 'proxy lost configured public scheme'
+[ "$body" = 'bp-server|backplane.localhost|https' ] || fail 'proxy lost configured public scheme'
 docker compose --env-file "$env_file" ps --format json > "$work/proxy-ports.json"
 python3 - "$work/proxy-ports.json" <<'PYCODE'
 import json, sys
@@ -454,7 +454,7 @@ python3 scripts/bootstrap.py --env-file "$env_file" >/dev/null
 curl --noproxy '*' --max-time 10 --cacert "$work/root.crt" -fsS "https://127.0.0.1:$PE_HTTPS_PORT/health" >/dev/null
 ok 'Tailnet overlay keeps local HTTP and verified self-signed HTTPS; nodes start only with their profiles'
 docker start "$lg_stub" "$ob_stub" >/dev/null
-for item in 'platform lg-gateway' 'litellm lg-gateway' 'langfuse lg-gateway' 's3 lg-gateway' 'rustfs lg-gateway' 'backplane bp-gateway' 'grafana ob-gateway'; do
+for item in 'platform lg-gateway' 'litellm lg-gateway' 'langfuse lg-gateway' 's3 lg-gateway' 'rustfs lg-gateway' 'backplane bp-server' 'grafana ob-gateway'; do
   # shellcheck disable=SC2086
   set -- $item
   host="$1.example.ts.net"

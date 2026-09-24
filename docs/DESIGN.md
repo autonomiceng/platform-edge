@@ -36,7 +36,7 @@ and failure handling; completion claims neither host acceptance nor enrollment.
 flowchart TD
     client[Browser or API client] -->|TCP 80 and 443| edge[Edge: Caddy]
     edge -->|Gateway paths, litellm, langfuse, s3, rustfs| gateway[lg-gateway:80]
-    edge -->|backplane| backplane[bp-gateway:80]
+    edge -->|backplane| backplane[bp-server:3000]
     edge -->|grafana| observability[ob-gateway:80]
 ```
 
