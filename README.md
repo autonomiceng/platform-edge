@@ -76,8 +76,8 @@ This starts one Tailscale node per hostname inside the Edge project and gives ea
 application its own `https://<name>.<tailnet>.ts.net` origin with a Tailscale-issued
 certificate: no host `tailscale serve`, no sudo, no port table, no client CA install.
 Localhost HTTP and self-signed HTTPS remain available. See the
-[ingress guide](docs/operations/ingress.md#access-everything-through-tailscale) for the
-tailnet prerequisites, node removal and key rotation.
+[Tailscale setup](docs/operations/tailscale.md) for the short path, and the
+[ingress guide](docs/operations/ingress.md#access-everything-through-tailscale) for the full reference.
 
 Runtime logs go to stdout/stderr and Docker journald, without Docker log files or cache.
 Alloy collection is optional; `docker compose logs -f caddy` works without observability.

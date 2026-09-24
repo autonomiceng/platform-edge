@@ -110,6 +110,8 @@ accepts both HTTP and HTTPS. Give sibling Caddys spare loopback HTTP ports. Use 
 
 ## Access everything through Tailscale
 
+Short path: [Tailscale setup](tailscale.md). This section is the full reference.
+
 Every routed hostname gets its own Tailscale node inside the Edge project and its own
 `https://<name>.<tailnet>.ts.net` origin with a Tailscale-issued certificate: `platform`
 (the console, `PE_ROOT_HOST`), `litellm`, `langfuse`, `s3`, `rustfs`, `backplane` and
