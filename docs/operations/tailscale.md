@@ -169,11 +169,18 @@ session, reach them over loopback through an SSH tunnel; never add RustFS to the
 Network.
 
 Observability: the console exists only on an installation with the `s3` storage profile
-(bootstrap refuses `rustfs_console_requires_s3` otherwise). Set `OB_RUSTFS_CONSOLE=true`,
-run its bootstrap, then `ssh -L 18180:127.0.0.1:18180 <host>`, add a hosts entry mapping
-`rustfs.<domain>` (or the configured `OB_RUSTFS_HOST`) to `127.0.0.1`, and open
+(bootstrap refuses `rustfs_console_requires_s3` otherwise). Its client allowlist
+`OB_RUSTFS_CONSOLE_ALLOW` defaults to loopback, and a connection to the published loopback
+port reaches its Caddy from that project's Docker network gateway, so allow that one
+address for the session. In the Observability checkout: set `OB_RUSTFS_CONSOLE=true`, add
+the gateway printed by
+`docker network inspect observability-stack_default --format '{{(index .IPAM.Config 0).Gateway}}'`
+as a `/32` to `OB_RUSTFS_CONSOLE_ALLOW`, run its bootstrap, then
+`ssh -L 18180:127.0.0.1:18180 <host>`, add a hosts entry mapping `rustfs.<domain>` (or the
+configured `OB_RUSTFS_HOST`) to `127.0.0.1`, and open
 `http://rustfs.<domain>:18180/rustfs/console/`; its gateway routes the console by that
-hostname, so an IP URL does not reach it.
+hostname, so an IP URL does not reach it. Remove the address and rerun its bootstrap
+afterwards. Details in Observability's ingress runbook.
 
 Backplane: RustFS sits on its internal blob network only and publishes no port. Follow
 "Native RustFS console" in Backplane's `docs/operations/ingress.md`: read the container's
