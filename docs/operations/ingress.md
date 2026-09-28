@@ -220,7 +220,10 @@ Secrets and every other setting stay the stack's own: set `LG_BACKUP_DIR`,
 those `.env` files yourself.
 
 Reruns are idempotent: a key that already holds its value is not rewritten, and the stack
-bootstraps run again. `--dry-run` validates the Edge settings, renders its Compose
+bootstraps run again. After Compose is up, Edge forces a Caddy reload before checking
+readiness or publishing success, so edits to bind-mounted Route Files take effect on a
+rerun without a container restart. A failed reload exits 3 with `caddy_reload_failed`.
+`--dry-run` validates the Edge settings, renders its Compose
 configuration, prints one JSON line per selected stack with the checkout, the keys it would
 write and the command it would run, and writes nothing.
 
@@ -234,9 +237,15 @@ untouched. Fix the reported problem and rerun the same command. Backplane enroll
 `--with` writes the settings below; this table is the reference for setting them by hand.
 The values come from Edge: `PE_PUBLIC_DOMAIN`, `PE_SCHEME` (HTTPS when unset),
 `PE_PLATFORM_NETWORK`, `PE_PLATFORM_SUBNET`, `PE_PLATFORM_IP_RANGE` and `PE_EDGE_IP` as the
-`/32` trust entry. The ports are the Platform Contract's bundle ports; the public port
-suffix stays empty because browsers use Edge on 443 and the loopback HTTP port is for
-local diagnostics only.
+`/32` trust entry for Gateway and Observability. The ports are the Platform Contract's
+bundle ports; their public port suffix stays empty because browser URLs use Edge's
+external origin and the sibling loopback HTTP port is for local diagnostics only.
+Every selected stack receives `*_PLATFORM_URL` for its Platform navigation link. This is
+the console Tailnet Origin when the console node is selected; otherwise it is the Edge
+console's public-domain origin. In Local Mode it uses the configured browser scheme and
+includes a nondefault `PE_HTTP_PORT` or `PE_HTTPS_PORT`. In Public Mode it uses HTTPS on
+the external standard port even when NAT maps it to a different Edge bind port. In Proxy
+Mode it uses the configured browser scheme and no internal bind port.
 
 The Platform Network has one allocation, defined by the
 [platform contract](../conventions.md#platform-contract): whichever bootstrap runs first
@@ -261,6 +270,7 @@ LG_PLATFORM_NETWORK=platform
 LG_PLATFORM_SUBNET=172.30.0.0/24
 LG_PLATFORM_IP_RANGE=172.30.0.128/25
 LG_TRUSTED_PROXIES=172.30.0.2/32
+LG_PLATFORM_URL=https://example.com
 LG_METRICS=true
 ```
 
@@ -282,17 +292,17 @@ OB_PLATFORM_NETWORK=platform
 OB_PLATFORM_SUBNET=172.30.0.0/24
 OB_PLATFORM_IP_RANGE=172.30.0.128/25
 OB_TRUSTED_PROXIES=172.30.0.2/32
+OB_PLATFORM_URL=https://example.com
 ```
 
-`OB_GRAFANA_URL` is written empty or with the Grafana Tailnet Origin. The bundle also
-writes `OB_GATEWAY_HEALTH_HOST`, `OB_GATEWAY_URL` and `OB_BACKPLANE_URL`; current
-Observability revisions no longer read them, and the lines are harmless.
+`OB_GRAFANA_URL` is written empty or with the Grafana Tailnet Origin.
 
 In the backplane `.env`:
 
 ```sh
 BP_ACCESS_MODE=proxy
 BP_PUBLIC_URL=https://backplane.example.com
+BP_PLATFORM_URL=https://example.com
 BP_BIND_HOST=127.0.0.1
 BP_PORT=3000
 BP_PLATFORM_NETWORK=platform
@@ -300,8 +310,7 @@ BP_PLATFORM_SUBNET=172.30.0.0/24
 BP_PLATFORM_IP_RANGE=172.30.0.128/25
 ```
 
-The bundle also writes `BP_TRUSTED_PROXIES=172.30.0.2/32`; Backplane ignores forwarded
-headers by design and no longer reads it. Edge reaches the Backplane server directly at
+Edge reaches the Backplane server directly at
 `bp-server:3000`, so Backplane needs no Caddy behind Edge: keep its `edge` profile off and
 set `BP_PUBLIC_URL` as the explicit browser origin. Edge keeps the operator-route denial
 (`/health/operations` and `/metrics` answer 404), strips `Authorization` from
@@ -456,7 +465,7 @@ verify those from an external client as the final public check.
 | `legacy_setting` naming `PE_TAILSCALE_EDGE_IP` | Remove the setting and any retired overlay from `COMPOSE_FILE`, then follow the network cutover. |
 | `tls_files_unreadable` | Caddy cannot read `tls.key`, `tls.crt` or the CA file in `PE_TLS_DIR`. Check ownership, mode bits and symlink targets. |
 | A sibling hostname answers 502 | That stack is not running or not on the Platform Network under its alias. Check `docker network inspect platform` for `lg-gateway`, `ob-gateway` or `bp-server`. |
-| A route change has no effect | Caddy reads `routes.d/` at start. `docker compose restart caddy`; the admin API listens only on `localhost:2019` inside the container. |
+| A route change has no effect | Rerun `python3 scripts/bootstrap.py`; it forces a Caddy reload after Compose is up. If it reports `caddy_reload_failed`, fix the Route File and rerun. The admin API listens only on `localhost:2019` inside the container. |
 | Sibling probes fail behind Edge | Each sibling probes its own loopback listener with the domain as Host: `curl -fsS -H 'Host: example.com' http://127.0.0.1:18080/health/litellm` and `http://127.0.0.1:18180/health/grafana`. |
 | Edge cards show Unknown | The stack does not publish [status contract 2](status-contract.md) yet, or its producer is unreachable. Edge itself needs the version 1 timer retired once; see below. |
 

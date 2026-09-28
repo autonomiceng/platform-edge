@@ -122,11 +122,12 @@ recorded selection without a recorded domain is refused (`tailnet_not_enrolled`)
 
 The origins are the applications' browser URLs, and the bundle owns the settings that hold
 them: `LG_CONSOLE_URL`, `LG_LITELLM_URL`, `LG_LANGFUSE_URL`, `LG_S3_URL`, `LG_RUSTFS_URL`,
-`OB_GRAFANA_URL`, `OB_GATEWAY_URL`, `OB_BACKPLANE_URL` and `BP_PUBLIC_URL`. While the
-selection is recorded, every `--with` run writes the Tailnet Origin of each selected node
-into them; a key whose node is not selected, or any run after the selection is removed,
-gets the public-domain origin or an empty value the stack derives itself. The public
-hostnames keep working beside the Tailnet Origins.
+`OB_GRAFANA_URL` and `BP_PUBLIC_URL`. While the selection is recorded, every `--with` run
+writes the Tailnet Origin of each selected application node into its key; an unselected
+application gets its public-domain origin or an empty value the stack derives itself.
+Every selected stack also receives its Platform navigation link in `*_PLATFORM_URL`: the
+console Tailnet Origin when selected, otherwise the Edge console's public-domain origin.
+The public hostnames keep working beside the Tailnet Origins.
 
 ## How a request flows
 

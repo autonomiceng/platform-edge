@@ -89,6 +89,16 @@ services:
       - $work/status:/srv/state:ro
 YAML
 export COMPOSE_FILE="${COMPOSE_FILE:-$root/compose.yaml}:$work/status.yaml"
+if [ "$integration" != 1 ]; then
+  cp -R "$root/routes.d" "$work/routes.d"
+  cat > "$work/routes.yaml" <<YAML
+services:
+  caddy:
+    volumes:
+      - $work/routes.d:/etc/caddy/routes.d:ro
+YAML
+  export COMPOSE_FILE="$COMPOSE_FILE:$work/routes.yaml"
+fi
 # Disposable loopback-only smoke uses the host relay; never use this allowance in an installation.
 PE_METRICS_ALLOW="$PE_METRICS_ALLOW $(docker network inspect "$PE_PLATFORM_NETWORK" --format '{{range .IPAM.Config}}{{.Gateway}} {{end}}')"
 export PE_METRICS_ALLOW
@@ -177,6 +187,24 @@ ok 'bootstrap published a contract 2 Edge Status Document with the configured Ca
 if [ "$integration" != 1 ]; then
   python3 tests/status_proxy.py "http://127.0.0.1:$PE_HTTP_PORT" --edge-status
   ok 'status proxy methods, credential stripping, content type and body suppression'
+  edge_before=$(docker compose --env-file "$env_file" ps -q caddy)
+  body=$(curl --noproxy '*' --max-time 10 -fsS -H 'Host: localhost' "http://127.0.0.1:$PE_HTTP_PORT/smoke-reload")
+  [ "$body" = 'lg-gateway|localhost|http' ] || fail "route before edit answered '$body'"
+  python3 - "$work/routes.d/gateway.caddy" <<'PYROUTE'
+import sys
+from pathlib import Path
+route = Path(sys.argv[1])
+source = route.read_text()
+needle = '\thandle / {\n'
+assert source.count(needle) == 1
+route.write_text(source.replace(needle, '\thandle /smoke-reload {\n\t\trespond "reloaded"\n\t}\n' + needle))
+PYROUTE
+  python3 scripts/bootstrap.py --env-file "$env_file" >/dev/null
+  edge_after=$(docker compose --env-file "$env_file" ps -q caddy)
+  [ "$edge_after" = "$edge_before" ] || fail 'route edit recreated Caddy'
+  body=$(curl --noproxy '*' --max-time 10 -fsS -H 'Host: localhost' "http://127.0.0.1:$PE_HTTP_PORT/smoke-reload")
+  [ "$body" = reloaded ] || fail "route after bootstrap rerun answered '$body'"
+  ok 'bootstrap rerun applies a changed Route File without recreating Caddy'
 fi
 
 

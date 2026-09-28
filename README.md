@@ -81,7 +81,8 @@ python3 scripts/bootstrap.py --with gateway --with observability --with backplan
   --capability-file ~/private/backplane-enrollment
 ```
 
-Bootstrap recreates what changed and waits for readiness; the siblings' own upgrade steps are in their READMEs. Route changes in `routes.d/` apply on the next `docker compose restart caddy` when the container was not recreated.
+Bootstrap applies changed bind-mounted routes with a forced Caddy reload, then waits for
+readiness; the siblings' own upgrade steps are in their READMEs.
 
 ## Day two
 
