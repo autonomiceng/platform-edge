@@ -100,6 +100,21 @@ test("an invalid component field discards only that component", () => {
   d.features.alerts = { configured: "no" };
   assert.deepEqual(parse(d).features, { backups: undefined, alerts: undefined });
 });
+test("component URLs require an origin and leave valid neighbors available", () => {
+  for (const url of ["https://litellm.example.com", "https://litellm.example.com/", "http://localhost:9000", "http://localhost:9000/"]) {
+    const d = input();
+    d.components[1].url = url;
+    assert.equal(S.view(parse(d), "litellm").state, "configured", url);
+  }
+  for (const url of ["https://litellm.example.com/ui/", "http://localhost:9000/api"]) {
+    const d = input();
+    d.components[1].url = url;
+    const doc = parse(d);
+    assert.equal(S.view(doc, "litellm").state, "unknown", url);
+    assert.equal(Object.hasOwn(doc.components, "litellm"), false, "invalid entry is absent from parsed status");
+    assert.equal(S.view(doc, "postgres").state, "configured", "valid neighbor survives");
+  }
+});
 test("transport rejects 404/HTML/oversize and bounds actual streamed UTF-8 bytes", async () => {
   const response =
     (body, options = {}) =>

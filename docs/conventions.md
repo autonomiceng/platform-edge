@@ -14,8 +14,9 @@ Contract revision: 2026-09-28.
 ## Repository
 
 - `compose.yaml` at the root with `name:` set. Optional pieces are `profiles:`; overlay files
-  only where a profile cannot express it. After bootstrap has rendered the required env
-  files, Compose starts the core with the selected files and profiles.
+  only where a profile cannot express it. A fresh installation needs full bootstrap to
+  provision its network, volumes, and generated runtime files before direct Compose;
+  render-only does not make direct Compose runnable.
 - Shipped image defaults are pinned inline as `image:tag@sha256`. Renovate proposes bumps;
   a human merges after the stack's smoke contract passes. Complete image references may
   override these defaults through stack-prefixed env settings for unvalidated local

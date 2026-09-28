@@ -45,6 +45,7 @@ const StackStatus = (() => {
       const url = new URL(value);
       return (
         ["http:", "https:"].includes(url.protocol) &&
+        url.pathname === "/" &&
         !url.username &&
         !url.password &&
         !url.search &&
