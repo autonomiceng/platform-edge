@@ -162,13 +162,13 @@
 	import health-https
 }
 (console-config) {
-    @console-assets path /console/app.js /console/catalog.js /console/status.js /console/platform.css /console/style.css /console/icons/*
-    handle @console-assets {
-        root * /srv/console
-        uri strip_prefix /console
-        header Cache-Control "no-cache"
-        file_server
-    }
+	@console-assets path /console/app.js /console/catalog.js /console/status.js /console/platform.css /console/style.css /console/icons/*
+	handle @console-assets {
+		root * /srv/console
+		uri strip_prefix /console
+		header Cache-Control "no-cache"
+		file_server
+	}
 	handle /edge-config.json {
 		root * /srv/console
 		rewrite * /config.json
@@ -183,20 +183,20 @@
 (console-handlers) {
 	import access-log
 	route {
-	import stack-probes
-	import console-config
-	handle /health {
-		respond 200
-	}
-	handle / {
-		root * /srv/console
-		header Cache-Control "no-cache"
-		templates
-		file_server
-	}
-	handle {
-		respond 404
-	}
+		import stack-probes
+		import console-config
+		handle /health {
+			respond 200
+		}
+		handle / {
+			root * /srv/console
+			header Cache-Control "no-cache"
+			templates
+			file_server
+		}
+		handle {
+			respond 404
+		}
 	}
 	handle_errors {
 		import status-errors

@@ -25,15 +25,33 @@ Every stack still works on its own without it. Add the edge when you add the sec
 
 ## Quick start
 
-You need a Linux Docker host with journald, Compose 2.24.4 or newer, and Python 3.11 or newer. Clone the sibling stacks next to this checkout (`../llm-gateway-stack`, `../observability-stack`, `../agent-backplane`), or pass `--<stack>-dir`.
+You need a Linux Docker host with journald, Compose 2.24.4 or newer, and Python 3.11 or newer.
 
 ```sh
 git clone https://github.com/autonomiceng/platform-edge.git && cd platform-edge
-python3 scripts/bootstrap.py --with gateway --with observability --with backplane \
-  --capability-file ~/private/backplane-enrollment
+python3 scripts/bootstrap.py
 ```
 
-Drop the `--with` entries for stacks you do not run (`--capability-file` belongs to `--with backplane`). Bootstrap writes `.env` from `.env.example`, creates the shared network with the contract's allocation (or validates an existing one), creates the certificate volumes, checks port conflicts, starts Caddy and verifies both loopback listeners including HTTPS trust. Then, for each selected stack in turn, it writes the [bundle settings](docs/operations/ingress.md#bundle-settings-per-stack) into that stack's `.env` and runs that stack's own bootstrap. Add `--dry-run` first to see the plan without writing anything.
+Bootstrap writes `.env` from `.env.example`, creates the shared network with the contract's allocation (or validates an existing one), creates the certificate volumes, checks port conflicts, starts Caddy and verifies both loopback listeners including HTTPS trust. Add `--dry-run` first to see the plan without writing anything.
+
+To install sibling stacks behind Edge, clone them next to this checkout
+(`../llm-gateway-stack`, `../observability-stack`, `../agent-backplane`) or pass the
+matching `--<stack>-dir` paths. Then run:
+
+```sh
+git clone https://github.com/autonomiceng/llm-gateway-stack.git ../llm-gateway-stack
+git clone https://github.com/autonomiceng/observability-stack.git ../observability-stack
+git clone https://github.com/autonomiceng/agent-backplane.git ../agent-backplane
+python3 scripts/bootstrap.py --with gateway --with observability --with backplane \
+  --capability-file ~/backplane-enrollment
+```
+
+Skip clone commands for checkouts you already have, and drop `--with` entries for stacks
+you do not run. The capability file is required only for a fresh Backplane installation
+and is created with mode 0600. The example keeps it in your home directory so its parent
+exists. For each selected stack, Edge writes the
+[bundle settings](docs/operations/ingress.md#bundle-settings-per-stack) into that stack's
+`.env` and runs its bootstrap.
 
 Set each stack's own required settings (`LG_BACKUP_DIR`, `LANGFUSE_INIT_USER_EMAIL`, `BP_BACKUP_DIR`, the Observability alert destination) in its `.env` before or after; the bundle never touches them. If an installed stack already owns port 80 or 443, Edge refuses to start (`port_conflict`): first move that stack's gateway to a spare loopback port with its own bootstrap, then rerun.
 
@@ -73,13 +91,25 @@ The validated default image is pinned as `tag@sha256` in `compose.yaml`. Set `PE
 
 ## Upgrade
 
+Take a [certificate Checkpoint](docs/operations/backup.md) before an upgrade. In this
+checkout, run:
+
 ```sh
-scripts/backup.sh          # Checkpoint of the certificate volumes
 git pull
-docker compose pull
-python3 scripts/bootstrap.py --with gateway --with observability --with backplane \
-  --capability-file ~/private/backplane-enrollment
+docker compose --env-file .env -f compose.yaml pull caddy
+python3 scripts/bootstrap.py
 ```
+
+Keep the same `--with`, `--tailscale` and checkout flags used for the installation.
+`git pull` changes the image digest only when the checked-in pin changed; the Compose
+pull fetches the base Caddy image named by that pin. A `PE_CADDY_IMAGE` override stays in
+effect until you remove it from `.env`, so an experimental tag does not follow the checked-in
+pin. The Caddy image is declared only in `compose.yaml`, so the pull does not need the
+mode and issuer overlays for that image. For Public or Proxy Mode, add the selected
+mode and issuer `-f` overlays from the [ingress runbook](docs/operations/ingress.md#hostnames-and-modes)
+to the same pull command. With Tailscale, also add `-f compose.tailscale.yaml` and replace
+`pull caddy` with `--profile '*' pull`; this fetches Caddy and the node image in the
+same second command.
 
 Bootstrap applies changed bind-mounted routes with a forced Caddy reload, then waits for
 readiness; the siblings' own upgrade steps are in their READMEs.
@@ -106,6 +136,9 @@ All four deploy the same way. Shared conventions and the [platform contract](doc
 scripts/validate.sh                    # static checks, what CI runs on every push
 python3 -m unittest discover -s tests  # unit tests, no Docker
 node --test tests/status*.test.cjs     # status consumer tests
+npm ci                                 # pinned Playwright test tooling
+node node_modules/playwright/cli.js install --with-deps chromium
+node tests/console-browser.cjs
 scripts/smoke.sh                       # disposable edge with stub upstreams: routing, HTTPS, hardening
 scripts/backup-drill.sh                # prove CA and TLS survive restore; print RTO
 ```
