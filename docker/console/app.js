@@ -252,13 +252,23 @@ async function check() {
     }
     render();
   });
-  for (const name of new Set(DATA.projects.flatMap((p) => p.apps.flatMap((a) => a.health))))
-    jobs.push(async () => {
-      await probe(name);
-      render();
-    });
   try {
     await StackStatus.pool(jobs);
+    const names = new Set();
+    for (const project of DATA.projects) {
+      for (const app of project.apps) {
+        const enabled = component(project, app.status).state === "configured";
+        for (const name of app.health) {
+          if (enabled) names.add(name);
+          else delete health[name];
+        }
+      }
+    }
+    render();
+    await StackStatus.pool([...names].map((name) => async () => {
+      await probe(name);
+      render();
+    }));
     $("#host-name").textContent = location.hostname;
     $("#access-mode").textContent =
       tailnetHost() && location.hostname === tailnetHost()

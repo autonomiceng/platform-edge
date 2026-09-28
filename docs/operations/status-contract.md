@@ -16,15 +16,18 @@ The Edge console reads only version 2. An invalid or unavailable producer render
 | `GET /status.json` | each stack's gateway (Backplane: the server) | the Status Document below |
 | `GET /health/<component>` | same | 200 when the component's documented bounded probe passes, 503 when it fails, 404 for an unknown or disabled component; empty body publicly |
 | `GET /stack-status/<stack>` | Edge, same-origin | proxies that stack's `/status.json` |
-| `GET /stack-status/<stack>/health/<component>` | Edge, same-origin | proxies that stack's `/health/<component>` |
+| `GET /health/{caddy,backplane,observability,litellm,langfuse,s3,rustfs}` | Edge, same-origin | named application probes used by the Edge console |
 
-`<stack>` is one of `edge`, `gateway`, `backplane`, `observability`. Edge routes strip
-request credentials and cookies, accept only GET and HEAD, apply a four-second deadline,
-limit responses to 64 KiB and 32 components, set `Cache-Control: no-store`, and return no
-upstream diagnostic body on proxy errors. Documents are unauthenticated in every access
-mode, including public internet access. Edge needs no Docker socket or administrative
-credential. Consumers require `application/json`; a successful HTML fallback is
-unavailable metadata.
+`<stack>` is one of `edge`, `gateway`, `backplane`, `observability`. Edge's document routes
+accept only GET and HEAD, strip request credentials and cookies, and set `Cache-Control: no-store`.
+Sibling document proxies use four-second upstream response-header and read timeouts and
+return no upstream diagnostic body on proxy errors. Unknown GET and HEAD `/stack-status/*`
+paths return 404; Edge does not proxy sibling component Health Paths there. The Edge console
+applies a four-second request deadline and
+64 KiB and 32-component limits when consuming documents; Caddy does not impose those size
+and count limits. Documents are unauthenticated in every access mode, including public
+internet access. Edge needs no Docker socket or administrative credential. Consumers require
+`application/json`; a successful HTML fallback is unavailable metadata.
 
 Gateway, Observability and Edge write the document as a static file at bootstrap and serve
 it through Caddy. Backplane assembles it in the server from its configuration through an
@@ -82,9 +85,11 @@ document. Malformed data never turns into a healthy state.
 - Everything in the document is configuration. Consumers label `version` and `image` as
   "configured", never "running" or "deployed". Observed digests, worker, task and restart
   states are not part of this contract.
-- Liveness comes only from `health`. A consumer probes each enabled component's `health`
-  path with the same bounds as the document fetch and shows healthy on 200, unhealthy on
-  503, unknown otherwise. Disabled components are shown as off and never probed.
+- Liveness comes only from Health Paths. Each stack exposes its component paths; the Edge
+  console probes only its named application paths after the corresponding document entry is
+  valid and enabled. It shows Healthy on 200, Unreachable on 502, 503, 504 or timeout, and
+  Unknown without a valid entry or probe answer. Disabled components are shown as off and
+  never probed.
 - An absent or unreachable producer means unknown, never unhealthy, and never prevents
   another stack's card or the console itself from rendering.
 - Consumers render `name` as text and treat `url` as data: they link it only when its host

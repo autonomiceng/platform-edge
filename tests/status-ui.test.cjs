@@ -17,7 +17,7 @@ function ui() {
     querySelector: () => null,
   };
   const context = vm.createContext({
-    StackStatus: S,
+    StackStatus: { ...S },
     location: { search: "", hostname: "localhost", protocol: "http:", port: "" },
     document: { addEventListener() {}, querySelector: () => element },
     setInterval() {},
@@ -134,4 +134,57 @@ test("status URLs and text cannot become trusted navigation or HTML", () => {
   const html = run(`DATA.projects.map(projectSection).join('') + appDrawer(find('backplane').project, app('backplane', 'backplane'))`);
   assert.doesNotMatch(html, /untrusted|<script>/);
   assert.equal(run(`esc('<script>')`), "&lt;script&gt;");
+});
+
+test("refresh probes only valid enabled application entries and clears skipped results", async () => {
+  const { run } = ui();
+  const sources = Object.fromEntries(Object.keys(S.ids).map((stack) => [stack, JSON.parse(fixture(stack))]));
+  run(`var sources = ${JSON.stringify(sources)}, requests = [], probeOptions = [];
+    StackStatus.request = async (url) => {
+      requests.push(url);
+      if (url === '/edge-config.json') return { text: JSON.stringify({domain:'localhost', tailnet:'', root:'', apps:'console,litellm,langfuse,s3,rustfs,backplane,grafana', scheme:'http'}) };
+      const doc = sources[url.slice('/stack-status/'.length)];
+      if (!doc) throw new Error('missing producer');
+      return { text: JSON.stringify(doc) };
+    };
+    fetch = async (url, options) => { requests.push(url); probeOptions.push(options); return { status: 200 }; };`);
+  const probes = () => JSON.parse(run(`JSON.stringify(requests.filter((url) => url.startsWith('/health/')).sort())`));
+  await run(`check()`);
+  assert.deepEqual(probes(), ["/health/backplane", "/health/caddy", "/health/langfuse", "/health/litellm", "/health/observability", "/health/rustfs", "/health/s3"]);
+  assert.equal(run(`state('gateway', 'litellm')`), "healthy");
+
+  run(`requests = []; sources.gateway.components.find((c) => c.id === 'litellm').url = 'https://litellm.example.com/ui/';
+    sources.backplane.components.find((c) => c.id === 'server').enabled = false;
+    delete sources.observability;`);
+  await run(`check()`);
+  assert.deepEqual(probes(), ["/health/caddy", "/health/langfuse", "/health/rustfs", "/health/s3"], "valid neighbors still probe");
+  for (const name of ["litellm", "backplane", "observability"])
+    assert.equal(run(`health.${name}`), undefined, `${name} has no stale probe detail`);
+  assert.equal(run(`state('gateway', 'litellm')`), "unknown");
+  assert.equal(run(`state('backplane', 'backplane')`), "disabled");
+  assert.equal(run(`state('observability', 'grafana')`), "unknown");
+  assert.match(run(`appCard(find('gateway').project, app('gateway', 'litellm'))`), /data-state="unknown">Unknown/);
+  assert.match(run(`appCard(find('backplane').project, app('backplane', 'backplane'))`), /data-state="disabled">Disabled/);
+  assert.match(run(`appDrawer(find('gateway').project, app('gateway', 'litellm'))`), /\/health\/litellm<\/code> · not checked/);
+
+  run(`requests = []; sources.gateway.components = sources.gateway.components.filter((c) => c.id !== 'langfuse-web');
+    sources.gateway.components.find((c) => c.id === 'litellm').url = 'https://litellm.example.com';`);
+  await run(`check()`);
+  assert.deepEqual(probes(), ["/health/caddy", "/health/litellm", "/health/rustfs", "/health/s3"], "missing component is not probed");
+  assert.equal(run(`health.langfuse`), undefined);
+
+  run(`requests = []; sources.gateway.components.find((c) => c.id === 'rustfs').enabled = false;`);
+  await run(`check()`);
+  assert.deepEqual(probes(), ["/health/caddy", "/health/litellm"], "disabled RustFS skips both named probes");
+  assert.equal(run(`health.rustfs`), undefined);
+  assert.equal(run(`health.s3`), undefined);
+  assert.equal(run(`component(find('gateway').project, 'rustfs').state`), "off");
+  assert.match(run(`appCard(find('gateway').project, app('gateway', 'rustfs'))`), /data-state="disabled">Disabled/);
+
+  run(`requests = []; sources.gateway.contract = 1;`);
+  await run(`check()`);
+  assert.deepEqual(probes(), ["/health/caddy"], "invalid document skips its app probes");
+  assert.equal(run(`health.litellm`), undefined);
+  assert.equal(run(`state('gateway', 'litellm')`), "unknown");
+  assert.equal(run(`probeOptions.every((o) => o.credentials === 'omit' && o.redirect === 'error' && o.cache === 'no-store')`), true);
 });

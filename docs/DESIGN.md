@@ -121,8 +121,9 @@ The [status contract](operations/status-contract.md) defines a versioned public 
 between independent producers and console consumers. After readiness, bootstrap writes
 Edge's own Status Document from `docker compose config` into the directory mounted
 read-only at `/srv/state`, atomically; there is no host observer, timer or `docker exec`.
-Edge proxies each sibling's document and Health Paths same-origin at `/stack-status/<stack>`
-with credentials stripped and bounded responses.
+Edge proxies each sibling's document same-origin at `/stack-status/<stack>` with credentials
+stripped and upstream timeouts. It serves named application Health Paths at `/health/*`; the
+console bounds document reads and probes only valid, enabled application entries.
 
 The console is static HTML, CSS and JavaScript in `docker/console/`, mounted read-only,
 with no build step, styled by the shared [UI kit](ui-kit.md) (`platform.css`) plus a
