@@ -70,7 +70,8 @@ def tailnet_settings(stack: str, origins: dict[str, str]) -> dict[str, str]:
 def console_origin(edge: dict[str, str]) -> str:
     """The browser-facing Edge console, independent of bundle application defaults."""
     scheme = edge["PE_SCHEME"]
-    port = edge["PE_HTTPS_PORT" if scheme == "https" else "PE_HTTP_PORT"] if edge["PE_ACCESS_MODE"] == "local" else ""
+    port = (str(int(edge["PE_HTTPS_PORT" if scheme == "https" else "PE_HTTP_PORT"]))
+            if edge["PE_ACCESS_MODE"] == "local" else "")
     suffix = f":{port}" if port and port != ("443" if scheme == "https" else "80") else ""
     return f"{scheme}://{edge['PE_PUBLIC_DOMAIN']}{suffix}"
 

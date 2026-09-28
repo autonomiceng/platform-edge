@@ -354,26 +354,32 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(events, ["up", "reload", "ready", "publish"] * 2)
 
     def test_reload_failure_stops_before_readiness_status_and_success(self):
-        with tempfile.TemporaryDirectory() as directory:
-            state = Path(directory) / "state"
-            runner = FakeRunner(state=state)
-            def failing(argv):
-                if "reload" in argv:
-                    return subprocess.CompletedProcess(argv, 1, "", "invalid Caddyfile")
-                return runner(argv)
-            with patch.dict(os.environ, {}, clear=True), patch.object(bootstrap.shutil, "which", return_value="docker"), \
-                    patch.object(bootstrap, "wait_ready") as ready, patch.object(bootstrap, "publish_status") as publish, \
-                    contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(bootstrap.Refused) as raised:
-                bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env")], failing)
-            self.assertEqual((raised.exception.code, raised.exception.detail), ("caddy_reload_failed", "invalid Caddyfile"))
-            self.assertEqual(output.getvalue(), "")
-            ready.assert_not_called()
-            publish.assert_not_called()
-            self.assertFalse((state / "status.json").exists())
-            with patch.object(bootstrap, "bootstrap", side_effect=bootstrap.Refused("caddy_reload_failed", "invalid Caddyfile")), \
-                    contextlib.redirect_stderr(io.StringIO()) as error:
-                self.assertEqual(bootstrap.main(), 3)
-            self.assertEqual(json.loads(error.getvalue())["error"], "caddy_reload_failed")
+        failures = ((subprocess.CompletedProcess([], 1, "", "invalid Caddyfile"), "invalid Caddyfile"),
+                    (bootstrap.Refused("docker_timeout", "Docker command exceeded its deadline"),
+                     "Caddy reload exceeded the Docker command deadline"))
+        for failure, detail in failures:
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                state = Path(directory) / "state"
+                runner = FakeRunner(state=state)
+                def failing(argv):
+                    if "reload" in argv:
+                        if isinstance(failure, Exception):
+                            raise failure
+                        return failure
+                    return runner(argv)
+                with patch.dict(os.environ, {}, clear=True), patch.object(bootstrap.shutil, "which", return_value="docker"), \
+                        patch.object(bootstrap, "wait_ready") as ready, patch.object(bootstrap, "publish_status") as publish, \
+                        contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(bootstrap.Refused) as raised:
+                    bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env")], failing)
+                self.assertEqual((raised.exception.code, raised.exception.detail), ("caddy_reload_failed", detail))
+                self.assertEqual(output.getvalue(), "")
+                ready.assert_not_called()
+                publish.assert_not_called()
+                self.assertFalse((state / "status.json").exists())
+                with patch.object(bootstrap, "bootstrap", side_effect=raised.exception), \
+                        contextlib.redirect_stderr(io.StringIO()) as error:
+                    self.assertEqual(bootstrap.main(), 3)
+                self.assertEqual(json.loads(error.getvalue())["error"], "caddy_reload_failed")
 
     def test_dry_run_and_probe_only_never_reload(self):
         with tempfile.TemporaryDirectory() as directory:

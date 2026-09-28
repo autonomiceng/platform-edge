@@ -467,9 +467,14 @@ def compose_up(root: Path, env_file: Path, runner: Runner, apps: tuple[str, ...]
 
 
 def reload_caddy(root: Path, env_file: Path, runner: Runner, apps: tuple[str, ...] = ()) -> None:
-    result = runner(compose_command(root, env_file, apps) + [
-        "exec", "-T", "caddy", "caddy", "reload", "--config", "/etc/caddy/Caddyfile", "--force",
-    ])
+    try:
+        result = runner(compose_command(root, env_file, apps) + [
+            "exec", "-T", "caddy", "caddy", "reload", "--config", "/etc/caddy/Caddyfile", "--force",
+        ])
+    except Refused as refused:
+        if refused.code != "docker_timeout":
+            raise
+        raise Refused("caddy_reload_failed", "Caddy reload exceeded the Docker command deadline") from None
     if result.returncode != 0:
         raise Refused("caddy_reload_failed", (result.stderr or result.stdout).strip()[-2000:])
 

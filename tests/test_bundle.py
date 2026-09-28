@@ -24,7 +24,7 @@ EDGE = dict(bootstrap.settings_for({"PE_PUBLIC_DOMAIN": "example.com"}), PE_SCHE
 GATEWAY_ENV = ("# Default public domain.\r\nLG_PUBLIC_DOMAIN=localhost\r\n\nLG_ACCESS_MODE=local\nexport LG_SCHEME=''\n"
                "LITELLM_MASTER_KEY='sk-secret$1'\nLG_HTTP_PORT=80\nCUSTOM=kept")
 # Without Tailnet Origins the gateway derives its browser URLs from its public domain.
-EMPTY_ORIGINS = {key: "" for key in bundle.ORIGIN_KEYS["gateway"]} | {"LG_PLATFORM_URL": "https://example.com"}
+GATEWAY_ORIGIN_DEFAULTS = {key: "" for key in bundle.ORIGIN_KEYS["gateway"]} | {"LG_PLATFORM_URL": "https://example.com"}
 
 
 def checkout(root, stack, env=None):
@@ -103,7 +103,7 @@ class BundleTests(unittest.TestCase):
             with patch.object(bundle, "run_bootstrap", Runs()), contextlib.redirect_stdout(output):
                 [item] = bundle.plan(arguments(root, "gateway"), root, EDGE)
                 self.assertEqual(item["writes"], {"LG_PUBLIC_DOMAIN": "example.com", "LG_BIND_HOST": "127.0.0.1", "LG_HTTP_PORT": "18080",
-                                                  "LG_PUBLIC_PORT_SUFFIX": "", "LG_TRUSTED_PROXIES": "172.30.0.2/32", **EMPTY_ORIGINS})
+                                                  "LG_PUBLIC_PORT_SUFFIX": "", "LG_TRUSTED_PROXIES": "172.30.0.2/32", **GATEWAY_ORIGIN_DEFAULTS})
                 bundle.install([item], [])
                 text = (gateway / ".env").read_text()
                 self.assertTrue(text.startswith("LG_ACCESS_MODE=proxy\nLG_SCHEME='https'\nLG_PUBLIC_DOMAIN=example.com\n"
@@ -177,7 +177,7 @@ class BundleTests(unittest.TestCase):
                                                   "LG_BIND_HOST": "127.0.0.1", "LG_HTTP_PORT": "18080", "LG_PUBLIC_PORT_SUFFIX": "",
                                                   "LG_PLATFORM_NETWORK": "platform", "LG_PLATFORM_SUBNET": "172.30.0.0/24",
                                                   "LG_PLATFORM_IP_RANGE": "172.30.0.128/25", "LG_TRUSTED_PROXIES": "172.30.0.2/32",
-                                                  **dict(EMPTY_ORIGINS, LG_PLATFORM_URL="http://localhost")})
+                                                  **dict(GATEWAY_ORIGIN_DEFAULTS, LG_PLATFORM_URL="http://localhost")})
                 self.assertEqual(plan["command"], [sys.executable, "scripts/bootstrap.py"])
                 self.assertFalse(edge_env.exists())
                 self.assertEqual((gateway / ".env").read_bytes().decode(), GATEWAY_ENV)
@@ -272,7 +272,7 @@ class BundleTests(unittest.TestCase):
                 code, out, err = run_main(["--env-file", str(edge_env), "--dry-run", "--with", "gateway", "--gateway-dir", str(gateway)], runner)
                 self.assertEqual(code, 0, err)
                 self.assertEqual({key: value for key, value in json.loads(out.splitlines()[1])["writes"].items() if key.endswith("_URL")},
-                                 dict(EMPTY_ORIGINS, LG_PLATFORM_URL="http://localhost"))
+                                 dict(GATEWAY_ORIGIN_DEFAULTS, LG_PLATFORM_URL="http://localhost"))
                 # A recorded selection keeps the Tailnet Origins on ordinary bundle reruns.
                 edge_env.write_text(edge_env.read_text() + "COMPOSE_FILE=compose.yaml:compose.tailscale.yaml\nCOMPOSE_PROFILES=ts-litellm\n")
                 code, out, err = run_main(["--env-file", str(edge_env), "--dry-run", "--with", "gateway", "--gateway-dir", str(gateway)], runner)
@@ -293,7 +293,11 @@ class BundleTests(unittest.TestCase):
         for mode, scheme, http, https, expected in (
             ("local", "http", "80", "443", "http://example.com"),
             ("local", "http", "18280", "18643", "http://example.com:18280"),
+            ("local", "http", "080", "00443", "http://example.com"),
+            ("local", "http", "018280", "18643", "http://example.com:18280"),
             ("local", "https", "18280", "18643", "https://example.com:18643"),
+            ("local", "https", "18280", "00443", "https://example.com"),
+            ("local", "https", "18280", "018643", "https://example.com:18643"),
             ("public", "https", "8080", "8443", "https://example.com"),
             ("proxy", "https", "8080", "8443", "https://example.com"),
             ("proxy", "http", "8080", "8443", "http://example.com"),
