@@ -404,6 +404,16 @@ client of these routes must apply its own. `/health` and
 with `status_write_failed` although Caddy is running. The field rules, limits and fixtures
 are in the [status contract](status-contract.md).
 
+The console's application badges come from Edge's own same-origin probes, each with a
+four-second deadline: `/health/caddy`, `/health/litellm`, `/health/langfuse`, `/health/s3`
+and `/health/rustfs` (both for the Gateway's RustFS card), `/health/backplane` and
+`/health/observability` (Grafana). 200 is Healthy; 502, 503, 504 or a timeout is
+Unreachable, which is what a missing Upstream Alias produces; any other status is Unknown.
+An application its stack's Status Document lists with `enabled: false` shows Disabled, and
+one missing from a valid document shows Unknown whatever its probe answers. The console
+styles come from the shared [UI kit](../ui-kit.md); `/console/platform.css` is served with
+the other console assets.
+
 ## Shared-host acceptance
 
 After all sibling bootstraps pass, run:

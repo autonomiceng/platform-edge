@@ -122,17 +122,33 @@ Edge proxies each sibling's document and Health Paths same-origin at `/stack-sta
 with credentials stripped and bounded responses.
 
 The console is static HTML, CSS and JavaScript in `docker/console/`, mounted read-only,
-with no build step. Project cards, search, service details and an architecture map share
-one catalog (`catalog.js`), which describes the stack architecture, not detected
-installation state. It refreshes access settings (`/edge-config.json`, uncached) and
-health at load, on request, and every 30 seconds while visible, without continuous
-animation. Cards link their titles to application interfaces and provide copyable
-endpoints; component links come only from Edge's own access configuration, never from a
-document `url`. Components show what each stack's Status Document says was configured:
-Configured with its version, Not enabled, or Unknown when the document or component is
-missing or invalid. The bounded consumer reads the `/stack-status/<stack>` documents with
-three concurrent requests, four-second deadlines and 64 KiB and 32-component limits; a
-missing producer leaves components Unknown and never blocks another card.
+with no build step, styled by the shared [UI kit](ui-kit.md) (`platform.css`) plus a
+layout-only `style.css`. One catalog (`catalog.js`) lists the four projects, their six
+applications and the remaining contract components; it describes the platform, not
+detected installation state. The page shows one card per application: title linked to its
+browser URL, a badge, copyable endpoints (S3 is an endpoint, never a link) and the
+configured version. The badge is Healthy when Edge's Health Path answers 200, Unreachable
+on 502, 503, 504 or a timeout, Disabled when the Status Document says `enabled: false`,
+and Unknown without a probe answer or without a valid Status Document entry. Image, configuration time and Health Paths sit in a Details
+drawer per application; supporting components and backup and alert features sit in one per
+project. Links come only from Edge's own access configuration, never from a document `url`.
+The console refreshes access settings (`/edge-config.json`, uncached), documents and health
+at load, on request, and every 30 seconds while visible, without continuous animation. The
+bounded consumer reads the `/stack-status/<stack>` documents with three concurrent
+requests, four-second deadlines and 64 KiB and 32-component limits; a missing producer
+leaves its cards Unknown with links intact and never blocks another card.
+
+### Stacks behind Edge
+
+| Project | Upstream Alias | Applications (hostname) | Supporting components |
+| --- | --- | --- | --- |
+| Platform Edge | `pe-edge:80` | console (root), Caddy | none |
+| LLM Gateway | `lg-gateway:80` | LiteLLM (`litellm.`), Langfuse (`langfuse.`), RustFS (`rustfs.` console, `s3.` API) | Caddy, Langfuse worker, PostgreSQL, ClickHouse, Valkey, two exporters |
+| Agent Backplane | `bp-server:3000` | Backplane (`backplane.`, dashboard at `/dashboard/`) | PostgreSQL, optional RustFS and workerd, standalone Caddy |
+| Observability | `ob-gateway:80` | Grafana (`grafana.`) | Caddy, Alloy, Loki, Mimir, Tempo, optional RustFS |
+
+Datastores never join the Platform Network; the console learns about them only from Status
+Documents.
 
 ## Operations
 

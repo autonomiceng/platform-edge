@@ -51,3 +51,7 @@ _Avoid_: orchestration, selected installation
 served by that hostname's own Tailscale node inside the Edge project and routed by Edge
 over the Platform Network.
 _Avoid_: Tailscale port, machine URL
+
+**UI kit**: `platform.css` (`platform-ui`), the tokens and `pk-` components every platform
+console uses, canonical here and vendored into the siblings verbatim by `scripts/sync-ui.sh`.
+_Avoid_: theme, design system, shared styles

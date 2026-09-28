@@ -1,6 +1,6 @@
 # Logo sources
 
-Project symbols (Edge shield/ingress, Gateway routing, Observability eye/pulse, Backplane nodes), local files and setup symbols are original inline SVGs. Transparent OSS logo assets are embedded locally, not hotlinked.
+Project symbols (Edge shield/ingress, Gateway routing, Observability eye/pulse, Backplane nodes) are original SVGs. Transparent OSS logo assets are embedded locally, not hotlinked.
 
 - PostgreSQL, ClickHouse, Valkey, Caddy, Prometheus and Tempo: https://github.com/homarr-labs/dashboard-icons/tree/main/svg (postgresql.svg, clickhouse.svg, valkey.svg, caddy.svg, prometheus.svg, tempo.svg).
 - Alloy: https://github.com/grafana/alloy/blob/main/docs/sources/assets/alloy_icon_orange.svg
@@ -12,7 +12,7 @@ Project symbols (Edge shield/ingress, Gateway routing, Observability eye/pulse, 
 - Langfuse: https://github.com/langfuse/langfuse/blob/main/web/public/icon.svg
 - RustFS: https://github.com/rustfs/console/blob/main/app/icon.svg
 - Grafana: https://github.com/grafana/grafana/blob/main/public/img/grafana_icon.svg
-- GitHub mark: https://github.com/primer/octicons/blob/main/icons/mark-github-16.svg (MIT; see ../../../docs/licenses/octicons.txt).
+- GitHub mark: https://github.com/primer/octicons/blob/main/icons/mark-github-16.svg (MIT; see ../../../docs/licenses/octicons.txt), inlined in `../app.js` so it takes the text colour.
 
 Assets are bundled as data URLs or local files, so rendering never contacts third-party image services. Icons are decorative; adjacent text supplies the accessible link name.
 

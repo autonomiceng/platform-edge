@@ -1,326 +1,43 @@
-const $ = (s) => document.querySelector(s),
-  esc = (s) =>
-    String(s ?? "").replace(
-      /[&<>"']/g,
-      (c) =>
-        ({
-          "&": "&amp;",
-          "<": "&lt;",
-          ">": "&gt;",
-          '"': "&quot;",
-          "'": "&#39;",
-        })[c],
-    );
-let view =
-  new URLSearchParams(location.search).get("view") === "map"
-    ? "map"
-    : "projects";
-let overview = new URLSearchParams(location.search).get("project") || "all";
-if (!DATA.projects.some((p) => p.id === overview)) overview = "all";
-let project = overview,
-  selected = "edge",
-  query = "",
-  showApplications = true,
-  showLogging = true;
-let detailOpen = false,
+const $ = (s) => document.querySelector(s);
+const esc = (s) =>
+  String(s ?? "").replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+  );
+const LABELS = {
+  healthy: "Healthy",
+  degraded: "Degraded",
+  unreachable: "Unreachable",
+  unknown: "Unknown",
+  disabled: "Disabled",
+  configured: "Configured",
+};
+const COPY_ICON =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V3H3v13h5"/></svg>';
+const GITHUB_ICON =
+  '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656"/></svg>';
+const health = {}; // Edge probe name -> { state, detail }
+const documents = {}; // stack -> parsed Status Document
+let config = null,
   checking = false,
-  checked = "",
-  notice = "",
-  config;
-const health = {};
-const statusDocuments = {};
-DATA.projects.sort((a, b) => (a.id === "edge" ? -1 : b.id === "edge" ? 1 : 0));
-const github = (p) =>
-  `<a class="github-link" href="https://github.com/${p.repo.includes("/") ? p.repo : "autonomiceng/" + p.repo}" target="_blank" rel="noreferrer" aria-label="${esc(p.name)} on GitHub"><img src="${DATA.icons.github}" alt=""> GitHub ↗</a>`;
-const serviceRepos = {
-  Caddy: "caddyserver/caddy",
-  LiteLLM: "BerriAI/litellm",
-  Langfuse: "langfuse/langfuse",
-  "Langfuse worker": "langfuse/langfuse",
-  RustFS: "rustfs/rustfs",
-  PostgreSQL: "postgres/postgres",
-  ClickHouse: "ClickHouse/ClickHouse",
-  Valkey: "valkey-io/valkey",
-  workerd: "cloudflare/workerd",
-  Grafana: "grafana/grafana",
-  Loki: "grafana/loki",
-  Mimir: "grafana/mimir",
-  Tempo: "grafana/tempo",
-  Alloy: "grafana/alloy",
-  "Postgres exporter": "prometheus-community/postgres_exporter",
-  "Valkey exporter": "oliver006/redis_exporter",
-};
-const qualified = (s) =>
-  DATA.projects.find((p) => p.id === s.project).name + " / " + s.name;
-const matches = (s) =>
-  `${s.name} ${s.description} ${qualified(s)}`
-    .toLowerCase()
-    .includes(query.toLowerCase());
-const icon = (s) =>
-  `<img class="logo" src="${DATA.icons[s.icon] || DATA.icons.gateway}" alt="">`;
-function services() {
-  return DATA.services.map((s) => ({
-    ...s,
-    links: serviceLinks(s),
-    state: serviceState(s),
-    version: serviceVersion(s),
-    evidence: serviceEvidence(s),
-  }));
-}
-const state = (s) =>
-  ({
-    off: "Not enabled",
-    configured: "Configured",
-    unknown: "Unknown",
-  })[s.state] || s.state;
-const badge = (s) =>
-  `<span class="badge ${s.state.replaceAll(" ", "-")}"><i class="dot"></i>${esc(state(s))}</span>`;
-function endpoints(s) {
-  return Object.entries(s.links)
-    .filter(([k]) => k !== "Console")
-    .map(
-      ([k, v]) =>
-        `<div class="endpoint"><span>${esc(k)}</span><code>${esc(v)}</code><button class="copy" data-copy="${esc(v)}" aria-label="Copy ${esc(s.name)} ${esc(k)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V3H3v13h5"/></svg></button></div>`,
-    )
-    .join("");
-}
-function title(s) {
-  return s.links.Console
-    ? `<a href="${esc(s.links.Console)}" target="_blank" rel="noreferrer">${esc(s.name)} ↗</a>`
-    : esc(s.name);
-}
-function appCard(s) {
-  return `<article class="app-card"><div class="service-title">${icon(s)}<h3>${title(s)}</h3>${badge(s)}</div><p class="description">${esc(s.description)}</p>${endpoints(s)}<small class="evidence">${esc(s.evidence)}</small><div class="card-bottom"><span class="version">${esc(s.version || "Version unavailable")}</span><button class="text-button inspect" data-select="${s.id}">Details →</button></div></article>`;
-}
-function row(s) {
-  return `<div class="service-row">${icon(s)}<div class="grow"><h3><button class="text-button inspect" data-select="${s.id}">${esc(s.name)} →</button></h3><small>${esc(s.description)}</small><small>${esc(s.version || "")}</small><small class="evidence">${esc(s.evidence)}</small></div>${badge(s)}</div>`;
-}
-function detail() {
-  const s = services().find((x) => x.id === selected);
-  if (!s) return '<aside class="detail">Select a service.</aside>';
-  const p = DATA.projects.find((p) => p.id === s.project);
-  return `<aside class="detail">${view === "projects" ? '<button class="close-detail" aria-label="Close service details">×</button>' : ""}${icon(s)}<div class="meta">${esc(p.name)}</div><h2>${title(s)}</h2>${badge(s)}<p>${esc(s.description)}</p>${endpoints(s)}${!Object.keys(s.links).length ? '<div class="meta">Internal service · no browser endpoint</div>' : ""}<div class="version">${esc(s.version || "Version unavailable")}</div><p class="evidence">${esc(s.evidence)}</p><hr><h3>${s.id === "alloy" ? "Sends telemetry to" : "Connects to"}</h3>${
-    s.uses.length
-      ? s.uses
-          .map((id) => {
-            const t = services().find((x) => x.id === id);
-            return t
-              ? `<button class="related text-button" data-select="${id}">${esc(qualified(t))} →</button>`
-              : "";
-          })
-          .join("")
-      : "<p>No downstream connections shown.</p>"
-  }${s.kind !== "storage" && s.kind !== "capability" && s.kind !== "setup" ? "<hr><h3>Logs</h3><p>stdout / stderr → host journal<br>With Observability: Alloy → Loki</p>" : ""}${s.id === "edge" ? "<p>Edge routes through each project’s Caddy.</p>" : ""}<hr>${github({ name: s.name, repo: serviceRepos[s.name] || p.repo })}</aside>`;
-}
-function ProjectCards() {
-  return `<div class="projects">${
-    DATA.projects
-      .filter(
-        (p) =>
-          (overview === "all" || p.id === overview) &&
-          services().some((s) => s.project === p.id && matches(s)),
-      )
-      .map((p) => {
-        const all = services().filter((s) => s.project === p.id && matches(s)),
-          apps = all.filter((s) => s.kind === "app" || s.id === "edge"),
-          rest = all.filter(
-            (s) => s.kind !== "app" && s.kind !== "setup" && s.id !== "edge",
-          ),
-          jobs = all.filter((s) => s.kind === "setup"),
-          active = all.filter((s) => s.state === "configured").length,
-          features = StackStatus.features(statusDocuments[p.id]);
-        return `<section class="project"><div class="project-top">${icon(p)}<div class="grow"><h2>${esc(p.name)}</h2><p>${esc(p.description)}</p><span class="meta">${active} configured · ${all.length - jobs.length} ${all.length - jobs.length === 1 ? "service" : "services"}</span>${features ? `<div class="meta features">${esc(features)}</div>` : ""}</div>${github(p)}</div><div class="apps">${apps.map(appCard).join("")}</div>${
-          rest.length
-            ? `<details data-key="${p.id}-services" ${query || overview !== "all" ? "open" : ""}><summary>All services<small>${rest.length} supporting components</small></summary><div class="inventory">${[
-                "infra",
-                "backend",
-                "storage",
-                "capability",
-                "worker",
-              ]
-                .map((k) => {
-                  const group = rest.filter((s) => s.kind === k);
-                  return group.length
-                    ? `<div class="section-label">${{ backend: "Data", storage: "Files", capability: "Capabilities", worker: "Workers & collection", infra: "Routing", setup: "One-time setup jobs" }[k]}</div>${group.map(row).join("")}`
-                    : "";
-                })
-                .join("")}</div></details>`
-            : ""
-        }${jobs.length ? `<details class="installation-details" data-key="${p.id}-installation"><summary>Installation details</summary><div class="inventory">${jobs.map(row).join("")}</div></details>` : ""}${overview === "all" ? `<div class="project-footer"><a href="?project=${p.id}">Project overview →</a></div>` : ""}</section>`;
-      })
-      .join("") || '<p class="empty">No matching services.</p>'
-  }</div>`;
-}
-function render() {
-  const open = [...document.querySelectorAll("details[open]")].map(
-    (el) => el.dataset.key,
-  );
-  const focused = document.activeElement;
-  const focusIdentity = focused
-    ? {
-        id: focused.id,
-        view: focused.dataset.view,
-        project: focused.dataset.project,
-        label: focused.getAttribute("aria-label"),
-        select: focused.dataset.select,
-        href: focused.getAttribute("href"),
-        dialog: Boolean(focused.closest(".detail-drawer")),
-      }
-    : null;
-  const isSearch = focused?.matches(".search");
-  const cursor = isSearch ? focused.selectionStart : null;
-  $("#app").innerHTML =
-    `<div class="toolbar">${overview !== "all" ? '<a class="back-link" href="/">← All projects</a>' : ""}<nav class="view-tabs" aria-label="View"><button data-view="projects" class="${view === "projects" ? "active" : ""}">Projects</button><button data-view="map" class="${view === "map" ? "active" : ""}">Map</button></nav>${view === "projects" ? `<input class="search" aria-label="Find a service" placeholder="Search projects and services…" value="${esc(query)}">` : ""}<button id="refresh" ${checking ? "disabled" : ""}>${checking ? "Checking…" : "Refresh"}</button><span id="checked" role="status">${esc(checked)}</span></div><div class="notice">${esc(notice)}</div>${view === "projects" ? ProjectCards() : AllProjectsMap()}${view === "projects" && detailOpen ? `<div class="detail-shade"></div><div class="detail-drawer" role="dialog" aria-modal="true" aria-label="Service details">${detail()}</div>` : ""}`;
-  if (view === "projects") {
-    const grid = $(".projects"),
-      cards = [...grid.children];
-    if (overview !== "all") grid.classList.add("focused-project");
-    grid.innerHTML =
-      '<div class="project-column"></div><div class="project-column"></div>';
-    cards.forEach((card, i) =>
-      grid.children[overview === "all" ? i % 2 : 0].append(card),
-    );
-  }
-  for (const el of document.querySelectorAll("details"))
-    if (open.includes(el.dataset.key)) el.open = true;
-  document.querySelector("header").inert = detailOpen && view === "projects";
-  for (const element of document.querySelectorAll(
-    "#app > .toolbar, #app > .projects",
-  ))
-    element.inert = detailOpen && view === "projects";
-  if (!isSearch && focusIdentity) {
-    const scope = focusIdentity.dialog
-      ? document.querySelector(".detail-drawer")
-      : document;
-    const candidate = [
-      ...(scope?.querySelectorAll("button,a,input") || []),
-    ].find(
-      (el) =>
-        (focusIdentity.id && el.id === focusIdentity.id) ||
-        (focusIdentity.view && el.dataset.view === focusIdentity.view) ||
-        (focusIdentity.project &&
-          el.dataset.project === focusIdentity.project) ||
-        (focusIdentity.label &&
-          el.getAttribute("aria-label") === focusIdentity.label) ||
-        (focusIdentity.select && el.dataset.select === focusIdentity.select) ||
-        (focusIdentity.href && el.getAttribute("href") === focusIdentity.href),
-    );
-    candidate?.focus();
-  }
-  if (isSearch && $(".search")) {
-    $(".search").focus();
-    $(".search").setSelectionRange(cursor, cursor);
-  }
-}
-function switchView(value) {
-  view = value;
-  const url = new URL(location);
-  url.searchParams.set("view", view);
-  history.replaceState({}, "", url);
-  render();
-}
-function AllProjectsMap() {
-  const all = services().filter((s) => s.kind !== "setup");
-  const list = all.filter(
-    (s) =>
-      project === "all" ||
-      s.project === project ||
-      (showLogging && s.id === "alloy"),
-  );
-  const groups = DATA.projects.filter((p) =>
-    list.some((s) => s.project === p.id),
-  );
-  const positions = {},
-    width = Math.max(600, groups.length * 298);
-  let maxRows = 0;
-  groups.forEach((p, i) => {
-    const group = list
-      .filter((s) => s.project === p.id)
-      .sort((a, b) => (a.name === "Caddy" ? -1 : b.name === "Caddy" ? 1 : 0));
-    maxRows = Math.max(maxRows, group.length);
-    group.forEach(
-      (s, j) => (positions[s.id] = { x: 22 + i * 298, y: 70 + j * 92 }),
-    );
-  });
-  const height = maxRows * 92 + 95;
-  const links = [];
-  for (const s of list) {
-    for (const id of s.uses)
-      if (
-        positions[id] &&
-        showApplications &&
-        !(s.id === "alloy" && id === "loki")
-      )
-        links.push({ from: s.id, to: id, type: "app" });
-    if (showLogging && s.kind !== "storage" && s.kind !== "capability" && s.id !== "alloy" && !s.optional)
-      links.push({ from: s.id, to: "alloy", type: "logs" });
-  }
-  if (showLogging && positions.alloy && positions.loki)
-    links.push({ from: "alloy", to: "loki", type: "logs" });
-  const connected = new Set([
-    selected,
-    ...links
-      .filter((e) => e.from === selected || e.to === selected)
-      .flatMap((e) => [e.from, e.to]),
-  ]);
-  const edges = links
-    .map((e) => {
-      const a = positions[e.from],
-        b = positions[e.to],
-        same = a.x === b.x;
-      const x1 = a.x + 252,
-        y1 = a.y + 31,
-        x2 = same ? b.x + 252 : b.x,
-        y2 = b.y + 31;
-      const path = same
-        ? `M${x1},${y1} C${x1 + 22},${y1} ${x1 + 22},${y2} ${x2},${y2}`
-        : `M${x1},${y1} C${(x1 + x2) / 2},${y1} ${(x1 + x2) / 2},${y2} ${x2},${y2}`;
-      return `<path class="edge ${e.type} ${e.from === selected || e.to === selected ? "highlight" : ""}" d="${path}" marker-end="url(#all-arrow)"><title>${esc(qualified(list.find((s) => s.id === e.from)))} → ${esc(qualified(list.find((s) => s.id === e.to)))}${e.type === "logs" ? " · logs collected through Docker" : ""}</title></path>`;
-    })
-    .join("");
-  return `<nav class="tabs" aria-label="Projects"><button data-project="all" class="${project === "all" ? "active" : ""}">All projects</button>${DATA.projects.map((p) => `<button data-project="${p.id}" class="${project === p.id ? "active" : ""}">${esc(p.name)}</button>`).join("")}</nav><div class="connection-toggles"><label><input type="checkbox" id="application-connections" ${showApplications ? "checked" : ""}> Application connections</label><label><input type="checkbox" id="logging-connections" ${showLogging ? "checked" : ""}> Log collection (when configured)</label><button class="text-button meta" id="clear-map">Clear selection</button></div><div class="map-layout"><div><div class="map-wrap"><svg class="map all-map" viewBox="0 0 ${width} ${height}" role="group" aria-label="All project connections"><defs><marker id="all-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="4" markerHeight="4" orient="auto"><path d="M0 0 L10 5 L0 10" fill="#9faad7"/></marker></defs>${groups.map((p, i) => `<rect class="lane" x="${12 + i * 298}" y="8" width="276" height="${height - 20}" rx="12"/><text class="project-label" x="${25 + i * 298}" y="38">${esc(p.name)}</text>`).join("")}${edges}${list
-    .map((s) => {
-      const { x, y } = positions[s.id];
-      return `<g class="node ${selected === s.id ? "selected" : ""} ${selected && !connected.has(s.id) ? "dim" : ""} ${s.optional ? "optional" : ""}" tabindex="0" role="button" aria-label="Inspect ${esc(qualified(s))}" data-select="${s.id}"><rect x="${x}" y="${y}" width="252" height="68" rx="9"/><image href="${DATA.icons[s.icon] || DATA.icons.gateway}" x="${x + 12}" y="${y + 16}" width="22" height="22"/><text x="${x + 44}" y="${y + 27}">${esc(s.name)}</text><text class="state-label" x="${x + 44}" y="${y + 48}">${esc(state(s))}</text></g>`;
-    })
-    .join("")}</svg></div></div>${detail()}</div>`;
-}
+  drawer = null, // { project, app?, trigger }
+  checkedText = "";
 
-const probes = {
-  edge: "",
-  lite: "litellm",
-  langfuse: "langfuse",
-  "g-rust": "s3",
-  bp: "backplane",
-  grafana: "observability",
+const icon = (file) => `<img src="/console/icons/${file}" alt="">`;
+const badge = (state) => `<span class="pk-badge" data-state="${state}">${LABELS[state]}</span>`;
+// Break long URLs after "//" and before a "." or "/" that starts a segment, never inside a word.
+const breakable = (value) =>
+  esc(value).replace(/\/\/|[./](?=[\w-]{2})/g, (m) => (m === "//" ? "//<wbr>" : "<wbr>" + m));
+const utc = (time) => new Date(time).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+const repoUrl = (repo) => `https://github.com/${repo.includes("/") ? repo : "autonomiceng/" + repo}`;
+const external = (href, text, key) =>
+  `<a href="${esc(href)}" target="_blank" rel="noreferrer" data-key="${key}">${text} ↗</a>`;
+const find = (projectId, appId) => {
+  const project = DATA.projects.find((p) => p.id === projectId);
+  return { project, app: project?.apps.find((a) => a.id === appId) };
 };
-const statusIds = {
-  edge: "caddy",
-  lite: "litellm",
-  langfuse: "langfuse-web",
-  "lf-worker": "langfuse-worker",
-  "g-rust": "rustfs",
-  "g-pg": "postgres",
-  "g-caddy": "caddy",
-  "pg-export": "postgres-exporter",
-  "vk-export": "valkey-exporter",
-  bp: "server",
-  "b-pg": "postgres",
-  "b-rust": "rustfs",
-  "b-caddy": "caddy",
-  "o-caddy": "caddy",
-  "o-rust": "rustfs",
-};
-const statusKey = (s) => statusIds[s.id] || s.id;
-function observation(s) {
-  return StackStatus.view(statusDocuments[s.project], statusKey(s));
-}
-function serviceEvidence(s) {
-  const parts = [observation(s).reason];
-  if (probes[s.id] !== undefined)
-    parts.push(`HTTP reachability: ${health[probes[s.id]] || "checking"}`);
-  return parts.join(" · ");
-}
+const component = (project, id) => StackStatus.view(documents[project.id], id);
+
 function validateConfig(value) {
   const hostname = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i;
   if (
@@ -349,108 +66,198 @@ function validateConfig(value) {
 function tailnetHost() {
   return config?.tailnet ? `${config.root}.${config.tailnet}` : "";
 }
+const trustedAddress = () =>
+  location.hostname === tailnetHost() ||
+  location.hostname === config.domain ||
+  (config.domain === "localhost" && location.hostname === "127.0.0.1");
 // Links are trusted only on the console's own addresses. With a tailnet recorded, the Tailnet
 // Origin of a selected node is the application's browser URL wherever the page was opened; an
 // application without a node keeps its public-domain link, which the Tailnet console cannot offer.
-function appOrigin(id, prefix) {
-  if (!config) return null;
-  if (
-    location.hostname !== tailnetHost() &&
-    location.hostname !== config.domain &&
-    !(config.domain === "localhost" && location.hostname === "127.0.0.1")
-  )
-    return null;
+function appOrigin(prefix) {
+  if (!config || !trustedAddress()) return null;
   if (config.tailnet && config.apps.includes(prefix || "console"))
     return `https://${prefix || config.root}.${config.tailnet}`;
   if (location.hostname === tailnetHost()) return null;
   return `${location.protocol}//${prefix ? prefix + "." : ""}${config.domain}${location.port ? ":" + location.port : ""}`;
 }
-function serviceState(s) {
-  return observation(s).state;
-}
-function serviceVersion(s) {
-  const { version } = observation(s);
-  return version ? `Configured ${version}` : "";
-}
-function serviceLinks(s) {
-  const links = {},
-    add = (key, id, prefix, path = "") => {
-      const origin = appOrigin(id, prefix);
-      if (origin) links[key] = origin + path;
-    };
-  if (s.id === "lite") {
-    add("Console", "litellm", "litellm", "/ui/");
-    add("API", "litellm", "litellm");
+// Browser URL first, then client endpoints; rows without a trusted origin are left out.
+function endpoints(app) {
+  const rows = [];
+  for (const [label, prefix, path] of [["URL", ...app.open], ...app.endpoints]) {
+    const origin = appOrigin(prefix);
+    if (origin) rows.push([label, origin + path]);
   }
-  if (s.id === "langfuse") {
-    add("Console", "langfuse", "langfuse", "/");
-    add("OTLP API", "langfuse", "langfuse", "/api/public/otel");
-  }
-  if (s.id === "g-rust") {
-    add("Console", "rustfs", "rustfs", "/rustfs/console/");
-    add("S3 API", "s3", "s3");
-  }
-  if (s.id === "bp") {
-    add("Console", "backplane", "backplane", "/dashboard/");
-    add("API", "backplane", "backplane", "/api/v1");
-  }
-  if (s.id === "grafana") add("Console", "observability", "grafana", "/");
-  return links;
+  return rows;
 }
 function accessNotice() {
-  if (!config)
-    return "Application addresses are unavailable. Refresh to try again.";
-  if (
-    location.hostname !== tailnetHost() &&
-    location.hostname !== config.domain &&
-    !(config.domain === "localhost" && location.hostname === "127.0.0.1")
-  )
+  if (!config) return "Application addresses are unavailable. Refresh to try again.";
+  if (!trustedAddress())
     return "Application access is not configured for this address. Use the configured domain, or run bootstrap --tailscale on the host and open the console's Tailnet address.";
   return "";
+}
+// Disabled comes from the Status Document; reachability only from Edge's Health Paths. Without
+// a valid document entry the card stays Unknown, whatever its probe says.
+function appState(project, app) {
+  const { state } = component(project, app.status);
+  if (state !== "configured") return state === "off" ? "disabled" : "unknown";
+  const results = app.health.map((name) => health[name]?.state);
+  const up = results.filter((r) => r === "healthy").length,
+    down = results.filter((r) => r === "unreachable").length;
+  if (up === results.length) return "healthy";
+  if (down === results.length) return "unreachable";
+  return up && down ? "degraded" : "unknown";
+}
+function versionText(project, id) {
+  const { state, version } = component(project, id);
+  if (state === "unknown") return "Version unknown";
+  return version ? `Configured ${version}` : "Configured";
+}
+function reachable(project) {
+  const apps = project.apps.filter((a) => appState(project, a) !== "disabled");
+  const up = apps.filter((a) => ["healthy", "degraded"].includes(appState(project, a)));
+  return [up.length, apps.length];
+}
+
+function endpointRows(app) {
+  return endpoints(app)
+    .map(
+      ([label, value]) =>
+        `<div class="pk-endpoint"><span>${label}</span><code>${breakable(value)}</code><button class="pk-copy" type="button" data-copy="${esc(value)}" data-key="copy-${app.id}-${label}" aria-label="Copy ${esc(app.name)} ${label}">${COPY_ICON}</button></div>`,
+    )
+    .join("");
+}
+function appCard(project, app) {
+  const [, url] = endpoints(app).find(([label]) => label === "URL") || [];
+  const title = url ? external(url, esc(app.name), `open-${app.id}`) : esc(app.name);
+  const rows = endpointRows(app);
+  return `<article class="pk-app"><div class="pk-app-head">${icon(app.icon)}<h3>${title}</h3>${badge(appState(project, app))}</div><p class="pk-app-desc">${esc(app.description)}</p>${rows ? `<div class="pk-endpoints">${rows}</div>` : ""}<div class="pk-app-foot"><span class="version">${versionText(project, app.status)}</span><button class="pk-button pk-plain" type="button" data-open="${project.id}/${app.id}" data-key="details-${project.id}-${app.id}">Details</button></div></article>`;
+}
+function projectSection(project) {
+  const [up, total] = reachable(project);
+  return `<section class="pk-card project${project.apps.length > 1 ? " wide" : ""}" data-project="${project.id}" aria-labelledby="project-${project.id}"><div class="project-head">${icon(project.icon)}<div><h2 id="project-${project.id}">${esc(project.name)}</h2><p>${esc(project.description)}</p><div class="project-meta"><span class="reachable">${up} of ${total} ${total === 1 ? "app" : "apps"} reachable</span><button class="pk-button pk-plain" type="button" data-open="${project.id}" data-key="details-${project.id}" aria-label="${esc(project.name)} details">Details</button></div></div>${external(repoUrl(project.repo), `${GITHUB_ICON}<span class="pk-sr-only">${esc(project.name)} on </span>GitHub`, `github-${project.id}`)}</div><div class="apps">${project.apps.map((a) => appCard(project, a)).join("")}</div></section>`;
+}
+function rows(items) {
+  return `<div class="pk-endpoints">${items.map(([label, value]) => `<div class="pk-endpoint"><span>${label}</span><span>${value}</span></div>`).join("")}</div>`;
+}
+function appDrawer(project, app) {
+  const doc = documents[project.id],
+    c = doc?.components[app.status],
+    state = appState(project, app),
+    links = endpointRows(app);
+  return `<div class="pk-drawer-head">${icon(app.icon)}<h2 id="drawer-title">${esc(app.name)}</h2>${badge(state)}<button class="pk-button pk-close" type="button" data-close data-key="close" aria-label="Close details">×</button></div><div class="pk-drawer-body"><p class="drawer-lead">${esc(app.description)} Part of ${esc(project.name)}.</p>${links ? `<section><h3 class="pk-section-label">Endpoints</h3><div class="pk-endpoints">${links}</div></section>` : ""}<section><h3 class="pk-section-label">Configuration</h3>${rows([
+    ["Image", c ? `<code>${breakable(c.image)}</code>` : "Unknown"],
+    ["Version", c ? esc(c.version || "Not reported") : "Unknown"],
+    ["Configured at", doc ? utc(doc.configuredAt) : "Status unavailable"],
+    ...app.health.map((name) => ["Health", `<code>/health/${name}</code> · ${health[name]?.detail || "not checked"}`]),
+  ])}</section><section><h3 class="pk-section-label">Links</h3><div class="drawer-links">${external(repoUrl(app.source), "Source", "source")}${external(repoUrl(project.repo), `${esc(project.name)} on GitHub`, "project-github")}</div></section></div>`;
+}
+// A missing feature is unknown to the producer, so it gets no row.
+function featureRows(doc) {
+  const { backups, alerts } = doc?.features || {},
+    out = [];
+  if (backups)
+    out.push(["Backups", !backups.configured ? "Not configured" : backups.lastCheckpointAt === null ? "Configured · no checkpoint recorded" : `Configured · last checkpoint ${utc(backups.lastCheckpointAt)}`]);
+  if (alerts) out.push(["Alerts", alerts.configured ? "Configured" : "Not configured"]);
+  return out;
+}
+function projectDrawer(project) {
+  const doc = documents[project.id],
+    [up, total] = reachable(project);
+  const list = project.components
+    .map((c) => {
+      const { state, version } = component(project, c.id);
+      return `<li>${icon(c.icon)}<div class="component"><strong>${esc(c.name)}</strong><span>${esc(c.description)}</span></div>${version ? `<code>${esc(version)}</code>` : ""}${badge(state === "off" ? "disabled" : state)}</li>`;
+    })
+    .join("");
+  return `<div class="pk-drawer-head">${icon(project.icon)}<h2 id="drawer-title">${esc(project.name)}</h2><button class="pk-button pk-close" type="button" data-close data-key="close" aria-label="Close details">×</button></div><div class="pk-drawer-body"><p class="drawer-lead">${esc(project.description)}</p><section><h3 class="pk-section-label">Status</h3>${rows([
+    ["Applications", `${up} of ${total} reachable`],
+    ["Configured at", doc ? utc(doc.configuredAt) : "Status unavailable"],
+    ...featureRows(doc),
+  ])}</section>${list ? `<section><h3 class="pk-section-label">Supporting components</h3><ul class="pk-list">${list}</ul></section>` : ""}<section><h3 class="pk-section-label">Links</h3><div class="drawer-links">${external(repoUrl(project.repo), `${esc(project.name)} on GitHub`, "project-github")}</div></section></div>`;
+}
+
+// Replace markup only when it changed, and keep focus on the element with the same data-key.
+const rendered = new WeakMap();
+function patch(element, html) {
+  if (rendered.get(element) === html) return;
+  rendered.set(element, html);
+  if (!element.contains(document.activeElement)) return void (element.innerHTML = html);
+  const key = document.activeElement.dataset.key || "";
+  element.innerHTML = html;
+  // A control that disappeared hands focus to the drawer's close button, if this is the drawer.
+  (element.querySelector(`[data-key="${CSS.escape(key)}"]`) || element.querySelector("[data-close]"))?.focus();
+}
+// Live regions announce every write, so text changes only when it differs.
+function text(selector, value) {
+  if ($(selector).textContent !== value) $(selector).textContent = value;
+}
+function render() {
+  patch($("#projects"), DATA.projects.map(projectSection).join(""));
+  const all = DATA.projects.map(reachable);
+  text("#summary", !checkedText && checking ? "Checking…" : `${all.reduce((n, [up]) => n + up, 0)} of ${all.reduce((n, [, total]) => n + total, 0)} reachable`);
+  $("#refresh").disabled = checking;
+  text("#refresh", checking ? "Checking…" : "Refresh");
+  text("#checked", checkedText);
+  const notice = accessNotice();
+  $("#notice").hidden = !notice;
+  text("#notice", notice);
+  if (drawer) {
+    const { project, app } = find(drawer.project, drawer.app);
+    patch($("#drawer"), app ? appDrawer(project, app) : projectDrawer(project));
+  }
+}
+function openDrawer(target, trigger) {
+  const [projectId, appId] = target.split("/");
+  drawer = { project: projectId, app: appId, trigger };
+  render();
+  $("#drawer").showModal();
+  $("#drawer [data-close]").focus();
+}
+async function probe(name) {
+  try {
+    const response = await fetch(`/health/${name}`, {
+      cache: "no-store",
+      credentials: "omit",
+      redirect: "error",
+      signal: AbortSignal.timeout(4000),
+    });
+    const code = response.status;
+    health[name] = {
+      state: code === 200 ? "healthy" : [502, 503, 504].includes(code) ? "unreachable" : "unknown",
+      detail: `HTTP ${code}`,
+    };
+  } catch (error) {
+    health[name] = { state: "unreachable", detail: error.name === "TimeoutError" ? "timed out" : "no response" };
+  }
 }
 async function check() {
   if (checking) return;
   checking = true;
   render();
   let settingsOK = true;
-  try {
-    const jobs = Object.keys(StackStatus.ids).map((stack) => async () => {
-      try {
-        const result = await StackStatus.request(`/stack-status/${stack}`);
-        statusDocuments[stack] = StackStatus.parse(result.text, stack);
-      } catch {
-        // An absent or invalid document is unknown, never a previous answer.
-        delete statusDocuments[stack];
-      }
+  const jobs = Object.keys(StackStatus.ids).map((stack) => async () => {
+    try {
+      documents[stack] = StackStatus.parse((await StackStatus.request(`/stack-status/${stack}`)).text, stack);
+    } catch {
+      // An absent or invalid document is unknown, never a previous answer.
+      delete documents[stack];
+    }
+    render();
+  });
+  jobs.push(async () => {
+    try {
+      config = validateConfig(JSON.parse((await StackStatus.request("/edge-config.json")).text));
+    } catch {
+      settingsOK = false;
+    }
+    render();
+  });
+  for (const name of new Set(DATA.projects.flatMap((p) => p.apps.flatMap((a) => a.health))))
+    jobs.push(async () => {
+      await probe(name);
       render();
     });
-    jobs.push(
-      async () => {
-        try {
-          const result = await StackStatus.request("/edge-config.json");
-          config = validateConfig(JSON.parse(result.text));
-        } catch {
-          settingsOK = false;
-        }
-        render();
-      },
-    );
-    for (const id of new Set([...Object.values(probes), "rustfs"]))
-      jobs.push(async () => {
-        try {
-          const response = await fetch("/health" + (id ? "/" + id : ""), {
-            method: "GET",
-            cache: "no-store",
-            credentials: "omit",
-            redirect: "error",
-            signal: AbortSignal.timeout(4000),
-          });
-          health[id] = response.status === 200 ? "reachable" : "unavailable";
-        } catch {
-          health[id] = "unavailable";
-        }
-        render();
-      });
+  try {
     await StackStatus.pool(jobs);
     $("#host-name").textContent = location.hostname;
     $("#access-mode").textContent =
@@ -459,117 +266,43 @@ async function check() {
         : location.protocol === "https:"
           ? "HTTPS"
           : "Local HTTP";
-    checked =
-      (settingsOK ? "Updated " : "Addresses could not refresh · checked ") +
-      new Date().toLocaleTimeString();
-    notice = accessNotice();
+    checkedText = `${settingsOK ? "Checked" : "Addresses could not refresh · checked"} ${new Date().toLocaleTimeString()}`;
   } finally {
     checking = false;
     render();
   }
 }
-let detailTrigger = null;
-function closeDetail() {
-  detailOpen = false;
-  render();
-  const target = [...document.querySelectorAll("[data-select]")].find(
-    (el) => el.dataset.select === detailTrigger,
-  );
-  target?.focus();
-}
+
 document.addEventListener("click", async (e) => {
   const copy = e.target.closest("[data-copy]");
   if (copy) {
     try {
       await navigator.clipboard.writeText(copy.dataset.copy);
-      $("#toast").textContent = "Endpoint copied";
+      $("#announce").textContent = `Copied ${copy.dataset.copy}`;
+      copy.dataset.copied = "";
+      setTimeout(() => delete copy.dataset.copied, 1500);
     } catch {
-      $("#toast").textContent = "Select the endpoint text to copy.";
+      $("#announce").textContent = "Copy failed. Select the endpoint text instead.";
     }
-    setTimeout(() => ($("#toast").textContent = ""), 2500);
     return;
   }
-  const tab = e.target.closest("[data-view]");
-  if (tab) {
-    switchView(tab.dataset.view);
-    return;
-  }
-  if (e.target.closest("#refresh")) {
-    check();
-    return;
-  }
-  if (e.target.closest(".close-detail,.detail-shade")) {
-    closeDetail();
-    return;
-  }
-  const group = e.target.closest("[data-project]");
-  if (group) {
-    project = group.dataset.project;
-    selected = DATA.projects.find((p) => p.id === project)?.primary || "edge";
-    render();
-    return;
-  }
-  const node = e.target.closest("[data-select]");
-  if (node) {
-    selected = node.dataset.select;
-    if (view === "projects") {
-      detailTrigger = selected;
-      detailOpen = true;
-    }
-    render();
-    if (detailOpen) $(".close-detail")?.focus();
-    return;
-  }
-  if (e.target.closest("#clear-map")) {
-    selected = "";
-    render();
-    $("#clear-map")?.focus();
-  }
+  const open = e.target.closest("[data-open]");
+  if (open) return openDrawer(open.dataset.open, open.dataset.key);
+  if (e.target.closest("#refresh")) return check();
+  // A click on the dialog element itself is a click on its backdrop.
+  if (e.target.closest("[data-close]") || e.target === $("#drawer")) $("#drawer").close();
 });
-document.addEventListener("input", (e) => {
-  if (e.target.matches(".search")) {
-    query = e.target.value;
-    render();
-  }
+// A modal dialog still lets Tab leave for the browser chrome; keep focus inside instead.
+$("#drawer").addEventListener("keydown", (e) => {
+  const items = [...$("#drawer").querySelectorAll("a[href], button")];
+  if (e.key !== "Tab" || document.activeElement !== (e.shiftKey ? items[0] : items.at(-1))) return;
+  e.preventDefault();
+  (e.shiftKey ? items.at(-1) : items[0]).focus();
 });
-document.addEventListener("change", (e) => {
-  if (e.target.id === "application-connections") {
-    showApplications = e.target.checked;
-    render();
-    $("#application-connections").focus();
-  }
-  if (e.target.id === "logging-connections") {
-    showLogging = e.target.checked;
-    render();
-    $("#logging-connections").focus();
-  }
-});
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && detailOpen) {
-    closeDetail();
-    return;
-  }
-  if ((e.key === "Enter" || e.key === " ") && e.target.matches(".node")) {
-    e.preventDefault();
-    e.target.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-  }
-  if (e.key === "Tab" && detailOpen) {
-    const nodes = [
-      ...document.querySelectorAll(
-        ".detail-drawer a[href],.detail-drawer button",
-      ),
-    ];
-    if (!nodes.length) return;
-    const first = nodes[0],
-      last = nodes.at(-1);
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  }
+$("#drawer").addEventListener("close", () => {
+  const trigger = drawer?.trigger;
+  drawer = null;
+  $(`[data-key="${CSS.escape(trigger || "")}"]`)?.focus();
 });
 try {
   config = validateConfig(JSON.parse($("#edge-config").textContent));
@@ -582,4 +315,5 @@ document.addEventListener("visibilitychange", () => {
 setInterval(() => {
   if (!document.hidden) check();
 }, 30000);
+render();
 check();
