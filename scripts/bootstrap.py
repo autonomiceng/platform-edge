@@ -466,6 +466,14 @@ def compose_up(root: Path, env_file: Path, runner: Runner, apps: tuple[str, ...]
         raise Refused("compose_up_failed", (result.stderr or result.stdout).strip()[-2000:])
 
 
+def reload_caddy(root: Path, env_file: Path, runner: Runner, apps: tuple[str, ...] = ()) -> None:
+    result = runner(compose_command(root, env_file, apps) + [
+        "exec", "-T", "caddy", "caddy", "reload", "--config", "/etc/caddy/Caddyfile", "--force",
+    ])
+    if result.returncode != 0:
+        raise Refused("caddy_reload_failed", (result.stderr or result.stdout).strip()[-2000:])
+
+
 def volume_names(settings: dict[str, str], apps: tuple[str, ...] = ()) -> list[str]:
     import tailnet
     return [f"{settings['PE_VOLUME_PREFIX']}_{suffix}" for suffix in ("edge-data", "edge-config")] + tailnet.volume_names(settings, apps)
@@ -645,7 +653,8 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
         tailnet.check_listener(settings)
     # Behind Edge, browser URLs are HTTPS unless PE_SCHEME is configured; Edge's local-mode
     # default of http must not leak into the siblings.
-    edge = dict(settings, PE_SCHEME=os.environ.get("PE_SCHEME", values.get("PE_SCHEME", "")) or "https")
+    edge = dict(settings, PE_SCHEME=os.environ.get("PE_SCHEME", values.get("PE_SCHEME", "")) or "https",
+                console_origin=bundle.console_origin(settings))
     plans = bundle.plan(args, root, edge, apps)
     if args.dry_run:
         project = os.environ.get("COMPOSE_PROJECT_NAME") or values.get("COMPOSE_PROJECT_NAME") or PROJECT
@@ -736,6 +745,7 @@ def bootstrap(argv: list[str], runner: Runner = run) -> int:
                 # Recorded only now: a failed enrollment leaves no selection for ordinary reruns to start.
                 tailnet.record(handle, values, apps)
             compose_up(root, env_file, runner, apps)
+            reload_caddy(root, env_file, runner, apps)
             certificate = wait_ready(settings, root, env_file, runner, apps=apps)
             try:
                 publish_status(status_root, status_document(image, configured_at, root, settings))
@@ -778,7 +788,7 @@ def main() -> int:
         return bootstrap(sys.argv[1:])
     except Refused as refused:
         print(json.dumps({"error": refused.code, "detail": refused.detail}), file=sys.stderr)
-        return 3 if refused.code in ("not_ready", "compose_up_failed", "sibling_bootstrap_failed") else 1
+        return 3 if refused.code in ("not_ready", "compose_up_failed", "caddy_reload_failed", "sibling_bootstrap_failed") else 1
     except OSError as error:
         print(json.dumps({"error": "io_error", "detail": str(error)}), file=sys.stderr)
         return 1

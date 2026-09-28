@@ -329,6 +329,62 @@ class BootstrapTests(unittest.TestCase):
                 self.assertIn("status.json: Permission denied", raised.exception.detail)
             self.assertEqual(output.getvalue(), "")
 
+    def test_rerun_reloads_before_readiness_and_publishes_afterwards(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            runner = FakeRunner(state=state)
+            events = []
+            def observed(argv):
+                if "up" in argv:
+                    events.append("up")
+                if "reload" in argv:
+                    events.append("reload")
+                    self.assertEqual(argv[-8:], ["exec", "-T", "caddy", "caddy", "reload", "--config", "/etc/caddy/Caddyfile", "--force"])
+                return runner(argv)
+            def ready(*args, **kwargs):
+                events.append("ready")
+                return {}
+            def publish(*args):
+                events.append("publish")
+            with patch.dict(os.environ, {}, clear=True), patch.object(bootstrap.shutil, "which", return_value="docker"), \
+                    patch.object(bootstrap, "wait_ready", side_effect=ready), patch.object(bootstrap, "publish_status", side_effect=publish), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                for _ in range(2):
+                    self.assertEqual(bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env")], observed), 0)
+            self.assertEqual(events, ["up", "reload", "ready", "publish"] * 2)
+
+    def test_reload_failure_stops_before_readiness_status_and_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            runner = FakeRunner(state=state)
+            def failing(argv):
+                if "reload" in argv:
+                    return subprocess.CompletedProcess(argv, 1, "", "invalid Caddyfile")
+                return runner(argv)
+            with patch.dict(os.environ, {}, clear=True), patch.object(bootstrap.shutil, "which", return_value="docker"), \
+                    patch.object(bootstrap, "wait_ready") as ready, patch.object(bootstrap, "publish_status") as publish, \
+                    contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(bootstrap.Refused) as raised:
+                bootstrap.bootstrap(["--env-file", str(Path(directory) / ".env")], failing)
+            self.assertEqual((raised.exception.code, raised.exception.detail), ("caddy_reload_failed", "invalid Caddyfile"))
+            self.assertEqual(output.getvalue(), "")
+            ready.assert_not_called()
+            publish.assert_not_called()
+            self.assertFalse((state / "status.json").exists())
+            with patch.object(bootstrap, "bootstrap", side_effect=bootstrap.Refused("caddy_reload_failed", "invalid Caddyfile")), \
+                    contextlib.redirect_stderr(io.StringIO()) as error:
+                self.assertEqual(bootstrap.main(), 3)
+            self.assertEqual(json.loads(error.getvalue())["error"], "caddy_reload_failed")
+
+    def test_dry_run_and_probe_only_never_reload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = Path(directory) / ".env"
+            runner = FakeRunner(state=Path(directory) / "state")
+            with patch.dict(os.environ, {}, clear=True), patch.object(bootstrap.shutil, "which", return_value="docker"), \
+                    patch.object(bootstrap, "wait_ready", return_value={}), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(bootstrap.bootstrap(["--env-file", str(env), "--dry-run"], runner), 0)
+                self.assertEqual(bootstrap.bootstrap(["--env-file", str(env), "--probe-only"], runner), 0)
+            self.assertFalse(any("reload" in argv for argv in runner.calls))
+
     def test_unusable_status_mount_refuses_before_any_change(self):
         with tempfile.TemporaryDirectory() as directory:
             private = Path(directory) / "private"

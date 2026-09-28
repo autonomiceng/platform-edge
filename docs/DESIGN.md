@@ -43,8 +43,9 @@ each stack's standalone deployment ([ADR-0001](adr/0001-one-edge-per-host.md)).
   its HTTPS readiness probe trusts the configured CA file.
 - Bootstrap renders no secrets, locks the env inode, refuses container port conflicts,
   creates the Platform Network with the contract allocation or validates an existing one,
-  ensures the external volumes, runs Compose with `--wait`, and verifies the local TLS
-  handshake with domain SNI. Exit codes: 0 ready, 1 refused, 2 usage, 3 not ready.
+  ensures the external volumes, runs Compose with `--wait`, forces a Caddy reload of the
+  bind-mounted configuration, and verifies the local TLS handshake with domain SNI.
+  Exit codes: 0 ready, 1 refused, 2 usage, 3 not ready.
 
 Not promised: high availability, dynamic service discovery, authentication, rate limiting.
 
@@ -94,6 +95,8 @@ failure with the rerun command. Secret generation, source parsing and lifecycle 
 in the stacks. `--dry-run` prints the plan and writes nothing. The
 [ingress runbook](operations/ingress.md#install-the-bundle) describes the command, reruns
 and failure handling.
+Each selected stack receives a `*_PLATFORM_URL` for its link to the Edge console: the
+console Tailnet Origin if selected, otherwise the browser-facing public-domain origin.
 
 ## Tailnet Origins
 

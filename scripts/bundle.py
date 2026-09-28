@@ -54,14 +54,25 @@ def check_usage(parser, args) -> None:
 ORIGIN_KEYS = {
     "gateway": {"LG_CONSOLE_URL": "console", "LG_LITELLM_URL": "litellm", "LG_LANGFUSE_URL": "langfuse", "LG_S3_URL": "s3",
                 "LG_RUSTFS_URL": "rustfs"},
-    "observability": {"OB_GRAFANA_URL": "grafana", "OB_GATEWAY_URL": "console", "OB_BACKPLANE_URL": "backplane"},
+    "observability": {"OB_GRAFANA_URL": "grafana"},
     "backplane": {"BP_PUBLIC_URL": "backplane"},
 }
 
 
 def tailnet_settings(stack: str, origins: dict[str, str]) -> dict[str, str]:
     """The origin keys one stack receives for the selected Tailnet nodes."""
-    return {key: origins[app] for key, app in ORIGIN_KEYS[stack].items() if app in origins}
+    keys = {key: origins[app] for key, app in ORIGIN_KEYS[stack].items() if app in origins}
+    if "console" in origins:
+        keys[STACKS[stack][0] + "_PLATFORM_URL"] = origins["console"]
+    return keys
+
+
+def console_origin(edge: dict[str, str]) -> str:
+    """The browser-facing Edge console, independent of bundle application defaults."""
+    scheme = edge["PE_SCHEME"]
+    port = edge["PE_HTTPS_PORT" if scheme == "https" else "PE_HTTP_PORT"] if edge["PE_ACCESS_MODE"] == "local" else ""
+    suffix = f":{port}" if port and port != ("443" if scheme == "https" else "80") else ""
+    return f"{scheme}://{edge['PE_PUBLIC_DOMAIN']}{suffix}"
 
 
 def settings(stack: str, edge: dict[str, str], origins: dict[str, str] | None = None) -> dict[str, str]:
@@ -80,14 +91,12 @@ def settings(stack: str, edge: dict[str, str], origins: dict[str, str] | None = 
     # Always written, so a sibling never keeps an allocation Edge has since reverted.
     for key in ("PLATFORM_SUBNET", "PLATFORM_IP_RANGE"):
         values[key] = edge["PE_" + key]
-    values["TRUSTED_PROXIES"] = edge["PE_EDGE_IP"] + "/32"
-    if stack == "observability":
-        values["GATEWAY_HEALTH_HOST"] = domain
+    if stack != "backplane":
+        values["TRUSTED_PROXIES"] = edge["PE_EDGE_IP"] + "/32"
     keys = {prefix + "_" + key: value for key, value in values.items()}
-    # Backplane requires its origin and Observability its companion links; the other siblings derive
-    # an empty origin from their public domain themselves.
-    public = {"BP_PUBLIC_URL": f"{scheme}://backplane.{domain}", "OB_GATEWAY_URL": f"{scheme}://{domain}",
-              "OB_BACKPLANE_URL": f"{scheme}://backplane.{domain}"}
+    keys[prefix + "_PLATFORM_URL"] = (origins or {}).get("console", edge.get("console_origin") or console_origin(edge))
+    # Backplane requires its origin; the other siblings derive an empty origin from their public domain.
+    public = {"BP_PUBLIC_URL": f"{scheme}://backplane.{domain}"}
     keys.update({key: (origins or {}).get(app, public.get(key, "")) for key, app in ORIGIN_KEYS[stack].items()})
     return keys
 
