@@ -3,23 +3,31 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
     <title>Platform Edge</title>
     <link rel="icon" href="/console/icons/edge.svg" />
+    <link rel="stylesheet" href="/console/platform.css" />
     <link rel="stylesheet" href="/console/style.css" />
   </head>
-  <body>
-    <header>
-      <a class="brand" href="/"
-        ><img class="logo" src="/console/icons/edge.svg" alt="" /><span
-          id="host-name"
-          >Platform Edge</span
-        ><span class="pill" id="access-mode"></span
-      ></a>
+  <body class="pk-page">
+    <header class="pk-header">
+      <a class="pk-brand" href="/"><img src="/console/icons/edge.svg" alt="" />Platform Edge</a>
+      <span class="pk-pill" id="access-mode"></span>
+      <div class="pk-header-links"><span id="host-name"></span></div>
     </header>
-    <main id="app"></main>
-    <div id="toast" role="status"></div>
-    <noscript>Enable JavaScript to view application links and health.</noscript>
+    <main>
+      <div class="toolbar">
+        <h1>Applications</h1>
+        <span id="summary" class="summary"></span>
+        <span id="checked" class="checked" role="status" aria-live="polite"></span>
+        <button class="pk-button" id="refresh" type="button">Refresh</button>
+      </div>
+      <p class="pk-notice" id="notice" data-state="warn" hidden></p>
+      <div id="projects" class="projects"></div>
+      <noscript><p class="pk-notice">Enable JavaScript to view application links and health.</p></noscript>
+    </main>
+    <dialog class="pk-drawer" id="drawer" aria-labelledby="drawer-title"></dialog>
+    <p class="pk-sr-only" id="announce" role="status" aria-live="polite"></p>
     <script type="application/json" id="edge-config">
       {{include "config.json"}}
     </script>

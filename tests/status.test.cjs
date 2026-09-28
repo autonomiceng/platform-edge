@@ -15,34 +15,33 @@ test("every stack fixture parses; disabled is off and versions stay configured",
       assert.deepEqual(S.view(doc, c.id), {
         state: c.enabled ? "configured" : "off",
         version: c.version,
-        reason: `Configuration ${new Date(input(stack).configuredAt).toISOString()}`,
       });
   }
   const edge = S.parse(fixture("edge"), "edge");
   assert.equal(S.view(edge, "caddy").version, "2.11.4");
-  assert.equal(S.features(edge), "Backups configured · no checkpoint recorded");
+  assert.deepEqual(edge.features, {
+    backups: { configured: true, lastCheckpointAt: null },
+    alerts: undefined,
+  });
+  assert.deepEqual(S.parse(fixture("observability"), "observability").features.alerts, {
+    configured: false,
+  });
   assert.equal(
-    S.features(S.parse(fixture("observability"), "observability")),
-    "Backups configured · no checkpoint recorded · Alerts not configured",
-  );
-  assert.equal(
-    S.features(S.parse(fixture("gateway"), "gateway")),
-    "Backups configured · last checkpoint 2026-09-22T03:00:00.000Z",
+    S.parse(fixture("gateway"), "gateway").features.backups.lastCheckpointAt,
+    Date.parse("2026-09-22T03:00:00Z"),
   );
 });
 test("a missing producer or unknown ID is unknown, never healthy", () => {
   assert.deepEqual(S.view(undefined, "caddy"), {
     state: "unknown",
     version: null,
-    reason: "Status unavailable",
   });
-  assert.equal(S.features(undefined), "");
   const d = input();
   d.components.push({ ...d.components[0], id: "future", health: "/health/future" });
   const doc = parse(d);
   assert.equal(doc.components.future, undefined);
   delete d.features.backups;
-  assert.equal(S.features(parse(d)), "");
+  assert.equal(parse(d).features.backups, undefined);
   assert.equal(S.view(parse(d), "clickhouse").state, "configured");
 });
 test("contract, stack, closed fields, duplicates and limits reject the whole document", () => {
@@ -99,7 +98,7 @@ test("an invalid component field discards only that component", () => {
   const d = input();
   d.features.backups.lastCheckpointAt = "yesterday";
   d.features.alerts = { configured: "no" };
-  assert.equal(S.features(parse(d)), "");
+  assert.deepEqual(parse(d).features, { backups: undefined, alerts: undefined });
 });
 test("transport rejects 404/HTML/oversize and bounds actual streamed UTF-8 bytes", async () => {
   const response =

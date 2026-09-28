@@ -106,7 +106,7 @@ const StackStatus = (() => {
       }
       // Unknown IDs are ignored; invalid components render unknown.
       if (!valid(c) || !ids[stack].includes(c.id)) continue;
-      components[c.id] = { enabled: c.enabled, version: c.version };
+      components[c.id] = { enabled: c.enabled, version: c.version, image: c.image };
     }
     const backups = feature(
       d.features.backups,
@@ -142,27 +142,7 @@ const StackStatus = (() => {
     return {
       state: !c ? "unknown" : c.enabled ? "configured" : "off",
       version: c?.version ?? null,
-      reason: !doc
-        ? "Status unavailable"
-        : !c
-          ? "Not in status document"
-          : `Configuration ${new Date(doc.configuredAt).toISOString()}`,
     };
-  }
-  function features(doc) {
-    const { backups, alerts } = doc?.features || {},
-      parts = [];
-    if (backups)
-      parts.push(
-        !backups.configured
-          ? "Backups not configured"
-          : backups.lastCheckpointAt === null
-            ? "Backups configured · no checkpoint recorded"
-            : `Backups configured · last checkpoint ${new Date(backups.lastCheckpointAt).toISOString()}`,
-      );
-    if (alerts)
-      parts.push(alerts.configured ? "Alerts configured" : "Alerts not configured");
-    return parts.join(" · ");
   }
   async function request(url, fetcher = fetch) {
     const controller = new AbortController();
@@ -236,6 +216,6 @@ const StackStatus = (() => {
       }),
     );
   }
-  return { ids, parse, view, features, request, pool };
+  return { ids, parse, view, request, pool };
 })();
 if (typeof module !== "undefined") module.exports = StackStatus;

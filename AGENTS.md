@@ -39,10 +39,10 @@ For delegated work, read `docs/agents/model-routing.md` for model choices and br
 - `.env.example`: every operator setting, prefixed `PE_`, one comment per assignment, no secrets.
 - `Caddyfile`: global policy, issuer snippets, the `site` and `tailnet-site` snippets and the route imports. Its root location is the Edge mount contract.
 - `routes.d/`: one Route File per stack, plus `00-stack-probes.caddy` for the status and health routes Edge owns.
-- `docker/console/`: the static console (`index.html`, `app.js`, `catalog.js`, `status.js`, `style.css`, `config.json`, `icons/`), mounted read-only, no build step.
+- `docker/console/`: the static console (`index.html`, `app.js`, `catalog.js`, `status.js`, `style.css`, `config.json`, `icons/`), mounted read-only, no build step. `platform.css` is the canonical platform UI kit ([docs/ui-kit.md](docs/ui-kit.md)) that the siblings vendor.
 - `scripts/bootstrap.py`: env locking, port checks, network, readiness and the Edge Status Document in `data/console/status.json`. `scripts/bundle.py`: the `--with` bundle (sibling env rewrites under the sibling's lock, then its bootstrap). `scripts/tailnet.py`: the `--tailscale` nodes (selection, enrollment, recorded domain, origin probes).
 - `scripts/backup.sh`, `scripts/restore.sh`, `scripts/checkpoint.py`, `scripts/backup-drill.sh`, `scripts/backup_drill.py`: Checkpoints of the certificate volumes and the drill. `scripts/destroy.sh`: deliberate removal. `scripts/retire-status-timer.sh`: one-time removal of the version 1 status timer.
-- `scripts/validate.sh`, `scripts/smoke.sh`, `scripts/integration_smoke.py`: static gates, the Smoke Contract and the shared-host acceptance. `scripts/sync-conventions.sh`: vendors `docs/conventions.md` into siblings.
+- `scripts/validate.sh`, `scripts/smoke.sh`, `scripts/integration_smoke.py`: static gates, the Smoke Contract and the shared-host acceptance. `scripts/sync-conventions.sh`: vendors `docs/conventions.md` into siblings; `scripts/sync-ui.sh` vendors `platform.css`.
 - `tests/`: Python unittest with a fake runner (no Docker calls), `node --test tests/status*.test.cjs` for the status consumer, `tests/console-browser.cjs` for the Playwright console check, `tests/status_proxy.py` run by smoke.
 - `docs/DESIGN.md` the map, `docs/adr/` decisions, `docs/operations/` runbooks, `docs/conventions.md` the canonical shared conventions and Platform Contract.
 
@@ -50,7 +50,7 @@ Only Caddy publishes ports. Caddy joins the external Platform Network as `pe-edg
 
 ## Taste
 
-Compose is the product. Keep logic in upstream apps and their config. Python standard library and POSIX shell, no build step. Make the smallest coherent change. Comments explain constraints. The console uses system fonts and the shared palette; checks update without continuous animation.
+Compose is the product. Keep logic in upstream apps and their config. Python standard library and POSIX shell, no build step. Make the smallest coherent change. Comments explain constraints. The console uses system fonts and the UI kit's tokens and components (`platform.css` is canonical here: after editing it, run `scripts/sync-ui.sh` for each sibling); checks update without continuous animation.
 
 ## Finish
 
