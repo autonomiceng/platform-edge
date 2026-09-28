@@ -1,12 +1,13 @@
 # Model routing
 
-Routing for every delegation from this repo. Decided by the Owner 2026-09-23; supersedes the 2026-09-16 routing and ring-zeroth `MODELS.md` tiers for the three stack repos (llm-gateway-stack, agent-backplane, observability-stack).
+Routing for delegation from this repo. The Owner's current choices supersede older routing tables in the four stack repos. Use high effort for every entry.
 
 | Work | Model + effort | Verified by |
 | --- | --- | --- |
-| Difficult planning and code, all UI, AGENTS.md and prose | Claude Fable 5.1 high | gpt-6-astra high |
-| Medium and small implementation | Opus 5.5 high | gpt-6-sol high |
-| Red team, design review | gpt-6-astra high | Claude Fable 5.1 |
+| Difficult planning and code | gpt-6-astra high | gpt-6-sol high |
+| Medium and small implementation, including docs and CI | gpt-6-sol high | gpt-5.6-sol high |
+| UI | Opus 5.5 high | gpt-6-astra high |
+| Red team | gpt-6-astra high | Independent review assigned by the Owner |
 
 Rules:
 

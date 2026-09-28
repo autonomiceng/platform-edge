@@ -73,13 +73,23 @@ The validated default image is pinned as `tag@sha256` in `compose.yaml`. Set `PE
 
 ## Upgrade
 
+Take a [certificate Checkpoint](docs/operations/backup.md) before an upgrade. In this
+checkout, run:
+
 ```sh
-scripts/backup.sh          # Checkpoint of the certificate volumes
 git pull
-docker compose pull
+docker compose --env-file .env pull
 python3 scripts/bootstrap.py --with gateway --with observability --with backplane \
   --capability-file ~/private/backplane-enrollment
 ```
+
+Keep the same `--with`, `--tailscale` and checkout flags used for the installation.
+`git pull` changes the image digest only when the checked-in pin changed; `docker compose
+pull` fetches the image named by that pin. A `PE_CADDY_IMAGE` override stays in effect
+until you remove it from `.env`, so an experimental tag does not follow the checked-in
+pin. The command above pulls the base Caddy image; when using Tailscale, pull its selected
+profiles with the recorded `COMPOSE_FILE` and matching `--profile ts-<name>` flags before
+bootstrap.
 
 Bootstrap applies changed bind-mounted routes with a forced Caddy reload, then waits for
 readiness; the siblings' own upgrade steps are in their READMEs.
@@ -106,6 +116,9 @@ All four deploy the same way. Shared conventions and the [platform contract](doc
 scripts/validate.sh                    # static checks, what CI runs on every push
 python3 -m unittest discover -s tests  # unit tests, no Docker
 node --test tests/status*.test.cjs     # status consumer tests
+npm ci                                 # pinned Playwright test tooling
+node node_modules/playwright/cli.js install chromium
+node tests/console-browser.cjs
 scripts/smoke.sh                       # disposable edge with stub upstreams: routing, HTTPS, hardening
 scripts/backup-drill.sh                # prove CA and TLS survive restore; print RTO
 ```

@@ -7,9 +7,7 @@ deployment, authentication or readiness control API. Producers and consumers shi
 independently. The examples under [`status-fixtures/`](status-fixtures/) are compatibility
 inputs for implementations; they are synthetic and prove nothing about an installed stack.
 
-The contract was frozen here before any producer or consumer changed (plan v2, slice C1).
-The Edge console reads only version 2; a stack still publishing version 1 renders Unknown
-until its version 2 producer ships.
+The Edge console reads only version 2. An invalid or unavailable producer renders Unknown.
 
 ## Transport
 
@@ -52,7 +50,7 @@ Each component has these fields and no others:
 | `kind` | `app`, `datastore`, `gateway`, `collector` or `runtime`. |
 | `enabled` | Boolean: the component is selected by the configured Compose profiles and overlays. |
 | `image` | The configured image reference (registry, repository, tag) without digest, 1 to 256 characters. |
-| `version` | The release version from the configured tag with a component-specific allowlist, keeping a leading `v` where the tag has one (a variant suffix such as `-alpine` is dropped), matching `^[A-Za-z0-9._+-]{1,128}$`, or null when the tag is not a recognized release. |
+| `version` | The release version from the configured tag with a component-specific allowlist, keeping a leading `v` where the tag has one. A producer may drop a known packaging suffix or return null for a tag it does not recognize for that component. A non-null value matches `^[A-Za-z0-9._+-]{1,128}$`. |
 | `health` | Same-origin path `/health/<id>`. Required for every component; a disabled component's path answers 404 and is never probed. |
 | `url` | Optional. The component's configured browser or API origin. Omitted when the component has none. |
 
@@ -83,7 +81,7 @@ document. Malformed data never turns into a healthy state.
 
 - Everything in the document is configuration. Consumers label `version` and `image` as
   "configured", never "running" or "deployed". Observed digests, worker, task and restart
-  states are not part of this contract (red team finding 7, Owner decision D6).
+  states are not part of this contract.
 - Liveness comes only from `health`. A consumer probes each enabled component's `health`
   path with the same bounds as the document fetch and shows healthy on 200, unhealthy on
   503, unknown otherwise. Disabled components are shown as off and never probed.
