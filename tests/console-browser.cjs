@@ -29,6 +29,8 @@ const assert = require("node:assert/strict");
     };
     const probes = { caddy: 200, litellm: 404, langfuse: 200, s3: 200, rustfs: 503, backplane: 502, observability: 200 };
     let requests = 0;
+    const healthRequests = new Map();
+    const healthCount = (name) => healthRequests.get(name) || 0;
     // The Tailnet console address and the public-domain one serve the same files.
     await page.route(/^(https:\/\/platform\.test\.ts\.net|http:\/\/localhost)\//, (route) => {
       const path = new URL(route.request().url()).pathname;
@@ -40,8 +42,11 @@ const assert = require("node:assert/strict");
           : route.fulfill({ status: 404, contentType: "application/json", body: "" });
       }
       if (path === "/edge-config.json") return route.fulfill({ json: config });
-      if (path.startsWith("/health/"))
-        return route.fulfill({ status: probes[path.slice("/health/".length)] ?? 404, body: "" });
+      if (path.startsWith("/health/")) {
+        const name = path.slice("/health/".length);
+        healthRequests.set(name, healthCount(name) + 1);
+        return route.fulfill({ status: probes[name] ?? 404, body: "" });
+      }
       if (path.startsWith("/console/")) {
         const file = "docker/console/" + path.slice("/console/".length);
         return route.fulfill({
@@ -120,19 +125,34 @@ const assert = require("node:assert/strict");
     assert.match(await page.locator("#checked").textContent(), /could not refresh/);
     config.domain = "localhost";
 
+    // An invalid component stays Unknown and skips its probe while valid neighbors still probe.
+    const litellmBeforeInvalid = healthCount("litellm");
+    const langfuseBeforeInvalid = healthCount("langfuse");
+    documents.gateway.components.find((c) => c.id === "litellm").url = "https://litellm.example.com/ui/";
+    await refresh();
+    assert.equal(await badge("LiteLLM"), "Unknown");
+    assert.equal(healthCount("litellm"), litellmBeforeInvalid);
+    assert.equal(healthCount("langfuse"), langfuseBeforeInvalid + 1);
+    documents.gateway = fixture("gateway");
+
     // Disabled comes from the document; a missing or invalid document is Unknown with links intact.
+    const litellmBeforeMissing = healthCount("litellm");
     delete documents.gateway;
     await refresh();
+    assert.equal(healthCount("litellm"), litellmBeforeMissing);
     for (const name of ["LiteLLM", "Langfuse", "RustFS"]) assert.equal(await badge(name), "Unknown", name);
     assert.equal(await card("Langfuse").locator(".version").textContent(), "Version unknown");
     assert.equal(await card("Langfuse").getByRole("link").getAttribute("href"), "https://langfuse.test.ts.net/");
     documents.gateway = fixture("gateway");
     documents.backplane.components[0].enabled = false;
+    const backplaneBeforeDisabled = healthCount("backplane");
     await refresh();
     assert.equal(await badge("Backplane"), "Disabled");
+    assert.equal(healthCount("backplane"), backplaneBeforeDisabled);
     documents.backplane.contract = 1;
     await refresh();
     assert.equal(await badge("Backplane"), "Unknown");
+    assert.equal(healthCount("backplane"), backplaneBeforeDisabled);
     assert.equal(await card("Backplane").locator(".version").textContent(), "Version unknown");
     assert.equal(await backplaneLink().count(), 1);
     documents.backplane = fixture("backplane");
