@@ -96,20 +96,25 @@ checkout, run:
 
 ```sh
 git pull
-docker compose --env-file .env -f compose.yaml pull caddy
+docker compose --env-file .env -f compose.yaml pull --policy missing caddy
 python3 scripts/bootstrap.py
 ```
 
 Keep the same `--with`, `--tailscale` and checkout flags used for the installation.
-`git pull` changes the image digest only when the checked-in pin changed; the Compose
-pull fetches the base Caddy image named by that pin. A `PE_CADDY_IMAGE` override stays in
-effect until you remove it from `.env`, so an experimental tag does not follow the checked-in
-pin. The Caddy image is declared only in `compose.yaml`, so the pull does not need the
-mode and issuer overlays for that image. For Public or Proxy Mode, add the selected
+If the installation uses another env file, pass its path with `--env-file` to both Compose
+and bootstrap. `git pull` changes the image digest only when the checked-in pin changed;
+`pull --policy missing` fetches that image if absent and keeps already-cached images.
+A `PE_CADDY_IMAGE` override stays in effect until you remove it from the env file, so an
+experimental tag does not follow the checked-in pin. For a local-only override, use an
+explicit non-`latest` tag such as `local/edge:experiment`: Compose pulls `latest` even with
+the missing policy, and an omitted tag means `latest`. To refresh a mutable remote
+override intentionally, repeat the pull command with `--policy always`. The Caddy image
+is declared only in `compose.yaml`, so the pull does not need the mode and issuer overlays
+for that image. For Public or Proxy Mode, add the selected
 mode and issuer `-f` overlays from the [ingress runbook](docs/operations/ingress.md#hostnames-and-modes)
 to the same pull command. With Tailscale, also add `-f compose.tailscale.yaml` and replace
-`pull caddy` with `--profile '*' pull`; this fetches Caddy and the node image in the
-same second command.
+`pull --policy missing caddy` with `--profile '*' pull --policy missing`; this fetches
+missing Caddy and node images in the same second command.
 
 Bootstrap applies changed bind-mounted routes with a forced Caddy reload, then waits for
 readiness; the siblings' own upgrade steps are in their READMEs.
